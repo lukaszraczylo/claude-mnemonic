@@ -1,0 +1,197 @@
+# Claude Mnemonic
+
+**Give Claude Code a memory that actually remembers.**
+
+[![Release](https://img.shields.io/github/v/release/lukaszraczylo/claude-mnemonic?style=flat-square)](https://github.com/lukaszraczylo/claude-mnemonic/releases)
+[![License](https://img.shields.io/github/license/lukaszraczylo/claude-mnemonic?style=flat-square)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat-square&logo=go)](https://go.dev)
+
+---
+
+Claude Code forgets everything when your session ends. Claude Mnemonic fixes that.
+
+It captures what Claude learns during your coding sessions - bug fixes, architecture decisions, patterns that work - and brings that knowledge back in future conversations. No more re-explaining your codebase.
+
+## Requirements
+
+| Dependency | Required | Purpose |
+|------------|----------|---------|
+| **Claude Code CLI** | Yes | Host application (this is a plugin) |
+| **jq** | Yes | JSON processing during installation |
+| **Python 3.13+** | Optional | ChromaDB semantic search |
+| **uvx** | Optional | Python package runner for ChromaDB |
+
+The installer will check for these and provide installation commands if missing.
+
+> **No API keys needed!** Claude Mnemonic uses Claude Code CLI, which works with your existing Claude Pro or Max subscription. No separate API costs.
+
+## Install
+
+**One command. That's it.**
+
+```bash
+curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/scripts/install.sh | bash
+```
+
+<details>
+<summary>Windows (PowerShell)</summary>
+
+```powershell
+irm https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/scripts/install.ps1 | iex
+```
+</details>
+
+<details>
+<summary>Build from source</summary>
+
+```bash
+git clone https://github.com/lukaszraczylo/claude-mnemonic.git
+cd claude-mnemonic
+make build && make install
+```
+
+Requires: Go 1.24+, Node.js 18+, CGO-compatible compiler
+</details>
+
+<details>
+<summary>Install optional dependencies (for semantic search)</summary>
+
+**macOS:**
+```bash
+brew install python3
+pip3 install uvx
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt install python3 python3-pip
+pip3 install uvx
+```
+
+**Windows:**
+```powershell
+winget install Python.Python.3
+pip install uvx
+```
+
+Note: Requires Python 3.13+. Most package managers install the latest version.
+</details>
+
+After install, open **http://localhost:37777** to see the dashboard. Start a new Claude Code session - memory is now active.
+
+## What it does
+
+| Feature | Description |
+|---------|-------------|
+| **Persistent Memory** | Observations survive across sessions and restarts |
+| **Project Isolation** | Each project has its own knowledge base |
+| **Global Patterns** | Best practices are shared across all projects |
+| **Semantic Search** | Find relevant context with natural language |
+| **Web Dashboard** | Browse and manage memories at `localhost:37777` |
+
+### How knowledge flows
+
+```
+You code with Claude
+        ↓
+Claude learns something useful
+        ↓
+Mnemonic captures it automatically
+        ↓
+Next session: Claude remembers
+```
+
+Behind the scenes: hooks capture Claude's observations → SQLite stores with full-text search → ChromaDB enables semantic search → relevant context is injected at session start.
+
+## Configuration
+
+Config file: `~/.claude-mnemonic/settings.json`
+
+```json
+{
+  "CLAUDE_MNEMONIC_WORKER_PORT": 37777,
+  "CLAUDE_MNEMONIC_CONTEXT_OBSERVATIONS": 100,
+  "CLAUDE_MNEMONIC_CONTEXT_FULL_COUNT": 25
+}
+```
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `WORKER_PORT` | `37777` | Dashboard & API port |
+| `CONTEXT_OBSERVATIONS` | `100` | Max memories per session |
+| `CONTEXT_FULL_COUNT` | `25` | Full detail memories (rest are condensed to title only) |
+| `CONTEXT_SESSION_COUNT` | `10` | Recent sessions to reference |
+
+## Project vs Global scope
+
+Observations are automatically scoped:
+
+- **Project scope** (default) - stays within the project directory
+- **Global scope** - shared everywhere
+
+Global scope triggers on tags like: `best-practice`, `security`, `architecture`, `pattern`, `performance`
+
+Example: A bug fix in your auth module stays local. "Always validate JWT server-side" goes global.
+
+## MCP Tools
+
+When ChromaDB is available, these search tools work via MCP:
+
+- `search` - semantic search across all memories
+- `timeline` - browse by time
+- `decisions` - find architecture decisions
+- `changes` - find code modifications
+- `how_it_works` - system understanding queries
+
+## Troubleshooting
+
+**Worker won't start?**
+```bash
+lsof -i :37777              # check if port is in use
+cat /tmp/claude-mnemonic-worker.log  # view logs
+```
+
+**Database locked?**
+```bash
+rm -f ~/.claude-mnemonic/*.db-wal ~/.claude-mnemonic/*.db-shm
+```
+
+**ChromaDB not working?**
+Needs Python 3.13+ and `uvx`. On macOS: `brew install python@3.13`
+
+## Uninstall
+
+```bash
+# Remove everything
+curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/scripts/uninstall.sh | bash
+
+# Keep your data
+curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/scripts/uninstall.sh | bash -s -- --keep-data
+```
+
+## Platform support
+
+| Platform | Status |
+|----------|--------|
+| macOS Intel | Supported |
+| macOS Apple Silicon | Supported |
+| Linux amd64 | Supported |
+| Windows amd64 | Supported |
+| Linux arm64 | Not supported (CGO limitation) |
+
+## Development
+
+```bash
+make build          # build all
+make test           # run tests
+make dev            # dev mode with hot reload
+make install        # install to Claude plugins
+```
+
+## License
+
+MIT
+
+---
+
+**Links:** [Releases](https://github.com/lukaszraczylo/claude-mnemonic/releases) · [Issues](https://github.com/lukaszraczylo/claude-mnemonic/issues)
