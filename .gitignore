@@ -1,0 +1,83 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+coverage.out
+coverage.html
+*.prof
+
+# Vendor (if not committing)
+# vendor/
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Node.js / Vue
+ui/node_modules/
+ui/dist/
+ui/.vite/
+docs/node_modules/
+docs/dist/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build artifacts
+dist/
+build/
+*.tar.gz
+*.zip
+
+# Embedded static files (built from ui/dist)
+internal/worker/static/*
+!internal/worker/static/.gitkeep
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+
+# Local development
+*.local
+.claude-mnemonic/
+tmp/
+temp/
+
+# Test artifacts
+__debug_bin*
+.test/
+
+# OS generated
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+logs/
+*.log
+
+# Database files (local dev)
+*.db
+*.db-wal
+*.db-shm
+
+# goreleaser
+dist/
+docs/dist
