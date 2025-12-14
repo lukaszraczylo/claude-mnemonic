@@ -1,0 +1,271 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+
+version: 2
+
+project_name: claude-mnemonic
+
+before:
+  hooks:
+    - go mod tidy
+    # Build Vue dashboard and embed in binary
+    - bash -c "cd ui && npm ci --silent && npm run build"
+    - bash -c "rm -rf internal/worker/static && mkdir -p internal/worker/static && cp -r ui/dist/* internal/worker/static/"
+
+builds:
+  # Worker service
+  - id: worker
+    main: ./cmd/worker
+    binary: worker
+    env:
+      - CGO_ENABLED=1
+    tags:
+      - fts5
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X github.com/lukaszraczylo/claude-mnemonic/pkg/hooks.Version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+
+  # MCP server
+  - id: mcp-server
+    main: ./cmd/mcp
+    binary: mcp-server
+    env:
+      - CGO_ENABLED=1
+    tags:
+      - fts5
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X github.com/lukaszraczylo/claude-mnemonic/pkg/hooks.Version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+
+  # Hook: session-start
+  - id: hook-session-start
+    main: ./cmd/hooks/session-start
+    binary: hooks/session-start
+    env:
+      - CGO_ENABLED=1
+    tags:
+      - fts5
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X github.com/lukaszraczylo/claude-mnemonic/pkg/hooks.Version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+
+  # Hook: user-prompt
+  - id: hook-user-prompt
+    main: ./cmd/hooks/user-prompt
+    binary: hooks/user-prompt
+    env:
+      - CGO_ENABLED=1
+    tags:
+      - fts5
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X github.com/lukaszraczylo/claude-mnemonic/pkg/hooks.Version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+
+  # Hook: post-tool-use
+  - id: hook-post-tool-use
+    main: ./cmd/hooks/post-tool-use
+    binary: hooks/post-tool-use
+    env:
+      - CGO_ENABLED=1
+    tags:
+      - fts5
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X github.com/lukaszraczylo/claude-mnemonic/pkg/hooks.Version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+
+  # Hook: subagent-stop
+  - id: hook-subagent-stop
+    main: ./cmd/hooks/subagent-stop
+    binary: hooks/subagent-stop
+    env:
+      - CGO_ENABLED=1
+    tags:
+      - fts5
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X github.com/lukaszraczylo/claude-mnemonic/pkg/hooks.Version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+
+  # Hook: stop
+  - id: hook-stop
+    main: ./cmd/hooks/stop
+    binary: hooks/stop
+    env:
+      - CGO_ENABLED=1
+    tags:
+      - fts5
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X github.com/lukaszraczylo/claude-mnemonic/pkg/hooks.Version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    files:
+      - src: plugin/.claude-plugin/*
+        dst: .claude-plugin
+        strip_parent: true
+      - src: plugin/hooks/hooks.json
+        dst: hooks
+        strip_parent: true
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: lukaszraczylo
+    name: claude-mnemonic
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+  header: |
+    ## Claude Mnemonic v{{.Version}}
+
+    Persistent memory system for Claude Code.
+
+    ### Installation
+
+    ```bash
+    curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/scripts/install.sh | bash
+    ```
+
+signs:
+  - cmd: cosign
+    env:
+      - COSIGN_PASSWORD={{ .Env.COSIGN_PASSWORD }}
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--key"
+      - "env://COSIGN_KEY"
+      - "--output-signature"
+      - "${signature}"
+      - "--output-certificate"
+      - "${certificate}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true

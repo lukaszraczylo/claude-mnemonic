@@ -1,0 +1,23 @@
+version: 1
+force:
+  existing: true
+  strict: false
+  minor: 1
+wording:
+  patch:
+    - update
+    - initial
+    - fix
+    - chore
+    - docs
+    - refactor
+    - test
+  minor:
+    - improve
+    - release
+    - feat
+    - feature
+    - add
+  major:
+    - breaking
+    - major

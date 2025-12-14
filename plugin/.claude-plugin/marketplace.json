@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-mnemonic",
+  "version": "1.0.0",
+  "description": "Persistent memory system for Claude Code - stores observations, session summaries, and user prompts with semantic search",
+  "owner": {
+    "name": "lukaszraczylo",
+    "email": "lukaszraczylo@users.noreply.github.com"
+  },
+  "plugins": [
+    {
+      "name": "claude-mnemonic",
+      "description": "Persistent memory system for Claude Code - Go implementation with SQLite and ChromaDB",
+      "version": "1.0.0",
+      "author": {
+        "name": "lukaszraczylo"
+      },
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
