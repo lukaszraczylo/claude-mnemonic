@@ -16,9 +16,20 @@ const emit = defineEmits<{
 }>()
 
 const showUpdateModal = ref(false)
+const isRestarting = ref(false)
 
-const reloadPage = () => {
-  globalThis.location.reload()
+const restartWorker = async () => {
+  isRestarting.value = true
+  try {
+    await fetch('/api/update/restart', { method: 'POST' })
+    // Wait a moment for the new process to start, then reload
+    setTimeout(() => {
+      globalThis.location.reload()
+    }, 2000)
+  } catch (error) {
+    console.error('Failed to restart:', error)
+    isRestarting.value = false
+  }
 }
 </script>
 
@@ -61,10 +72,11 @@ const reloadPage = () => {
           <div v-else-if="updateStatus.state === 'done'" class="flex items-center gap-2">
             <button
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-green-500/20 border border-green-500/50 text-green-400 hover:bg-green-500/30 transition-colors text-sm"
-              @click="reloadPage"
+              :disabled="isRestarting"
+              @click="restartWorker"
             >
-              <i class="fas fa-check-circle" />
-              <span>Restart</span>
+              <i :class="isRestarting ? 'fas fa-spinner animate-spin' : 'fas fa-check-circle'" />
+              <span>{{ isRestarting ? 'Restarting...' : 'Restart' }}</span>
             </button>
           </div>
 
@@ -115,7 +127,7 @@ const reloadPage = () => {
             <i class="fas fa-times" />
           </button>
 
-          <div class="text-center mb-6">
+          <div class="text-center mb-4">
             <div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center">
               <i class="fas fa-arrow-circle-up text-3xl text-white" />
             </div>
@@ -123,6 +135,14 @@ const reloadPage = () => {
             <p class="text-slate-400 text-sm">
               v{{ updateInfo?.current_version }} → v{{ updateInfo?.latest_version }}
             </p>
+          </div>
+
+          <!-- Release Notes -->
+          <div v-if="updateInfo?.release_notes" class="mb-4 max-h-48 overflow-y-auto">
+            <p class="text-slate-500 text-xs uppercase tracking-wide mb-2">What's new</p>
+            <div class="bg-slate-800/50 rounded-lg p-3 text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">
+              {{ updateInfo.release_notes }}
+            </div>
           </div>
 
           <div class="space-y-3">

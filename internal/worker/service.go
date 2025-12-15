@@ -600,6 +600,7 @@ func (s *Service) setupRoutes() {
 	s.router.Get("/api/update/check", s.handleUpdateCheck)
 	s.router.Post("/api/update/apply", s.handleUpdateApply)
 	s.router.Get("/api/update/status", s.handleUpdateStatus)
+	s.router.Post("/api/update/restart", s.handleUpdateRestart)
 
 	// SSE endpoint (works before DB is ready)
 	s.router.Get("/api/events", s.sseBroadcaster.HandleSSE)
