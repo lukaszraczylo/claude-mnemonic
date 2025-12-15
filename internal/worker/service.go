@@ -669,6 +669,9 @@ func (s *Service) Start() error {
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           s.router,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      0, // Disabled for SSE (long-lived connections)
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// Check if we're in restart mode (after update)
