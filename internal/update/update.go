@@ -28,6 +28,7 @@ const (
 	ReleasesAPI      = "https://api.github.com/repos/" + GitHubRepo + "/releases/latest"
 	CheckInterval    = 24 * time.Hour
 	MaxExtractedSize = 100 * 1024 * 1024 // 100MB max per extracted file
+	RestartDelay     = 500 * time.Millisecond
 )
 
 // Release represents a GitHub release.
@@ -280,6 +281,12 @@ func (u *Updater) ApplyUpdate(ctx context.Context, info *UpdateInfo) error {
 		u.setError(err)
 		return fmt.Errorf("failed to replace binaries: %w", err)
 	}
+
+	// Clear cache so next check shows no update available
+	u.mu.Lock()
+	u.cachedUpdate = nil
+	u.lastCheck = time.Time{}
+	u.mu.Unlock()
 
 	u.setStatus("done", 1.0, fmt.Sprintf("Updated to v%s. Restart required.", info.LatestVersion))
 	log.Info().Str("version", info.LatestVersion).Msg("Update applied successfully")
@@ -552,4 +559,36 @@ func isNewerVersion(latest, current string) bool {
 	}
 
 	return len(latestParts) > len(currentParts)
+}
+
+// Restart spawns the new worker binary and exits the current process.
+// This should be called after a successful update to apply the new version.
+func (u *Updater) Restart() error {
+	workerPath := filepath.Join(u.installDir, "worker")
+
+	// Verify the new binary exists
+	if _, err := os.Stat(workerPath); err != nil {
+		return fmt.Errorf("new worker binary not found: %w", err)
+	}
+
+	log.Info().Str("path", workerPath).Msg("Restarting worker with new binary")
+
+	// Start the new process
+	cmd := exec.Command(workerPath) // #nosec G204 -- workerPath is from internal installDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start new worker: %w", err)
+	}
+
+	// Give the new process time to start
+	time.Sleep(RestartDelay)
+
+	// Exit current process - the new one is now running
+	log.Info().Int("new_pid", cmd.Process.Pid).Msg("New worker started, exiting old process")
+	os.Exit(0)
+
+	return nil // Never reached
 }
