@@ -750,3 +750,30 @@ func (s *Service) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	status := s.updater.GetStatus()
 	writeJSON(w, status)
 }
+
+// handleUpdateRestart restarts the worker with the new binary.
+func (s *Service) handleUpdateRestart(w http.ResponseWriter, r *http.Request) {
+	status := s.updater.GetStatus()
+	if status.State != "done" {
+		http.Error(w, "no update has been applied", http.StatusBadRequest)
+		return
+	}
+
+	// Send response before restarting
+	writeJSON(w, map[string]interface{}{
+		"success": true,
+		"message": "Restarting worker...",
+	})
+
+	// Flush the response
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	// Restart in background after response is sent
+	go func() {
+		if err := s.updater.Restart(); err != nil {
+			log.Error().Err(err).Msg("Failed to restart worker")
+		}
+	}()
+}
