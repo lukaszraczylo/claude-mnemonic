@@ -79,6 +79,19 @@ Note: Requires Python 3.13+. Most package managers install the latest version.
 
 After install, open **http://localhost:37777** to see the dashboard. Start a new Claude Code session - memory is now active.
 
+### Verifying Release Signatures
+
+All release checksums are signed with [cosign](https://github.com/sigstore/cosign) using keyless signing. To verify:
+
+```bash
+# Download the checksum file and its sigstore bundle from the release
+cosign verify-blob \
+  --certificate-identity-regexp "https://github.com/lukaszraczylo/claude-mnemonic/.*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --bundle "checksums.txt.sigstore.json" \
+  checksums.txt
+```
+
 ## What it does
 
 | Feature | Description |

@@ -703,3 +703,50 @@ func (s *Service) handleContextInject(w http.ResponseWriter, r *http.Request) {
 		"duplicates_removed": duplicatesRemoved,
 	})
 }
+
+// handleUpdateCheck checks for available updates.
+func (s *Service) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	info, err := s.updater.CheckForUpdate(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, info)
+}
+
+// handleUpdateApply downloads and applies an available update.
+func (s *Service) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
+	// First check for update
+	info, err := s.updater.CheckForUpdate(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if !info.Available {
+		writeJSON(w, map[string]interface{}{
+			"success": false,
+			"message": "No update available",
+		})
+		return
+	}
+
+	// Apply update in background
+	go func() {
+		if err := s.updater.ApplyUpdate(s.ctx, info); err != nil {
+			log.Error().Err(err).Msg("Update failed")
+		}
+	}()
+
+	writeJSON(w, map[string]interface{}{
+		"success": true,
+		"message": "Update started",
+		"version": info.LatestVersion,
+	})
+}
+
+// handleUpdateStatus returns the current update status.
+func (s *Service) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	status := s.updater.GetStatus()
+	writeJSON(w, status)
+}
