@@ -537,14 +537,16 @@ func isNewerVersion(latest, current string) bool {
 	latest = strings.TrimPrefix(latest, "v")
 	current = strings.TrimPrefix(current, "v")
 
-	// Handle dev/dirty versions
-	if strings.Contains(current, "-dirty") || strings.Contains(current, "-dev") {
-		return true // Always show update available for dev builds
+	// For dev/dirty builds, extract the base version for comparison
+	// e.g., "0.3.5-2-gca711a8-dirty" -> "0.3.5"
+	currentBase := current
+	if idx := strings.Index(current, "-"); idx > 0 {
+		currentBase = current[:idx]
 	}
 
-	// Simple semver comparison
+	// Simple semver comparison using base version
 	latestParts := strings.Split(latest, ".")
-	currentParts := strings.Split(current, ".")
+	currentParts := strings.Split(currentBase, ".")
 
 	for i := 0; i < len(latestParts) && i < len(currentParts); i++ {
 		latestNum, _ := strconv.Atoi(latestParts[i])
