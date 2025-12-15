@@ -92,6 +92,12 @@ func NewProcessor(observationStore *sqlite.ObservationStore, summaryStore *sqlit
 	}, nil
 }
 
+// IsAvailable checks if the Claude CLI is available for processing.
+func (p *Processor) IsAvailable() bool {
+	_, err := os.Stat(p.claudePath)
+	return err == nil
+}
+
 // ProcessObservation processes a single tool observation and extracts insights.
 func (p *Processor) ProcessObservation(ctx context.Context, sdkSessionID, project string, toolName string, toolInput, toolResponse interface{}, promptNumber int, cwd string) error {
 	p.mu.Lock()

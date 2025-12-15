@@ -449,6 +449,13 @@ func (c *Client) nextID() int {
 	return c.requestID
 }
 
+// IsConnected returns whether the client is currently connected to ChromaDB.
+func (c *Client) IsConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connected
+}
+
 // Close closes the connection to ChromaDB.
 func (c *Client) Close() error {
 	c.mu.Lock()

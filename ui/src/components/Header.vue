@@ -22,14 +22,34 @@ const restartWorker = async () => {
   isRestarting.value = true
   try {
     await fetch('/api/update/restart', { method: 'POST' })
-    // Wait a moment for the new process to start, then reload
-    setTimeout(() => {
-      globalThis.location.reload()
-    }, 2000)
+    // Poll for new worker to be ready before reloading
+    await waitForWorker()
+    globalThis.location.reload()
   } catch (error) {
     console.error('Failed to restart:', error)
     isRestarting.value = false
   }
+}
+
+// Poll health endpoint until worker is ready
+const waitForWorker = async (maxAttempts = 30, delayMs = 500): Promise<void> => {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+    try {
+      const response = await fetch('/api/health', {
+        signal: AbortSignal.timeout(2000)
+      })
+      if (response.ok) {
+        const data = await response.json()
+        if (data.status === 'ready') {
+          return // Worker is ready
+        }
+      }
+    } catch {
+      // Worker not ready yet, continue polling
+    }
+  }
+  // Timeout - reload anyway
 }
 </script>
 

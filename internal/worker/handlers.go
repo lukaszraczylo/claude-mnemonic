@@ -751,6 +751,110 @@ func (s *Service) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status)
 }
 
+// ComponentHealth represents the health status of a single component.
+type ComponentHealth struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"` // "healthy", "degraded", "unhealthy"
+	Message string `json:"message,omitempty"`
+}
+
+// SelfCheckResponse contains the health status of all components.
+type SelfCheckResponse struct {
+	Overall    string            `json:"overall"` // "healthy", "degraded", "unhealthy"
+	Version    string            `json:"version"`
+	Uptime     string            `json:"uptime"`
+	Components []ComponentHealth `json:"components"`
+}
+
+// handleSelfCheck returns the health status of all components.
+func (s *Service) handleSelfCheck(w http.ResponseWriter, r *http.Request) {
+	components := []ComponentHealth{}
+	overall := "healthy"
+
+	// Check Worker Service
+	workerStatus := ComponentHealth{Name: "Worker Service", Status: "healthy"}
+	if !s.ready.Load() {
+		if err := s.GetInitError(); err != nil {
+			workerStatus.Status = "unhealthy"
+			workerStatus.Message = err.Error()
+			overall = "unhealthy"
+		} else {
+			workerStatus.Status = "degraded"
+			workerStatus.Message = "Initializing"
+			if overall == "healthy" {
+				overall = "degraded"
+			}
+		}
+	}
+	components = append(components, workerStatus)
+
+	// Check SQLite Database
+	dbStatus := ComponentHealth{Name: "SQLite Database", Status: "healthy"}
+	if s.store == nil {
+		dbStatus.Status = "unhealthy"
+		dbStatus.Message = "Not initialized"
+		overall = "unhealthy"
+	} else if err := s.store.Ping(); err != nil {
+		dbStatus.Status = "unhealthy"
+		dbStatus.Message = err.Error()
+		overall = "unhealthy"
+	}
+	components = append(components, dbStatus)
+
+	// Check ChromaDB
+	chromaStatus := ComponentHealth{Name: "ChromaDB", Status: "healthy"}
+	if s.chromaClient == nil {
+		chromaStatus.Status = "degraded"
+		chromaStatus.Message = "Not configured"
+		if overall == "healthy" {
+			overall = "degraded"
+		}
+	} else if !s.chromaClient.IsConnected() {
+		chromaStatus.Status = "degraded"
+		chromaStatus.Message = "Not connected"
+		if overall == "healthy" {
+			overall = "degraded"
+		}
+	}
+	components = append(components, chromaStatus)
+
+	// Check SDK Processor
+	sdkStatus := ComponentHealth{Name: "SDK Processor", Status: "healthy"}
+	if s.processor == nil {
+		sdkStatus.Status = "degraded"
+		sdkStatus.Message = "Not initialized"
+		if overall == "healthy" {
+			overall = "degraded"
+		}
+	} else if !s.processor.IsAvailable() {
+		sdkStatus.Status = "degraded"
+		sdkStatus.Message = "Claude CLI not available"
+		if overall == "healthy" {
+			overall = "degraded"
+		}
+	}
+	components = append(components, sdkStatus)
+
+	// Check SSE Broadcaster
+	sseStatus := ComponentHealth{Name: "SSE Broadcaster", Status: "healthy"}
+	if s.sseBroadcaster == nil {
+		sseStatus.Status = "unhealthy"
+		sseStatus.Message = "Not initialized"
+		overall = "unhealthy"
+	}
+	components = append(components, sseStatus)
+
+	// Calculate uptime
+	uptime := time.Since(s.startTime).Round(time.Second).String()
+
+	writeJSON(w, SelfCheckResponse{
+		Overall:    overall,
+		Version:    s.version,
+		Uptime:     uptime,
+		Components: components,
+	})
+}
+
 // handleUpdateRestart restarts the worker with the new binary.
 func (s *Service) handleUpdateRestart(w http.ResponseWriter, r *http.Request) {
 	status := s.updater.GetStatus()
