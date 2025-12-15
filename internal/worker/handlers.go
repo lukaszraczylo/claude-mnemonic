@@ -2,6 +2,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -153,7 +154,7 @@ func (s *Service) handleSessionInit(w http.ResponseWriter, r *http.Request) {
 		log.Warn().Err(err).Msg("Failed to save user prompt")
 		// Non-fatal: continue with session initialization
 	} else if s.chromaSync != nil {
-		// Sync to vector DB
+		// Sync to vector DB asynchronously (non-blocking)
 		now := time.Now()
 		promptWithSession := &models.UserPromptWithSession{
 			UserPrompt: models.UserPrompt{
@@ -168,9 +169,13 @@ func (s *Service) handleSessionInit(w http.ResponseWriter, r *http.Request) {
 			Project:      req.Project,
 			SDKSessionID: req.ClaudeSessionID,
 		}
-		if err := s.chromaSync.SyncUserPrompt(r.Context(), promptWithSession); err != nil {
-			log.Warn().Err(err).Int64("id", promptID).Msg("Failed to sync user prompt to ChromaDB")
-		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := s.chromaSync.SyncUserPrompt(ctx, promptWithSession); err != nil {
+				log.Warn().Err(err).Int64("id", promptID).Msg("Failed to sync user prompt to ChromaDB")
+			}
+		}()
 	}
 
 	log.Info().

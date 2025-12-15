@@ -27,6 +27,7 @@ dashboard:
 	@cd ui && npm install --silent && npm run build
 	@rm -rf internal/worker/static
 	@mkdir -p internal/worker/static
+	@touch internal/worker/static/placeholder.html
 	@cp -r ui/dist/* internal/worker/static/
 
 # Build worker service
