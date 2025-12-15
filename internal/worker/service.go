@@ -574,8 +574,9 @@ func (s *Service) verifyStaleObservation(req staleVerifyRequest) {
 func (s *Service) setupMiddleware() {
 	s.router.Use(middleware.Logger)
 	s.router.Use(middleware.Recoverer)
-	s.router.Use(middleware.Timeout(DefaultHTTPTimeout))
 	s.router.Use(middleware.RealIP)
+	// Note: Timeout middleware is applied per-route, not globally,
+	// to avoid killing SSE connections which need to stay open indefinitely
 }
 
 // setupRoutes configures HTTP routes.
@@ -611,6 +612,7 @@ func (s *Service) setupRoutes() {
 	// Routes that require DB to be ready
 	s.router.Group(func(r chi.Router) {
 		r.Use(s.requireReady)
+		r.Use(middleware.Timeout(DefaultHTTPTimeout))
 
 		// Session routes
 		r.Post("/api/sessions/init", s.handleSessionInit)
