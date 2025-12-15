@@ -10,14 +10,10 @@ wording:
     - fix
     - chore
     - docs
-    - refactor
     - test
   minor:
-    - improve
     - release
-    - feat
-    - feature
-    - add
+    - refactor
   major:
     - breaking
     - major
