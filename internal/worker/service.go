@@ -602,6 +602,9 @@ func (s *Service) setupRoutes() {
 	s.router.Get("/api/update/status", s.handleUpdateStatus)
 	s.router.Post("/api/update/restart", s.handleUpdateRestart)
 
+	// Selfcheck endpoint (works before DB is ready - checks all components)
+	s.router.Get("/api/selfcheck", s.handleSelfCheck)
+
 	// SSE endpoint (works before DB is ready)
 	s.router.Get("/api/events", s.sseBroadcaster.HandleSSE)
 
@@ -668,11 +671,34 @@ func (s *Service) Start() error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Check if we're in restart mode (after update)
+	isRestart := os.Getenv("CLAUDE_MNEMONIC_RESTART") == "1"
+
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		if err := s.server.ListenAndServe(); err != http.ErrServerClosed {
-			log.Error().Err(err).Msg("HTTP server error")
+
+		var lastErr error
+		maxRetries := 1
+		if isRestart {
+			maxRetries = 10 // Retry up to 10 times during restart
+		}
+
+		for i := 0; i < maxRetries; i++ {
+			lastErr = s.server.ListenAndServe()
+			if lastErr == http.ErrServerClosed {
+				return // Normal shutdown
+			}
+
+			if i < maxRetries-1 && isRestart {
+				log.Warn().Err(lastErr).Int("retry", i+1).Msg("Port not ready, retrying...")
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+		}
+
+		if lastErr != nil {
+			log.Error().Err(lastErr).Msg("HTTP server error")
 		}
 	}()
 
@@ -681,6 +707,7 @@ func (s *Service) Start() error {
 	log.Info().
 		Int("port", port).
 		Int("pid", getPID()).
+		Bool("restart_mode", isRestart).
 		Msg("Worker HTTP server started (initialization in progress)")
 
 	return nil

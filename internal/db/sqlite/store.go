@@ -132,3 +132,8 @@ func (s *Store) QueryRowContext(ctx context.Context, query string, args ...inter
 	}
 	return stmt.QueryRowContext(ctx, args...)
 }
+
+// Ping checks if the database connection is alive.
+func (s *Store) Ping() error {
+	return s.db.Ping()
+}
