@@ -50,3 +50,16 @@ export interface SSEEvent {
 }
 
 export type FilterType = 'all' | 'observations' | 'summaries' | 'prompts'
+
+export interface ComponentHealth {
+  name: string
+  status: 'healthy' | 'degraded' | 'unhealthy'
+  message?: string
+}
+
+export interface SelfCheckResponse {
+  overall: 'healthy' | 'degraded' | 'unhealthy'
+  version: string
+  uptime: string
+  components: ComponentHealth[]
+}
