@@ -573,21 +573,30 @@ func (u *Updater) Restart() error {
 
 	log.Info().Str("path", workerPath).Msg("Restarting worker with new binary")
 
-	// Start the new process
-	cmd := exec.Command(workerPath) // #nosec G204 -- workerPath is from internal installDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
+	// Use nohup to start a detached process that survives parent exit
+	// The new worker will retry binding to the port after the old process exits
+	cmd := exec.Command("nohup", workerPath) // #nosec G204 -- workerPath is from internal installDir
+	cmd.Stdout = nil                         // Detach stdout
+	cmd.Stderr = nil                         // Detach stderr
+	cmd.Stdin = nil                          // Detach stdin
+	cmd.Env = append(os.Environ(), "CLAUDE_MNEMONIC_RESTART=1")
 
+	// Start in background - don't wait
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start new worker: %w", err)
 	}
 
-	// Give the new process time to start
-	time.Sleep(RestartDelay)
+	// Release the child process so it's not a zombie
+	go func() {
+		_ = cmd.Wait()
+	}()
 
-	// Exit current process - the new one is now running
 	log.Info().Int("new_pid", cmd.Process.Pid).Msg("New worker started, exiting old process")
+
+	// Give a moment for the log to flush
+	time.Sleep(100 * time.Millisecond)
+
+	// Exit current process - the new one will bind to the port
 	os.Exit(0)
 
 	return nil // Never reached
