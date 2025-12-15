@@ -58,9 +58,13 @@ func EnsureWorkerRunning() (int, error) {
 
 	// Check if already running and healthy
 	if IsWorkerRunning(port) {
-		// Check version - if mismatch, restart
+		// Check version - if mismatch, restart (unless both are dev builds)
 		if runningVersion := GetWorkerVersion(port); runningVersion != "" {
 			if runningVersion != Version {
+				// For dev/dirty builds, don't restart if base versions match
+				if versionsCompatible(runningVersion, Version) {
+					return port, nil
+				}
 				fmt.Fprintf(os.Stderr, "[claude-mnemonic] Worker version mismatch (running: %s, expected: %s), restarting...\n", runningVersion, Version)
 				if err := KillProcessOnPort(port); err != nil {
 					fmt.Fprintf(os.Stderr, "[claude-mnemonic] Warning: failed to kill old worker: %v\n", err)
@@ -274,4 +278,35 @@ func GET(port int, path string) (map[string]interface{}, error) {
 	}
 
 	return result, nil
+}
+
+// versionsCompatible checks if two versions are compatible for dev builds.
+// Returns true if both versions share the same base version (ignoring -dirty, -dev, commit suffixes).
+// This prevents unnecessary restarts during development.
+func versionsCompatible(v1, v2 string) bool {
+	// If either is a plain "dev" version, consider it compatible with anything
+	if v1 == "dev" || v2 == "dev" {
+		return true
+	}
+
+	// Extract base versions (e.g., "v0.3.5" from "v0.3.5-2-gca711a8-dirty")
+	base1 := extractBaseVersion(v1)
+	base2 := extractBaseVersion(v2)
+
+	// If base versions match, they're compatible
+	return base1 == base2
+}
+
+// extractBaseVersion extracts the semver base from a version string.
+// e.g., "v0.3.5-2-gca711a8-dirty" -> "0.3.5"
+func extractBaseVersion(version string) string {
+	// Remove leading 'v' if present
+	v := strings.TrimPrefix(version, "v")
+
+	// Find first hyphen (start of suffix like -2-gcommit-dirty)
+	if idx := strings.Index(v, "-"); idx > 0 {
+		v = v[:idx]
+	}
+
+	return v
 }
