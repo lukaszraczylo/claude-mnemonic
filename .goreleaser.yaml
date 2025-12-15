@@ -254,17 +254,10 @@ release:
 
 signs:
   - cmd: cosign
-    env:
-      - COSIGN_PASSWORD={{ .Env.COSIGN_PASSWORD }}
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
-      - "--key"
-      - "env://COSIGN_KEY"
-      - "--output-signature"
-      - "${signature}"
-      - "--output-certificate"
-      - "${certificate}"
+      - "--bundle=${signature}"
       - "${artifact}"
       - "--yes"
     artifacts: checksum
