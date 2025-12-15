@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watch } from 'vue'
-import { useSSE, useStats, useTimeline } from '@/composables'
+import { useSSE, useStats, useTimeline, useUpdate } from '@/composables'
 import Header from '@/components/Header.vue'
 import StatsCards from '@/components/StatsCards.vue'
 import FilterTabs from '@/components/FilterTabs.vue'
@@ -10,6 +10,7 @@ import Sidebar from '@/components/Sidebar.vue'
 // Composables
 const { isConnected, isProcessing, queueDepth, lastEvent } = useSSE()
 const { stats } = useStats()
+const { updateInfo, updateStatus, isUpdating, applyUpdate } = useUpdate()
 const {
   filteredItems,
   loading,
@@ -41,7 +42,11 @@ watch(lastEvent, (event) => {
     <Header
       :is-connected="isConnected"
       :is-processing="isProcessing"
+      :update-info="updateInfo"
+      :update-status="updateStatus"
+      :is-updating="isUpdating"
       @refresh="refresh"
+      @apply-update="applyUpdate"
     />
 
     <!-- Main Content -->

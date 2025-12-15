@@ -1,12 +1,25 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+import type { UpdateInfo, UpdateStatus } from '@/composables/useUpdate'
+
 defineProps<{
   isConnected: boolean
   isProcessing: boolean
+  updateInfo: UpdateInfo | null
+  updateStatus: UpdateStatus
+  isUpdating: boolean
 }>()
 
 const emit = defineEmits<{
   refresh: []
+  applyUpdate: []
 }>()
+
+const showUpdateModal = ref(false)
+
+const reloadPage = () => {
+  globalThis.location.reload()
+}
 </script>
 
 <template>
@@ -26,6 +39,41 @@ const emit = defineEmits<{
 
         <!-- Status & Actions -->
         <div class="flex items-center gap-4">
+          <!-- Update Available Indicator -->
+          <div v-if="updateInfo?.available && !isUpdating && updateStatus.state === 'idle'" class="relative">
+            <button
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/50 text-amber-400 hover:bg-amber-500/30 transition-colors text-sm"
+              @click="showUpdateModal = true"
+            >
+              <i class="fas fa-arrow-circle-up" />
+              <span>v{{ updateInfo.latest_version }}</span>
+            </button>
+          </div>
+
+          <!-- Update In Progress -->
+          <div v-else-if="isUpdating" class="flex items-center gap-2 text-amber-400 text-sm">
+            <i class="fas fa-spinner animate-spin" />
+            <span>{{ updateStatus.message || 'Updating...' }}</span>
+            <span class="text-slate-500">{{ Math.round(updateStatus.progress * 100) }}%</span>
+          </div>
+
+          <!-- Update Complete -->
+          <div v-else-if="updateStatus.state === 'done'" class="flex items-center gap-2">
+            <button
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-green-500/20 border border-green-500/50 text-green-400 hover:bg-green-500/30 transition-colors text-sm"
+              @click="reloadPage"
+            >
+              <i class="fas fa-check-circle" />
+              <span>Restart</span>
+            </button>
+          </div>
+
+          <!-- Update Error -->
+          <div v-else-if="updateStatus.state === 'error'" class="flex items-center gap-2 text-red-400 text-sm" :title="updateStatus.error">
+            <i class="fas fa-exclamation-circle" />
+            <span>Update failed</span>
+          </div>
+
           <!-- Connection Status -->
           <div class="flex items-center gap-2">
             <span
@@ -51,5 +99,52 @@ const emit = defineEmits<{
         </div>
       </div>
     </div>
+
+    <!-- Update Modal -->
+    <Teleport to="body">
+      <div v-if="showUpdateModal" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <!-- Backdrop -->
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="showUpdateModal = false" />
+
+        <!-- Modal -->
+        <div class="relative glass border border-white/10 rounded-2xl p-6 max-w-md w-full shadow-2xl">
+          <button
+            class="absolute top-4 right-4 text-slate-400 hover:text-white"
+            @click="showUpdateModal = false"
+          >
+            <i class="fas fa-times" />
+          </button>
+
+          <div class="text-center mb-6">
+            <div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center">
+              <i class="fas fa-arrow-circle-up text-3xl text-white" />
+            </div>
+            <h3 class="text-xl font-bold text-white mb-1">Update Available</h3>
+            <p class="text-slate-400 text-sm">
+              v{{ updateInfo?.current_version }} → v{{ updateInfo?.latest_version }}
+            </p>
+          </div>
+
+          <div class="space-y-3">
+            <button
+              class="w-full py-3 rounded-xl bg-amber-500 text-slate-900 font-semibold hover:bg-amber-400 transition-colors"
+              @click="emit('applyUpdate'); showUpdateModal = false"
+            >
+              Update Now
+            </button>
+            <button
+              class="w-full py-3 rounded-xl bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white transition-colors"
+              @click="showUpdateModal = false"
+            >
+              Later
+            </button>
+          </div>
+
+          <p class="text-center text-slate-500 text-xs mt-4">
+            Updates are verified with cosign signatures
+          </p>
+        </div>
+      </div>
+    </Teleport>
   </header>
 </template>

@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/update"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/chroma"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/watcher"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sdk"
@@ -97,6 +98,9 @@ type Service struct {
 	// File watchers for auto-recreation on deletion
 	dbWatcher     *watcher.Watcher
 	configWatcher *watcher.Watcher
+
+	// Self-updater
+	updater *update.Updater
 }
 
 // staleVerifyRequest represents a request to verify a stale observation in background
@@ -118,6 +122,10 @@ func NewService(version string) (*Service, error) {
 	router := chi.NewRouter()
 	sseBroadcaster := sse.NewBroadcaster()
 
+	// Determine install directory (plugin location)
+	homeDir, _ := os.UserHomeDir()
+	installDir := fmt.Sprintf("%s/.claude/plugins/marketplaces/claude-mnemonic", homeDir)
+
 	svc := &Service{
 		version:        version,
 		config:         cfg,
@@ -126,6 +134,7 @@ func NewService(version string) (*Service, error) {
 		ctx:            ctx,
 		cancel:         cancel,
 		startTime:      time.Now(),
+		updater:        update.New(version, installDir),
 	}
 
 	// Setup middleware and routes (health endpoint works immediately)
@@ -586,6 +595,11 @@ func (s *Service) setupRoutes() {
 
 	// Readiness check - returns 200 only when fully initialized
 	s.router.Get("/api/ready", s.handleReady)
+
+	// Update endpoints (work before DB is ready)
+	s.router.Get("/api/update/check", s.handleUpdateCheck)
+	s.router.Post("/api/update/apply", s.handleUpdateApply)
+	s.router.Get("/api/update/status", s.handleUpdateStatus)
 
 	// SSE endpoint (works before DB is ready)
 	s.router.Get("/api/events", s.sseBroadcaster.HandleSSE)
