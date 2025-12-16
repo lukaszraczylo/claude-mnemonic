@@ -736,9 +736,13 @@ func (s *Service) processQueue() {
 }
 
 // processAllSessions processes pending messages for all active sessions.
+// Messages are processed in parallel using goroutines, with concurrency
+// limited by the processor's semaphore.
 func (s *Service) processAllSessions() {
 	// Get all sessions with pending messages
 	sessions := s.sessionManager.GetAllSessions()
+
+	var wg sync.WaitGroup
 
 	for _, sess := range sessions {
 		// Get pending messages
@@ -747,52 +751,61 @@ func (s *Service) processAllSessions() {
 			continue
 		}
 
-		// Process each message
+		// Process each message in a goroutine
 		for _, msg := range messages {
-			switch msg.Type {
-			case session.MessageTypeObservation:
-				if msg.Observation != nil {
-					err := s.processor.ProcessObservation(
-						s.ctx,
-						sess.SDKSessionID,
-						sess.Project,
-						msg.Observation.ToolName,
-						msg.Observation.ToolInput,
-						msg.Observation.ToolResponse,
-						msg.Observation.PromptNumber,
-						msg.Observation.CWD,
-					)
-					if err != nil {
-						log.Error().Err(err).
-							Str("tool", msg.Observation.ToolName).
-							Msg("Failed to process observation")
-					}
-				}
+			wg.Add(1)
+			go func(sess *session.ActiveSession, msg session.PendingMessage) {
+				defer wg.Done()
 
-			case session.MessageTypeSummarize:
-				if msg.Summarize != nil {
-					err := s.processor.ProcessSummary(
-						s.ctx,
-						sess.SessionDBID,
-						sess.SDKSessionID,
-						sess.Project,
-						sess.UserPrompt,
-						msg.Summarize.LastUserMessage,
-						msg.Summarize.LastAssistantMessage,
-					)
-					if err != nil {
-						log.Error().Err(err).
-							Int64("sessionId", sess.SessionDBID).
-							Msg("Failed to process summary")
+				switch msg.Type {
+				case session.MessageTypeObservation:
+					if msg.Observation != nil {
+						err := s.processor.ProcessObservation(
+							s.ctx,
+							sess.SDKSessionID,
+							sess.Project,
+							msg.Observation.ToolName,
+							msg.Observation.ToolInput,
+							msg.Observation.ToolResponse,
+							msg.Observation.PromptNumber,
+							msg.Observation.CWD,
+						)
+						if err != nil {
+							log.Error().Err(err).
+								Str("tool", msg.Observation.ToolName).
+								Msg("Failed to process observation")
+						}
 					}
-					// Delete session after summary
-					s.sessionManager.DeleteSession(sess.SessionDBID)
+
+				case session.MessageTypeSummarize:
+					if msg.Summarize != nil {
+						err := s.processor.ProcessSummary(
+							s.ctx,
+							sess.SessionDBID,
+							sess.SDKSessionID,
+							sess.Project,
+							sess.UserPrompt,
+							msg.Summarize.LastUserMessage,
+							msg.Summarize.LastAssistantMessage,
+						)
+						if err != nil {
+							log.Error().Err(err).
+								Int64("sessionId", sess.SessionDBID).
+								Msg("Failed to process summary")
+						}
+						// Delete session after summary
+						s.sessionManager.DeleteSession(sess.SessionDBID)
+					}
 				}
-			}
+			}(sess, msg)
 		}
-
-		s.broadcastProcessingStatus()
 	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	// Broadcast status after processing
+	s.broadcastProcessingStatus()
 }
 
 // Shutdown gracefully shuts down the service.
