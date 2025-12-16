@@ -655,6 +655,7 @@ func (s *Service) setupRoutes() {
 		r.Get("/api/projects", s.handleGetProjects)
 		r.Get("/api/stats", s.handleGetStats)
 		r.Get("/api/stats/retrieval", s.handleGetRetrievalStats)
+		r.Get("/api/types", s.handleGetTypes)
 
 		// Context injection
 		r.Get("/api/context/count", s.handleContextCount)

@@ -123,17 +123,9 @@ func (p *Processor) ProcessObservation(ctx context.Context, sdkSessionID, projec
 
 	log.Info().Str("tool", toolName).Msg("Processing tool execution with Claude CLI")
 
-	// Check if we already have observations for this file (skip if covered)
-	if filePath := extractFilePath(toolName, inputStr); filePath != "" {
-		exists, err := p.observationStore.ExistsSimilarObservation(ctx, project, []string{filePath}, nil)
-		if err == nil && exists {
-			log.Debug().
-				Str("tool", toolName).
-				Str("file", filePath).
-				Msg("Skipping - file already has observations")
-			return nil
-		}
-	}
+	// Note: Removed the "file already has observations" check
+	// Each tool execution can produce unique insights even for the same file
+	// Similarity-based deduplication will handle true duplicates
 
 	// Build the prompt
 	exec := ToolExecution{
@@ -413,8 +405,9 @@ func shouldSkipTool(toolName string) bool {
 // shouldSkipTrivialOperation performs local pre-filtering to skip trivial operations
 // without making a Haiku API call. Returns true if the operation is too trivial to process.
 func shouldSkipTrivialOperation(toolName, inputStr, outputStr string) bool {
-	// Skip if output is too small to be meaningful (less than 100 chars)
-	if len(outputStr) < 100 {
+	// Skip if output is too small to be meaningful (less than 50 chars)
+	// Reduced from 100 to capture more meaningful small operations
+	if len(outputStr) < 50 {
 		return true
 	}
 
@@ -475,36 +468,6 @@ func shouldSkipTrivialOperation(toolName, inputStr, outputStr string) bool {
 	}
 
 	return false
-}
-
-// extractFilePath extracts the file path from tool input for deduplication.
-func extractFilePath(toolName, inputStr string) string {
-	if inputStr == "" {
-		return ""
-	}
-
-	var input map[string]interface{}
-	if err := json.Unmarshal([]byte(inputStr), &input); err != nil {
-		return ""
-	}
-
-	// Handle different tool input formats
-	switch toolName {
-	case "Read":
-		if fp, ok := input["file_path"].(string); ok {
-			return fp
-		}
-	case "Grep", "Search":
-		if path, ok := input["path"].(string); ok {
-			return path
-		}
-	case "Edit", "Write":
-		if fp, ok := input["file_path"].(string); ok {
-			return fp
-		}
-	}
-
-	return ""
 }
 
 // toJSONString converts an interface to a JSON string.
@@ -767,11 +730,17 @@ func hasMeaningfulContent(assistantMsg string) bool {
 const systemPrompt = `You are a memory extraction agent for Claude Code sessions. Your job is to analyze tool executions and extract meaningful observations that would be useful for future sessions.
 
 GUIDELINES:
-1. Only create observations for SIGNIFICANT learnings - not every tool call needs one
-2. Focus on: decisions made, bugs fixed, patterns discovered, project structure learned
-3. Skip trivial operations like simple file reads without insights
+1. Create observations for any meaningful learnings - be generous, not restrictive
+2. Focus on: decisions made, bugs fixed, patterns discovered, project structure, code changes, refactoring
+3. Even small changes can be worth remembering if they reveal something about the codebase
 4. Be concise but informative in your observations
 5. Use appropriate type tags: decision, bugfix, feature, refactor, discovery, change
+
+CONCEPT TAGS (use 1-3 of these):
+- how-it-works, why-it-exists, what-changed, problem-solution, gotcha
+- pattern, trade-off, best-practice, anti-pattern, architecture
+- security, performance, testing, debugging, workflow, tooling
+- refactoring, api, database, configuration, error-handling
 
 OUTPUT FORMAT:
 When you find something worth remembering, output:
@@ -794,5 +763,7 @@ When you find something worth remembering, output:
 </files_modified>
 </observation>
 
-If the tool execution is not noteworthy, simply respond with:
-<skip reason="not significant"/>`
+If the tool execution is truly trivial (just a directory listing, empty result, etc.), respond with:
+<skip reason="trivial"/>
+
+Prefer creating observations over skipping - memories are valuable for future context!`

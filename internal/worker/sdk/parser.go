@@ -27,8 +27,9 @@ var (
 		"decision":  true,
 	}
 
-	// Valid concepts (strict list - no custom tags allowed)
+	// Valid concepts - expanded list matching GlobalizableConcepts and common use cases
 	validConcepts = map[string]bool{
+		// Semantic concepts
 		"how-it-works":     true,
 		"why-it-exists":    true,
 		"what-changed":     true,
@@ -36,6 +37,26 @@ var (
 		"gotcha":           true,
 		"pattern":          true,
 		"trade-off":        true,
+		// Globalizable concepts (from models.GlobalizableConcepts)
+		"best-practice": true,
+		"anti-pattern":  true,
+		"architecture":  true,
+		"security":      true,
+		"performance":   true,
+		"testing":       true,
+		"debugging":     true,
+		"workflow":      true,
+		"tooling":       true,
+		// Additional useful concepts
+		"refactoring":    true,
+		"api":            true,
+		"database":       true,
+		"configuration":  true,
+		"error-handling": true,
+		"caching":        true,
+		"logging":        true,
+		"auth":           true,
+		"validation":     true,
 	}
 )
 

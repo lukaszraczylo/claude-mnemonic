@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { FilterType, ObservationType, ConceptType } from '@/types'
-import { OBSERVATION_TYPES, CONCEPT_TYPES } from '@/types/observation'
+import { useTypes } from '@/composables/useTypes'
 
 defineProps<{
   currentFilter: FilterType
@@ -15,6 +15,9 @@ const emit = defineEmits<{
   'update:typeFilter': [type: ObservationType | null]
   'update:conceptFilter': [concept: ConceptType | null]
 }>()
+
+// Fetch types from API (cached)
+const { observationTypes, conceptTypes } = useTypes()
 
 const tabs: { key: FilterType; label: string; icon: string }[] = [
   { key: 'all', label: 'All', icon: 'fa-layer-group' },
@@ -63,7 +66,7 @@ const tabs: { key: FilterType; label: string; icon: string }[] = [
             @change="emit('update:typeFilter', ($event.target as HTMLSelectElement).value as ObservationType || null)"
           >
             <option value="">All Types</option>
-            <option v-for="type in OBSERVATION_TYPES" :key="type" :value="type">
+            <option v-for="type in observationTypes" :key="type" :value="type">
               {{ type }}
             </option>
           </select>
@@ -78,7 +81,7 @@ const tabs: { key: FilterType; label: string; icon: string }[] = [
             @change="emit('update:conceptFilter', ($event.target as HTMLSelectElement).value as ConceptType || null)"
           >
             <option value="">All Concepts</option>
-            <option v-for="concept in CONCEPT_TYPES" :key="concept" :value="concept">
+            <option v-for="concept in conceptTypes" :key="concept" :value="concept">
               {{ concept }}
             </option>
           </select>
