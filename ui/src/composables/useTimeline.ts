@@ -112,6 +112,7 @@ export function useTimeline() {
   // Watch for SSE events and refresh
   watch(lastEvent, (event) => {
     if (event && (event.type === 'observation' || event.type === 'prompt' || event.type === 'summary')) {
+      console.log('[Timeline] SSE event triggered refresh:', event.type)
       refresh()
     }
   })
