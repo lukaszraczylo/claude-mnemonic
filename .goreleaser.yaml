@@ -8,7 +8,8 @@ project_name: claude-mnemonic
 before:
   hooks:
     - go mod tidy
-    # Build Vue dashboard and embed in binary
+    # Generate versioned package.json from template and build Vue dashboard
+    - bash -c "sed 's/{{ .Version }}/{{ .Version }}/g' ui/package.json.tpl > ui/package.json"
     - bash -c "cd ui && npm ci --silent && npm run build"
     - bash -c "rm -rf internal/worker/static && mkdir -p internal/worker/static && cp -r ui/dist/* internal/worker/static/"
 
