@@ -14,15 +14,9 @@ before:
     - bash -c "sed 's/{{ .Version }}/{{ .Version }}/g' ui/package.json.tpl > ui/package.json"
     - bash -c "cd ui && npm ci --silent && npm run build"
     - bash -c "rm -rf internal/worker/static && mkdir -p internal/worker/static && cp -r ui/dist/* internal/worker/static/"
-
-# Generate versioned plugin configuration files (GoReleaser Pro)
-template_files:
-  - id: plugin-json
-    src: plugin/.claude-plugin/plugin.json.tpl
-    dst: .claude-plugin/plugin.json
-  - id: marketplace-json
-    src: plugin/.claude-plugin/marketplace.json.tpl
-    dst: .claude-plugin/marketplace.json
+    # Generate plugin config files (must be before archives, using GORELEASER_CURRENT_TAG)
+    - bash -c "mkdir -p .claude-plugin && VERSION=${GORELEASER_CURRENT_TAG#v} && sed \"s/{{.Version}}/$VERSION/g; s/{{ .Version }}/$VERSION/g\" plugin/.claude-plugin/plugin.json.tpl > .claude-plugin/plugin.json"
+    - bash -c "VERSION=${GORELEASER_CURRENT_TAG#v} && sed \"s/{{.Version}}/$VERSION/g; s/{{ .Version }}/$VERSION/g\" plugin/.claude-plugin/marketplace.json.tpl > .claude-plugin/marketplace.json"
 
 builds:
   # Worker service
@@ -238,7 +232,7 @@ archives:
       {{- .Os }}_
       {{- .Arch }}
     files:
-      - src: dist/.claude-plugin/*
+      - src: .claude-plugin/*
         dst: .claude-plugin
         strip_parent: true
       - src: plugin/hooks/hooks.json
@@ -269,6 +263,10 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
+  # Upload plugin config files
+  extra_files:
+    - glob: .claude-plugin/plugin.json
+    - glob: .claude-plugin/marketplace.json
   header: |
     ## Claude Mnemonic v{{.Version}}
 
