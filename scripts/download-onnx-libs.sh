@@ -16,6 +16,7 @@ if [ "$PLATFORM" = "auto" ]; then
     case "$OS" in
         darwin) OS="darwin" ;;
         linux) OS="linux" ;;
+        mingw*|msys*|cygwin*) OS="windows" ;;
         *) echo "Unsupported OS: $OS"; exit 1 ;;
     esac
     case "$ARCH" in
@@ -64,12 +65,21 @@ download_linux_arm64() {
     cp "${TEMP_DIR}/onnxruntime-linux-aarch64-${ONNX_VERSION}/lib/libonnxruntime_providers_shared.so" "${ASSETS_DIR}/linux-arm64/libonnxruntime_providers_shared.so" 2>/dev/null || true
 }
 
+download_windows_amd64() {
+    echo "Downloading windows-amd64..."
+    mkdir -p "${ASSETS_DIR}/windows-amd64"
+    curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-win-x64-${ONNX_VERSION}.zip" -o "${TEMP_DIR}/windows-amd64.zip"
+    unzip -q "${TEMP_DIR}/windows-amd64.zip" -d "${TEMP_DIR}"
+    cp "${TEMP_DIR}/onnxruntime-win-x64-${ONNX_VERSION}/lib/onnxruntime.dll" "${ASSETS_DIR}/windows-amd64/onnxruntime.dll"
+}
+
 # Check if library already exists for a platform
 lib_exists() {
     local plat="$1"
     case "$plat" in
         darwin-*) [ -f "${ASSETS_DIR}/${plat}/libonnxruntime.dylib" ] ;;
         linux-*) [ -f "${ASSETS_DIR}/${plat}/libonnxruntime.so" ] ;;
+        windows-*) [ -f "${ASSETS_DIR}/${plat}/onnxruntime.dll" ] ;;
         *) return 1 ;;
     esac
 }
@@ -86,13 +96,14 @@ download_if_needed() {
         darwin-arm64) download_darwin_arm64 ;;
         linux-amd64) download_linux_amd64 ;;
         linux-arm64) download_linux_arm64 ;;
+        windows-amd64) download_windows_amd64 ;;
     esac
 }
 
 echo "ONNX Runtime v${ONNX_VERSION} - Platform: ${PLATFORM}"
 
 case "$PLATFORM" in
-    darwin-amd64|darwin-arm64|linux-amd64|linux-arm64)
+    darwin-amd64|darwin-arm64|linux-amd64|linux-arm64|windows-amd64)
         download_if_needed "$PLATFORM"
         ;;
     all)
@@ -100,10 +111,11 @@ case "$PLATFORM" in
         download_if_needed darwin-arm64
         download_if_needed linux-amd64
         download_if_needed linux-arm64
+        download_if_needed windows-amd64
         ;;
     *)
         echo "Unknown platform: $PLATFORM"
-        echo "Supported: darwin-amd64, darwin-arm64, linux-amd64, linux-arm64, all, auto"
+        echo "Supported: darwin-amd64, darwin-arm64, linux-amd64, linux-arm64, windows-amd64, all, auto"
         exit 1
         ;;
 esac
