@@ -1,5 +1,5 @@
-// Package chroma provides ChromaDB vector database integration for claude-mnemonic.
-package chroma
+// Package sqlitevec provides sqlite-vec based vector database integration for claude-mnemonic.
+package sqlitevec
 
 import (
 	"context"
@@ -9,17 +9,17 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Sync provides synchronization between SQLite and ChromaDB.
+// Sync provides synchronization between SQLite data and vector embeddings.
 type Sync struct {
 	client *Client
 }
 
-// NewSync creates a new ChromaDB sync service.
+// NewSync creates a new sync service.
 func NewSync(client *Client) *Sync {
 	return &Sync{client: client}
 }
 
-// SyncObservation syncs a single observation to ChromaDB.
+// SyncObservation syncs a single observation to the vector store.
 func (s *Sync) SyncObservation(ctx context.Context, obs *models.Observation) error {
 	docs := s.formatObservationDocs(obs)
 	if len(docs) == 0 {
@@ -33,12 +33,12 @@ func (s *Sync) SyncObservation(ctx context.Context, obs *models.Observation) err
 	log.Debug().
 		Int64("observationId", obs.ID).
 		Int("docCount", len(docs)).
-		Msg("Synced observation to ChromaDB")
+		Msg("Synced observation to sqlite-vec")
 
 	return nil
 }
 
-// formatObservationDocs formats an observation into ChromaDB documents.
+// formatObservationDocs formats an observation into vector documents.
 // Each semantic field becomes a separate vector document (granular approach).
 func (s *Sync) formatObservationDocs(obs *models.Observation) []Document {
 	docs := make([]Document, 0, len(obs.Facts)+2)
@@ -99,7 +99,7 @@ func (s *Sync) formatObservationDocs(obs *models.Observation) []Document {
 	return docs
 }
 
-// SyncSummary syncs a single session summary to ChromaDB.
+// SyncSummary syncs a single session summary to the vector store.
 func (s *Sync) SyncSummary(ctx context.Context, summary *models.SessionSummary) error {
 	docs := s.formatSummaryDocs(summary)
 	if len(docs) == 0 {
@@ -113,12 +113,12 @@ func (s *Sync) SyncSummary(ctx context.Context, summary *models.SessionSummary) 
 	log.Debug().
 		Int64("summaryId", summary.ID).
 		Int("docCount", len(docs)).
-		Msg("Synced summary to ChromaDB")
+		Msg("Synced summary to sqlite-vec")
 
 	return nil
 }
 
-// formatSummaryDocs formats a session summary into ChromaDB documents.
+// formatSummaryDocs formats a session summary into vector documents.
 func (s *Sync) formatSummaryDocs(summary *models.SessionSummary) []Document {
 	docs := make([]Document, 0, 6)
 
@@ -127,6 +127,7 @@ func (s *Sync) formatSummaryDocs(summary *models.SessionSummary) []Document {
 		"doc_type":         "session_summary",
 		"sdk_session_id":   summary.SDKSessionID,
 		"project":          summary.Project,
+		"scope":            "", // Summaries don't have scope
 		"created_at_epoch": summary.CreatedAtEpoch,
 	}
 
@@ -161,7 +162,7 @@ func (s *Sync) formatSummaryDocs(summary *models.SessionSummary) []Document {
 	return docs
 }
 
-// SyncUserPrompt syncs a single user prompt to ChromaDB.
+// SyncUserPrompt syncs a single user prompt to the vector store.
 func (s *Sync) SyncUserPrompt(ctx context.Context, prompt *models.UserPromptWithSession) error {
 	doc := Document{
 		ID:      fmt.Sprintf("prompt_%d", prompt.ID),
@@ -171,8 +172,10 @@ func (s *Sync) SyncUserPrompt(ctx context.Context, prompt *models.UserPromptWith
 			"doc_type":         "user_prompt",
 			"sdk_session_id":   prompt.SDKSessionID,
 			"project":          prompt.Project,
+			"scope":            "", // Prompts don't have scope
 			"created_at_epoch": prompt.CreatedAtEpoch,
 			"prompt_number":    prompt.PromptNumber,
+			"field_type":       "prompt",
 		},
 	}
 
@@ -182,14 +185,12 @@ func (s *Sync) SyncUserPrompt(ctx context.Context, prompt *models.UserPromptWith
 
 	log.Debug().
 		Int64("promptId", prompt.ID).
-		Msg("Synced user prompt to ChromaDB")
+		Msg("Synced user prompt to sqlite-vec")
 
 	return nil
 }
 
-// DeleteObservations removes observation documents from ChromaDB.
-// Since each observation may have multiple documents (narrative + facts),
-// we delete by the sqlite_id metadata prefix pattern.
+// DeleteObservations removes observation documents from the vector store.
 func (s *Sync) DeleteObservations(ctx context.Context, observationIDs []int64) error {
 	if len(observationIDs) == 0 {
 		return nil
@@ -197,7 +198,6 @@ func (s *Sync) DeleteObservations(ctx context.Context, observationIDs []int64) e
 
 	// Generate all possible document IDs for these observations
 	// Pattern: obs_{id}_narrative, obs_{id}_fact_{0..n}
-	// Since we don't know how many facts each had, we use a reasonable upper bound
 	const maxFactsPerObs = 20
 	ids := make([]string, 0, len(observationIDs)*(maxFactsPerObs+1))
 
@@ -214,18 +214,17 @@ func (s *Sync) DeleteObservations(ctx context.Context, observationIDs []int64) e
 
 	log.Debug().
 		Int("observationCount", len(observationIDs)).
-		Msg("Deleted observations from ChromaDB")
+		Msg("Deleted observations from sqlite-vec")
 
 	return nil
 }
 
-// DeleteUserPrompts removes user prompt documents from ChromaDB.
+// DeleteUserPrompts removes user prompt documents from the vector store.
 func (s *Sync) DeleteUserPrompts(ctx context.Context, promptIDs []int64) error {
 	if len(promptIDs) == 0 {
 		return nil
 	}
 
-	// Each prompt is stored as a single document with ID pattern: prompt_{id}
 	ids := make([]string, len(promptIDs))
 	for i, promptID := range promptIDs {
 		ids[i] = fmt.Sprintf("prompt_%d", promptID)
@@ -237,40 +236,7 @@ func (s *Sync) DeleteUserPrompts(ctx context.Context, promptIDs []int64) error {
 
 	log.Debug().
 		Int("promptCount", len(promptIDs)).
-		Msg("Deleted user prompts from ChromaDB")
+		Msg("Deleted user prompts from sqlite-vec")
 
 	return nil
-}
-
-// Helper functions
-
-func copyMetadata(base map[string]any, key string, value any) map[string]any {
-	result := make(map[string]any, len(base)+1)
-	for k, v := range base {
-		result[k] = v
-	}
-	result[key] = value
-	return result
-}
-
-func copyMetadataMulti(base map[string]any, extra map[string]any) map[string]any {
-	result := make(map[string]any, len(base)+len(extra))
-	for k, v := range base {
-		result[k] = v
-	}
-	for k, v := range extra {
-		result[k] = v
-	}
-	return result
-}
-
-func joinStrings(strs []string, sep string) string {
-	if len(strs) == 0 {
-		return ""
-	}
-	result := strs[0]
-	for i := 1; i < len(strs); i++ {
-		result += sep + strs[i]
-	}
-	return result
 }

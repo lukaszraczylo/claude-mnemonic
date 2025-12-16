@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 
+	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -26,6 +27,9 @@ type StoreConfig struct {
 
 // NewStore creates a new database store with the given configuration.
 func NewStore(cfg StoreConfig) (*Store, error) {
+	// Register sqlite-vec extension for vector operations
+	sqlite_vec.Auto()
+
 	// Build connection string with pragmas
 	connStr := cfg.Path + "?_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=ON"
 
@@ -136,4 +140,10 @@ func (s *Store) QueryRowContext(ctx context.Context, query string, args ...inter
 // Ping checks if the database connection is alive.
 func (s *Store) Ping() error {
 	return s.db.Ping()
+}
+
+// DB returns the underlying database connection for direct access.
+// Use this sparingly - prefer the store methods for most operations.
+func (s *Store) DB() *sql.DB {
+	return s.db
 }

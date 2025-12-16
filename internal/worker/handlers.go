@@ -11,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/privacy"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/chroma"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sdk"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/session"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
@@ -202,7 +202,7 @@ func (s *Service) handleSessionInit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to save user prompt")
 		// Non-fatal: continue with session initialization
-	} else if s.chromaSync != nil {
+	} else if s.vectorSync != nil {
 		// Sync to vector DB asynchronously (non-blocking)
 		now := time.Now()
 		promptWithSession := &models.UserPromptWithSession{
@@ -221,8 +221,8 @@ func (s *Service) handleSessionInit(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := s.chromaSync.SyncUserPrompt(ctx, promptWithSession); err != nil {
-				log.Warn().Err(err).Int64("id", promptID).Msg("Failed to sync user prompt to ChromaDB")
+			if err := s.vectorSync.SyncUserPrompt(ctx, promptWithSession); err != nil {
+				log.Warn().Err(err).Int64("id", promptID).Msg("Failed to sync user prompt to sqlite-vec")
 			}
 		}()
 	}
@@ -450,7 +450,7 @@ func (s *Service) handleSummarize(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetObservations returns recent observations.
-// Supports optional query parameter for semantic search via ChromaDB.
+// Supports optional query parameter for semantic search via sqlite-vec.
 func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) {
 	limit := sqlite.ParseLimitParam(r, DefaultObservationsLimit)
 	project := r.URL.Query().Get("project")
@@ -458,25 +458,25 @@ func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) 
 
 	var observations []*models.Observation
 	var err error
-	var usedChroma bool
+	var usedVector bool
 
-	// Use ChromaDB if query is provided and ChromaDB is available
-	if query != "" && s.chromaClient != nil && s.chromaClient.IsConnected() {
-		where := chroma.BuildWhereFilter(chroma.DocTypeObservation, "")
-		chromaResults, chromaErr := s.chromaClient.Query(r.Context(), query, limit*2, where)
-		if chromaErr == nil && len(chromaResults) > 0 {
-			obsIDs := chroma.ExtractObservationIDs(chromaResults, project)
+	// Use vector search if query is provided and vector client is available
+	if query != "" && s.vectorClient != nil && s.vectorClient.IsConnected() {
+		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeObservation, "")
+		vectorResults, vecErr := s.vectorClient.Query(r.Context(), query, limit*2, where)
+		if vecErr == nil && len(vectorResults) > 0 {
+			obsIDs := sqlitevec.ExtractObservationIDs(vectorResults, project)
 			if len(obsIDs) > 0 {
 				observations, err = s.observationStore.GetObservationsByIDs(r.Context(), obsIDs, "date_desc", limit)
 				if err == nil {
-					usedChroma = true
+					usedVector = true
 				}
 			}
 		}
 	}
 
-	// Fall back to SQLite if ChromaDB not used
-	if !usedChroma {
+	// Fall back to SQLite if vector search not used
+	if !usedVector {
 		if project != "" {
 			// Filter by project - includes project-scoped and global observations
 			observations, err = s.observationStore.GetRecentObservations(r.Context(), project, limit)
@@ -499,7 +499,7 @@ func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleGetSummaries returns recent summaries.
-// Supports optional query parameter for semantic search via ChromaDB.
+// Supports optional query parameter for semantic search via sqlite-vec.
 func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
 	limit := sqlite.ParseLimitParam(r, DefaultSummariesLimit)
 	project := r.URL.Query().Get("project")
@@ -507,25 +507,25 @@ func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
 
 	var summaries []*models.SessionSummary
 	var err error
-	var usedChroma bool
+	var usedVector bool
 
-	// Use ChromaDB if query is provided and ChromaDB is available
-	if query != "" && s.chromaClient != nil && s.chromaClient.IsConnected() {
-		where := chroma.BuildWhereFilter(chroma.DocTypeSessionSummary, "")
-		chromaResults, chromaErr := s.chromaClient.Query(r.Context(), query, limit*2, where)
-		if chromaErr == nil && len(chromaResults) > 0 {
-			summaryIDs := chroma.ExtractSummaryIDs(chromaResults, project)
+	// Use vector search if query is provided and vector client is available
+	if query != "" && s.vectorClient != nil && s.vectorClient.IsConnected() {
+		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeSessionSummary, "")
+		vectorResults, vecErr := s.vectorClient.Query(r.Context(), query, limit*2, where)
+		if vecErr == nil && len(vectorResults) > 0 {
+			summaryIDs := sqlitevec.ExtractSummaryIDs(vectorResults, project)
 			if len(summaryIDs) > 0 {
 				summaries, err = s.summaryStore.GetSummariesByIDs(r.Context(), summaryIDs, "date_desc", limit)
 				if err == nil {
-					usedChroma = true
+					usedVector = true
 				}
 			}
 		}
 	}
 
-	// Fall back to SQLite if ChromaDB not used
-	if !usedChroma {
+	// Fall back to SQLite if vector search not used
+	if !usedVector {
 		if project != "" {
 			summaries, err = s.summaryStore.GetRecentSummaries(r.Context(), project, limit)
 		} else {
@@ -546,7 +546,7 @@ func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetPrompts returns recent user prompts.
-// Supports optional query parameter for semantic search via ChromaDB.
+// Supports optional query parameter for semantic search via sqlite-vec.
 func (s *Service) handleGetPrompts(w http.ResponseWriter, r *http.Request) {
 	limit := sqlite.ParseLimitParam(r, DefaultPromptsLimit)
 	project := r.URL.Query().Get("project")
@@ -554,25 +554,25 @@ func (s *Service) handleGetPrompts(w http.ResponseWriter, r *http.Request) {
 
 	var prompts []*models.UserPromptWithSession
 	var err error
-	var usedChroma bool
+	var usedVector bool
 
-	// Use ChromaDB if query is provided and ChromaDB is available
-	if query != "" && s.chromaClient != nil && s.chromaClient.IsConnected() {
-		where := chroma.BuildWhereFilter(chroma.DocTypeUserPrompt, "")
-		chromaResults, chromaErr := s.chromaClient.Query(r.Context(), query, limit*2, where)
-		if chromaErr == nil && len(chromaResults) > 0 {
-			promptIDs := chroma.ExtractPromptIDs(chromaResults, project)
+	// Use vector search if query is provided and vector client is available
+	if query != "" && s.vectorClient != nil && s.vectorClient.IsConnected() {
+		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeUserPrompt, "")
+		vectorResults, vecErr := s.vectorClient.Query(r.Context(), query, limit*2, where)
+		if vecErr == nil && len(vectorResults) > 0 {
+			promptIDs := sqlitevec.ExtractPromptIDs(vectorResults, project)
 			if len(promptIDs) > 0 {
 				prompts, err = s.promptStore.GetPromptsByIDs(r.Context(), promptIDs, "date_desc", limit)
 				if err == nil {
-					usedChroma = true
+					usedVector = true
 				}
 			}
 		}
 	}
 
-	// Fall back to SQLite if ChromaDB not used
-	if !usedChroma {
+	// Fall back to SQLite if vector search not used
+	if !usedVector {
 		if project != "" {
 			prompts, err = s.promptStore.GetRecentUserPromptsByProject(r.Context(), project, limit)
 		} else {
@@ -683,29 +683,29 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 
 	var observations []*models.Observation
 	var err error
-	var usedChroma bool
+	var usedVector bool
 
-	// Try ChromaDB vector search first if available
-	if s.chromaClient != nil && s.chromaClient.IsConnected() {
-		where := chroma.BuildWhereFilter(chroma.DocTypeObservation, "")
+	// Try vector search first if available
+	if s.vectorClient != nil && s.vectorClient.IsConnected() {
+		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeObservation, "")
 
-		chromaResults, chromaErr := s.chromaClient.Query(r.Context(), query, limit*2, where)
-		if chromaErr == nil && len(chromaResults) > 0 {
+		vectorResults, vecErr := s.vectorClient.Query(r.Context(), query, limit*2, where)
+		if vecErr == nil && len(vectorResults) > 0 {
 			// Extract observation IDs with project/scope filtering using shared helper
-			obsIDs := chroma.ExtractObservationIDs(chromaResults, project)
+			obsIDs := sqlitevec.ExtractObservationIDs(vectorResults, project)
 
 			if len(obsIDs) > 0 {
 				// Fetch full observations from SQLite
 				observations, err = s.observationStore.GetObservationsByIDs(r.Context(), obsIDs, "date_desc", limit)
 				if err == nil {
-					usedChroma = true
+					usedVector = true
 				}
 			}
 		}
 	}
 
-	// Fall back to FTS if ChromaDB not available or returned no results
-	if !usedChroma || len(observations) == 0 {
+	// Fall back to FTS if vector search not available or returned no results
+	if !usedVector || len(observations) == 0 {
 		observations, err = s.observationStore.SearchObservationsFTS(r.Context(), query, project, limit)
 		if err != nil {
 			// FTS might fail if query has special chars, try without
@@ -941,22 +941,22 @@ func (s *Service) handleSelfCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	components = append(components, dbStatus)
 
-	// Check ChromaDB
-	chromaStatus := ComponentHealth{Name: "ChromaDB", Status: "healthy"}
-	if s.chromaClient == nil {
-		chromaStatus.Status = "degraded"
-		chromaStatus.Message = "Not configured"
+	// Check Vector DB (sqlite-vec)
+	vectorStatus := ComponentHealth{Name: "Vector DB", Status: "healthy"}
+	if s.vectorClient == nil {
+		vectorStatus.Status = "degraded"
+		vectorStatus.Message = "Not configured"
 		if overall == "healthy" {
 			overall = "degraded"
 		}
-	} else if !s.chromaClient.IsConnected() {
-		chromaStatus.Status = "degraded"
-		chromaStatus.Message = "Not connected"
+	} else if !s.vectorClient.IsConnected() {
+		vectorStatus.Status = "degraded"
+		vectorStatus.Message = "Not connected"
 		if overall == "healthy" {
 			overall = "degraded"
 		}
 	}
-	components = append(components, chromaStatus)
+	components = append(components, vectorStatus)
 
 	// Check SDK Processor
 	sdkStatus := ComponentHealth{Name: "SDK Processor", Status: "healthy"}
