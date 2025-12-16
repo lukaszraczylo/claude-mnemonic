@@ -37,6 +37,8 @@ if [[ "$OS" == mingw* ]] || [[ "$OS" == msys* ]] || [[ "$OS" == cygwin* ]]; then
         echo "SQLite headers copied to $SQLITE_VEC_PATH/cgo/"
     fi
 
+    # Tell linker to allow multiple definitions (both go-sqlite3 and sqlite-vec embed SQLite)
+    echo "CGO_LDFLAGS=-Wl,--allow-multiple-definition" >> "$GITHUB_ENV"
     echo "SQLite setup complete"
 fi
 
