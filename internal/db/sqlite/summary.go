@@ -3,7 +3,6 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
@@ -54,28 +53,7 @@ func (s *SummaryStore) StoreSummary(ctx context.Context, sdkSessionID, project s
 
 // ensureSessionExists creates a session if it doesn't exist.
 func (s *SummaryStore) ensureSessionExists(ctx context.Context, sdkSessionID, project string) error {
-	const checkQuery = `SELECT id FROM sdk_sessions WHERE sdk_session_id = ?`
-	var id int64
-	err := s.store.QueryRowContext(ctx, checkQuery, sdkSessionID).Scan(&id)
-	if err == nil {
-		return nil // Session exists
-	}
-	if err != sql.ErrNoRows {
-		return err
-	}
-
-	// Auto-create session
-	now := time.Now()
-	const insertQuery = `
-		INSERT INTO sdk_sessions
-		(claude_session_id, sdk_session_id, project, started_at, started_at_epoch, status)
-		VALUES (?, ?, ?, ?, ?, 'active')
-	`
-	_, err = s.store.ExecContext(ctx, insertQuery,
-		sdkSessionID, sdkSessionID, project,
-		now.Format(time.RFC3339), now.UnixMilli(),
-	)
-	return err
+	return EnsureSessionExists(ctx, s.store, sdkSessionID, project)
 }
 
 // GetSummariesByIDs retrieves summaries by a list of IDs.
@@ -84,33 +62,12 @@ func (s *SummaryStore) GetSummariesByIDs(ctx context.Context, ids []int64, order
 		return nil, nil
 	}
 
-	// Build query with placeholders
-	// #nosec G202 -- query uses parameterized placeholders, not user input
-	query := `
+	const baseQuery = `
 		SELECT id, sdk_session_id, project, request, investigated, learned, completed,
 		       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch
-		FROM session_summaries
-		WHERE id IN (?` + repeatPlaceholders(len(ids)-1) + `)
-		ORDER BY created_at_epoch `
+		FROM session_summaries`
 
-	if orderBy == "date_asc" {
-		query += "ASC"
-	} else {
-		query += "DESC"
-	}
-
-	if limit > 0 {
-		query += " LIMIT ?"
-	}
-
-	// Convert []int64 to []interface{}
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
-	if limit > 0 {
-		args = append(args, limit)
-	}
+	query, args := BuildGetByIDsQuery(baseQuery, ids, orderBy, limit)
 
 	rows, err := s.store.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -118,20 +75,7 @@ func (s *SummaryStore) GetSummariesByIDs(ctx context.Context, ids []int64, order
 	}
 	defer rows.Close()
 
-	var summaries []*models.SessionSummary
-	for rows.Next() {
-		var summary models.SessionSummary
-		if err := rows.Scan(
-			&summary.ID, &summary.SDKSessionID, &summary.Project,
-			&summary.Request, &summary.Investigated, &summary.Learned, &summary.Completed,
-			&summary.NextSteps, &summary.Notes, &summary.PromptNumber, &summary.DiscoveryTokens,
-			&summary.CreatedAt, &summary.CreatedAtEpoch,
-		); err != nil {
-			return nil, err
-		}
-		summaries = append(summaries, &summary)
-	}
-	return summaries, rows.Err()
+	return scanSummaryRows(rows)
 }
 
 // GetRecentSummaries retrieves recent summaries for a project.
@@ -151,20 +95,7 @@ func (s *SummaryStore) GetRecentSummaries(ctx context.Context, project string, l
 	}
 	defer rows.Close()
 
-	var summaries []*models.SessionSummary
-	for rows.Next() {
-		var summary models.SessionSummary
-		if err := rows.Scan(
-			&summary.ID, &summary.SDKSessionID, &summary.Project,
-			&summary.Request, &summary.Investigated, &summary.Learned, &summary.Completed,
-			&summary.NextSteps, &summary.Notes, &summary.PromptNumber, &summary.DiscoveryTokens,
-			&summary.CreatedAt, &summary.CreatedAtEpoch,
-		); err != nil {
-			return nil, err
-		}
-		summaries = append(summaries, &summary)
-	}
-	return summaries, rows.Err()
+	return scanSummaryRows(rows)
 }
 
 // GetAllRecentSummaries retrieves recent summaries across all projects.
@@ -183,18 +114,5 @@ func (s *SummaryStore) GetAllRecentSummaries(ctx context.Context, limit int) ([]
 	}
 	defer rows.Close()
 
-	var summaries []*models.SessionSummary
-	for rows.Next() {
-		var summary models.SessionSummary
-		if err := rows.Scan(
-			&summary.ID, &summary.SDKSessionID, &summary.Project,
-			&summary.Request, &summary.Investigated, &summary.Learned, &summary.Completed,
-			&summary.NextSteps, &summary.Notes, &summary.PromptNumber, &summary.DiscoveryTokens,
-			&summary.CreatedAt, &summary.CreatedAtEpoch,
-		); err != nil {
-			return nil, err
-		}
-		summaries = append(summaries, &summary)
-	}
-	return summaries, rows.Err()
+	return scanSummaryRows(rows)
 }

@@ -94,18 +94,17 @@ func (m *Manager) UnifiedSearch(ctx context.Context, params SearchParams) (*Unif
 
 // vectorSearch performs semantic search via ChromaDB.
 func (m *Manager) vectorSearch(ctx context.Context, params SearchParams) (*UnifiedSearchResult, error) {
-	// Build where filter
-	where := make(map[string]interface{})
-	if params.Project != "" {
-		where["project"] = params.Project
+	// Build where filter based on search type
+	var docType chroma.DocType
+	switch params.Type {
+	case "observations":
+		docType = chroma.DocTypeObservation
+	case "sessions":
+		docType = chroma.DocTypeSessionSummary
+	case "prompts":
+		docType = chroma.DocTypeUserPrompt
 	}
-	if params.Type == "observations" {
-		where["doc_type"] = "observation"
-	} else if params.Type == "sessions" {
-		where["doc_type"] = "session_summary"
-	} else if params.Type == "prompts" {
-		where["doc_type"] = "user_prompt"
-	}
+	where := chroma.BuildWhereFilter(docType, params.Project)
 
 	// Query ChromaDB
 	chromaResults, err := m.chromaClient.Query(ctx, params.Query, params.Limit*2, where)
@@ -114,40 +113,11 @@ func (m *Manager) vectorSearch(ctx context.Context, params SearchParams) (*Unifi
 		return m.filterSearch(ctx, params)
 	}
 
-	// Collect unique IDs by type
-	obsIDs := make([]int64, 0)
-	summaryIDs := make([]int64, 0)
-	promptIDs := make([]int64, 0)
-	seenObs := make(map[int64]bool)
-	seenSummary := make(map[int64]bool)
-	seenPrompt := make(map[int64]bool)
-
-	for _, result := range chromaResults {
-		sqliteID, ok := result.Metadata["sqlite_id"].(float64)
-		if !ok {
-			continue
-		}
-		id := int64(sqliteID)
-
-		docType, _ := result.Metadata["doc_type"].(string)
-		switch docType {
-		case "observation":
-			if !seenObs[id] {
-				seenObs[id] = true
-				obsIDs = append(obsIDs, id)
-			}
-		case "session_summary":
-			if !seenSummary[id] {
-				seenSummary[id] = true
-				summaryIDs = append(summaryIDs, id)
-			}
-		case "user_prompt":
-			if !seenPrompt[id] {
-				seenPrompt[id] = true
-				promptIDs = append(promptIDs, id)
-			}
-		}
-	}
+	// Extract IDs grouped by document type using shared helper
+	extracted := chroma.ExtractIDsByDocType(chromaResults)
+	obsIDs := extracted.ObservationIDs
+	summaryIDs := extracted.SummaryIDs
+	promptIDs := extracted.PromptIDs
 
 	// Fetch full records from SQLite
 	var results []SearchResult
