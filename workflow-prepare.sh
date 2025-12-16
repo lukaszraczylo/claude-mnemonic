@@ -4,11 +4,20 @@
 
 set -e
 
-# Detect OS
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+# Detect host OS for platform-specific setup (Windows needs SQLite)
+HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+# Determine target platform for ONNX library download
+# Use TARGET_GOOS/TARGET_GOARCH from CI matrix if available, otherwise auto-detect
+if [ -n "$TARGET_GOOS" ] && [ -n "$TARGET_GOARCH" ]; then
+    ONNX_PLATFORM="${TARGET_GOOS}-${TARGET_GOARCH}"
+    echo "Target platform from CI matrix: $ONNX_PLATFORM"
+else
+    ONNX_PLATFORM="auto"
+fi
 
 # On Windows, install SQLite development headers for CGO
-if [[ "$OS" == mingw* ]] || [[ "$OS" == msys* ]] || [[ "$OS" == cygwin* ]]; then
+if [[ "$HOST_OS" == mingw* ]] || [[ "$HOST_OS" == msys* ]] || [[ "$HOST_OS" == cygwin* ]]; then
     echo "Installing SQLite for Windows..."
 
     # Download SQLite amalgamation and set up for CGO
@@ -42,5 +51,5 @@ if [[ "$OS" == mingw* ]] || [[ "$OS" == msys* ]] || [[ "$OS" == cygwin* ]]; then
     echo "SQLite setup complete"
 fi
 
-# Download ONNX runtime libraries for current platform
-./scripts/download-onnx-libs.sh auto
+# Download ONNX runtime libraries for target platform
+./scripts/download-onnx-libs.sh "$ONNX_PLATFORM"
