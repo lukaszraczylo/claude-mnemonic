@@ -326,7 +326,16 @@ func (p *Processor) callClaudeCLI(ctx context.Context, prompt string) (string, e
 
 	// Use claude CLI with --print flag for non-interactive output
 	// and -p for prompt input
-	cmd := exec.CommandContext(ctx, p.claudePath, "--print", "-p", fullPrompt) // #nosec G204 -- claudePath is from config, fullPrompt is internal
+	// Add --tools "" to disable tools (we only need text analysis)
+	// Add --strict-mcp-config to skip loading MCP servers
+	// Add --disable-slash-commands to skip command loading
+	// These flags significantly speed up processing by avoiding plugin/MCP initialization
+	cmd := exec.CommandContext(ctx, p.claudePath,
+		"--print",
+		"--tools", "",
+		"--strict-mcp-config",
+		"--disable-slash-commands",
+		"-p", fullPrompt) // #nosec G204 -- claudePath is from config, fullPrompt is internal
 
 	// Set model if specified (use haiku for cost efficiency)
 	if p.model != "" {
