@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { watch } from 'vue'
 import { useSSE, useStats, useTimeline, useUpdate, useHealth } from '@/composables'
 import Header from '@/components/Header.vue'
 import StatsCards from '@/components/StatsCards.vue'
@@ -8,7 +7,7 @@ import Timeline from '@/components/Timeline.vue'
 import Sidebar from '@/components/Sidebar.vue'
 
 // Composables
-const { isConnected, isProcessing, queueDepth, lastEvent } = useSSE()
+const { isConnected, isProcessing, queueDepth } = useSSE()
 const { stats } = useStats()
 const { updateInfo, updateStatus, isUpdating, applyUpdate } = useUpdate()
 const { health } = useHealth()
@@ -29,12 +28,7 @@ const {
   setConceptFilter
 } = useTimeline()
 
-// Refresh timeline when new events arrive
-watch(lastEvent, (event) => {
-  if (event && (event.type === 'observation' || event.type === 'prompt')) {
-    refresh()
-  }
-})
+// Note: Timeline refresh is handled by useTimeline's SSE watcher
 </script>
 
 <template>
