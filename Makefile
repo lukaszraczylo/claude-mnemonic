@@ -147,7 +147,7 @@ install: build stop-worker
 	@echo "Installation complete!"
 
 # Uninstall
-uninstall:
+uninstall: stop-worker
 	@echo "Uninstalling..."
 	@./scripts/unregister-plugin.sh
 	rm -rf $(HOME)/.claude/plugins/marketplaces/claude-mnemonic
