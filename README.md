@@ -58,20 +58,20 @@ Requires: Go 1.24+, Node.js 18+, CGO-compatible compiler
 
 **macOS:**
 ```bash
-brew install python3
-pip3 install uvx
+brew install python@3.13
+pip3 install uv
 ```
 
 **Linux (Ubuntu/Debian):**
 ```bash
 sudo apt install python3 python3-pip
-pip3 install uvx
+pip3 install uv
 ```
 
 **Windows:**
 ```powershell
-winget install Python.Python.3
-pip install uvx
+winget install Python.Python.3.13
+pip install uv
 ```
 
 Note: Requires Python 3.13+. Most package managers install the latest version.
