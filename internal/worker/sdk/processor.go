@@ -111,11 +111,17 @@ func (p *Processor) ProcessObservation(ctx context.Context, sdkSessionID, projec
 		return nil
 	}
 
-	log.Info().Str("tool", toolName).Msg("Processing tool execution with Claude CLI")
-
-	// Convert tool data to strings
+	// Convert tool data to strings for pre-filtering
 	inputStr := toJSONString(toolInput)
 	outputStr := toJSONString(toolResponse)
+
+	// Pre-filter trivial operations without calling Haiku
+	if shouldSkipTrivialOperation(toolName, inputStr, outputStr) {
+		log.Debug().Str("tool", toolName).Msg("Skipping trivial operation (pre-filter)")
+		return nil
+	}
+
+	log.Info().Str("tool", toolName).Msg("Processing tool execution with Claude CLI")
 
 	// Check if we already have observations for this file (skip if covered)
 	if filePath := extractFilePath(toolName, inputStr); filePath != "" {
@@ -372,19 +378,103 @@ func (p *Processor) callClaudeCLI(ctx context.Context, prompt string) (string, e
 
 // shouldSkipTool returns true for tools that aren't worth processing.
 func shouldSkipTool(toolName string) bool {
-	// Only skip truly uninteresting tools
+	// Skip tools that rarely produce meaningful observations
 	skipTools := map[string]bool{
-		"TodoWrite":  true, // Skip TodoWrite - internal tracking
-		"Task":       true, // Skip Task - sub-agent spawning
-		"TaskOutput": true, // Skip TaskOutput - sub-agent results
-		"Glob":       true, // Skip Glob - just file listing
+		// Internal tracking tools
+		"TodoWrite":  true,
+		"Task":       true,
+		"TaskOutput": true,
+
+		// File discovery tools (just listings, no insights)
+		"Glob":      true,
+		"ListDir":   true,
+		"LS":        true,
+		"KillShell": true,
+
+		// Question/interaction tools (no code insights)
+		"AskUserQuestion": true,
+
+		// Plan mode tools (planning, not execution)
+		"EnterPlanMode": true,
+		"ExitPlanMode":  true,
+
+		// Skill/command execution (meta-operations)
+		"Skill":        true,
+		"SlashCommand": true,
 	}
 
 	skip, found := skipTools[toolName]
 	if found {
 		return skip
 	}
-	return false // Process all other tools
+	return false // Process remaining tools: Read, Edit, Write, Grep, Bash, WebFetch, WebSearch, NotebookEdit
+}
+
+// shouldSkipTrivialOperation performs local pre-filtering to skip trivial operations
+// without making a Haiku API call. Returns true if the operation is too trivial to process.
+func shouldSkipTrivialOperation(toolName, inputStr, outputStr string) bool {
+	// Skip if output is too small to be meaningful (less than 100 chars)
+	if len(outputStr) < 100 {
+		return true
+	}
+
+	// Skip if output indicates an error or empty result
+	lowerOutput := strings.ToLower(outputStr)
+	trivialOutputs := []string{
+		"no matches found",
+		"file not found",
+		"directory not found",
+		"permission denied",
+		"command not found",
+		"no such file",
+		"is a directory",
+		"[]", // Empty array result
+		"{}", // Empty object result
+	}
+	for _, trivial := range trivialOutputs {
+		if strings.Contains(lowerOutput, trivial) || outputStr == trivial {
+			return true
+		}
+	}
+
+	// Tool-specific pre-filtering
+	switch toolName {
+	case "Read":
+		// Skip reading config files that rarely contain project-specific insights
+		boringFiles := []string{
+			"package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+			"go.sum", "Cargo.lock", "Gemfile.lock", "poetry.lock",
+			".gitignore", ".dockerignore", ".eslintignore",
+			"tsconfig.json", "jsconfig.json", "vite.config",
+			"tailwind.config", "postcss.config",
+		}
+		for _, boring := range boringFiles {
+			if strings.Contains(inputStr, boring) {
+				return true
+			}
+		}
+
+	case "Grep":
+		// Skip grep results with too many matches (likely generic search)
+		if strings.Count(outputStr, "\n") > 50 {
+			return true
+		}
+
+	case "Bash":
+		// Skip simple status commands
+		boringCommands := []string{
+			"git status", "git diff", "git log", "git branch",
+			"ls ", "pwd", "echo ", "cat ", "which ", "type ",
+			"npm list", "npm outdated", "npm audit",
+		}
+		for _, boring := range boringCommands {
+			if strings.Contains(strings.ToLower(inputStr), boring) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // extractFilePath extracts the file path from tool input for deduplication.

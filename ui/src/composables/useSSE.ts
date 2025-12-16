@@ -10,6 +10,19 @@ const lastEvent = ref<SSEEvent | null>(null)
 let eventSource: EventSource | null = null
 let reconnectTimeout: number | null = null
 let connectionCount = 0
+let reconnectAttempt = 0
+
+// Exponential backoff configuration
+const MIN_BACKOFF = 1000      // 1 second
+const MAX_BACKOFF = 30000     // 30 seconds
+const BACKOFF_MULTIPLIER = 2
+const JITTER_FACTOR = 0.2     // 20% jitter
+
+function getBackoffDelay(): number {
+  const baseDelay = Math.min(MIN_BACKOFF * Math.pow(BACKOFF_MULTIPLIER, reconnectAttempt), MAX_BACKOFF)
+  const jitter = baseDelay * JITTER_FACTOR * Math.random()
+  return Math.floor(baseDelay + jitter)
+}
 
 export function useSSE() {
 
@@ -23,6 +36,7 @@ export function useSSE() {
 
     eventSource.onopen = () => {
       isConnected.value = true
+      reconnectAttempt = 0 // Reset backoff on successful connection
       console.log('[SSE] Connected')
     }
 
@@ -51,11 +65,14 @@ export function useSSE() {
       eventSource?.close()
       eventSource = null
 
-      // Reconnect after 5 seconds
+      // Exponential backoff with jitter
+      const delay = getBackoffDelay()
+      reconnectAttempt++
+      console.log(`[SSE] Reconnecting in ${Math.round(delay/1000)}s (attempt ${reconnectAttempt})`)
+
       reconnectTimeout = window.setTimeout(() => {
-        console.log('[SSE] Reconnecting...')
         connect()
-      }, 5000)
+      }, delay)
     }
   }
 
