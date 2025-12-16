@@ -24,6 +24,7 @@ build: dashboard worker hooks mcp
 # Build Vue dashboard
 dashboard:
 	@echo "Building Vue dashboard..."
+	@sed 's/{{ .Version }}/$(VERSION)/g' ui/package.json.tpl > ui/package.json
 	@cd ui && npm install --silent && npm run build
 	@rm -rf internal/worker/static
 	@mkdir -p internal/worker/static
