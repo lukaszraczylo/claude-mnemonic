@@ -5,7 +5,7 @@
 
 set -e
 
-ONNX_VERSION="1.19.2"
+ONNX_VERSION="1.23.2"
 ASSETS_DIR="internal/embedding/assets/lib"
 PLATFORM="${1:-all}"
 
@@ -34,7 +34,7 @@ trap "rm -rf ${TEMP_DIR}" EXIT
 download_darwin_arm64() {
     echo "Downloading darwin-arm64..."
     mkdir -p "${ASSETS_DIR}/darwin-arm64"
-    curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-osx-arm64-${ONNX_VERSION}.tgz" -o "${TEMP_DIR}/darwin-arm64.tgz"
+    curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-osx-arm64-${ONNX_VERSION}.tgz" -o "${TEMP_DIR}/darwin-arm64.tgz"
     tar -xzf "${TEMP_DIR}/darwin-arm64.tgz" -C "${TEMP_DIR}"
     cp "${TEMP_DIR}/onnxruntime-osx-arm64-${ONNX_VERSION}/lib/libonnxruntime.${ONNX_VERSION}.dylib" "${ASSETS_DIR}/darwin-arm64/libonnxruntime.dylib"
 }
@@ -42,7 +42,7 @@ download_darwin_arm64() {
 download_linux_amd64() {
     echo "Downloading linux-amd64..."
     mkdir -p "${ASSETS_DIR}/linux-amd64"
-    curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-x64-${ONNX_VERSION}.tgz" -o "${TEMP_DIR}/linux-amd64.tgz"
+    curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-x64-${ONNX_VERSION}.tgz" -o "${TEMP_DIR}/linux-amd64.tgz"
     tar -xzf "${TEMP_DIR}/linux-amd64.tgz" -C "${TEMP_DIR}"
     cp "${TEMP_DIR}/onnxruntime-linux-x64-${ONNX_VERSION}/lib/libonnxruntime.so.${ONNX_VERSION}" "${ASSETS_DIR}/linux-amd64/libonnxruntime.so"
     cp "${TEMP_DIR}/onnxruntime-linux-x64-${ONNX_VERSION}/lib/libonnxruntime_providers_shared.so" "${ASSETS_DIR}/linux-amd64/libonnxruntime_providers_shared.so" 2>/dev/null || true
@@ -51,7 +51,7 @@ download_linux_amd64() {
 download_linux_arm64() {
     echo "Downloading linux-arm64..."
     mkdir -p "${ASSETS_DIR}/linux-arm64"
-    curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-aarch64-${ONNX_VERSION}.tgz" -o "${TEMP_DIR}/linux-arm64.tgz"
+    curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-aarch64-${ONNX_VERSION}.tgz" -o "${TEMP_DIR}/linux-arm64.tgz"
     tar -xzf "${TEMP_DIR}/linux-arm64.tgz" -C "${TEMP_DIR}"
     cp "${TEMP_DIR}/onnxruntime-linux-aarch64-${ONNX_VERSION}/lib/libonnxruntime.so.${ONNX_VERSION}" "${ASSETS_DIR}/linux-arm64/libonnxruntime.so"
     cp "${TEMP_DIR}/onnxruntime-linux-aarch64-${ONNX_VERSION}/lib/libonnxruntime_providers_shared.so" "${ASSETS_DIR}/linux-arm64/libonnxruntime_providers_shared.so" 2>/dev/null || true
@@ -60,7 +60,10 @@ download_linux_arm64() {
 download_windows_amd64() {
     echo "Downloading windows-amd64..."
     mkdir -p "${ASSETS_DIR}/windows-amd64"
-    curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-win-x64-${ONNX_VERSION}.zip" -o "${TEMP_DIR}/windows-amd64.zip"
+    local url="https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-win-x64-${ONNX_VERSION}.zip"
+    echo "URL: $url"
+    curl -fsSL --retry 3 "$url" -o "${TEMP_DIR}/windows-amd64.zip"
+    echo "Downloaded file size: $(wc -c < "${TEMP_DIR}/windows-amd64.zip") bytes"
     unzip -q "${TEMP_DIR}/windows-amd64.zip" -d "${TEMP_DIR}"
     cp "${TEMP_DIR}/onnxruntime-win-x64-${ONNX_VERSION}/lib/onnxruntime.dll" "${ASSETS_DIR}/windows-amd64/onnxruntime.dll"
 }
