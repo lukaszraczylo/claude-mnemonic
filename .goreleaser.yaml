@@ -221,6 +221,35 @@ builds:
       - goos: windows
         goarch: arm64
 
+  # Hook: statusline
+  - id: hook-statusline
+    main: ./cmd/hooks/statusline
+    binary: hooks/statusline
+    env:
+      - CGO_ENABLED=1
+    tags:
+      - fts5
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X github.com/lukaszraczylo/claude-mnemonic/pkg/hooks.Version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: amd64
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+
 archives:
   - id: default
     formats:
