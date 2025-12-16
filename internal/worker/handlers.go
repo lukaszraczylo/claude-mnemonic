@@ -514,7 +514,7 @@ func (s *Service) handleGetStats(w http.ResponseWriter, r *http.Request) {
 	retrievalStats := s.GetRetrievalStats()
 	sessionsToday, _ := s.sessionStore.GetSessionsToday(r.Context())
 
-	writeJSON(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"uptime":           time.Since(s.startTime).String(),
 		"activeSessions":   s.sessionManager.GetActiveSessionCount(),
 		"queueDepth":       s.sessionManager.GetTotalQueueDepth(),
@@ -522,7 +522,19 @@ func (s *Service) handleGetStats(w http.ResponseWriter, r *http.Request) {
 		"connectedClients": s.sseBroadcaster.ClientCount(),
 		"sessionsToday":    sessionsToday,
 		"retrieval":        retrievalStats,
-	})
+		"ready":            s.ready.Load(),
+	}
+
+	// Include project-specific observation count if project is specified
+	if project := r.URL.Query().Get("project"); project != "" {
+		count, err := s.observationStore.GetObservationCount(r.Context(), project)
+		if err == nil {
+			response["projectObservations"] = count
+			response["project"] = project
+		}
+	}
+
+	writeJSON(w, response)
 }
 
 // handleGetRetrievalStats returns detailed retrieval statistics.
