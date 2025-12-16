@@ -51,7 +51,14 @@ echo ""
 info "Stopping worker processes..."
 pkill -9 -f 'claude-mnemonic.*worker' 2>/dev/null || true
 pkill -9 -f '\.claude/plugins/.*/worker' 2>/dev/null || true
-lsof -ti :37777 | xargs kill -9 2>/dev/null || true
+# Kill process on port 37777 (use lsof on macOS, ss/fuser on Linux)
+if command -v lsof &> /dev/null; then
+    lsof -ti :37777 | xargs kill -9 2>/dev/null || true
+elif command -v ss &> /dev/null; then
+    ss -tlnp 'sport = :37777' 2>/dev/null | awk 'NR>1 {print $6}' | grep -oP 'pid=\K[0-9]+' | xargs -r kill -9 2>/dev/null || true
+elif command -v fuser &> /dev/null; then
+    fuser -k 37777/tcp 2>/dev/null || true
+fi
 sleep 1
 success "Worker processes stopped"
 
@@ -79,8 +86,9 @@ if command -v jq &> /dev/null; then
     fi
 
     if [[ -f "$SETTINGS_FILE" ]]; then
-        jq 'del(.enabledPlugins["'"$PLUGIN_KEY"'"])' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
-        success "Removed from settings.json"
+        # Remove plugin from enabled plugins and remove statusline if it's ours
+        jq 'del(.enabledPlugins["'"$PLUGIN_KEY"'"]) | if .statusLine.command | test("claude-mnemonic") then del(.statusLine) else . end' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+        success "Removed from settings.json (including statusline)"
     fi
 
     if [[ -f "$MARKETPLACES_FILE" ]]; then

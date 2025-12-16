@@ -133,26 +133,43 @@ download_release() {
     tmp_dir=$(mktemp -d)
     trap "rm -rf $tmp_dir" EXIT
 
-    # Construct download URL
-    local archive_name="claude-mnemonic_${version#v}_${platform}.tar.gz"
+    # Construct download URL (use .zip for Windows, .tar.gz for others)
+    local archive_ext="tar.gz"
+    if [[ "$platform" == windows_* ]]; then
+        archive_ext="zip"
+    fi
+    local archive_name="claude-mnemonic_${version#v}_${platform}.${archive_ext}"
     local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${archive_name}"
 
     info "Downloading ${archive_name}..."
 
-    if ! curl -sSL -o "$tmp_dir/release.tar.gz" "$download_url"; then
+    if ! curl -sSL -o "$tmp_dir/release.${archive_ext}" "$download_url"; then
         error "Failed to download release from: $download_url"
     fi
 
     info "Extracting archive..."
-    if ! tar -xzf "$tmp_dir/release.tar.gz" -C "$tmp_dir"; then
-        error "Failed to extract archive"
+    if [[ "$archive_ext" == "zip" ]]; then
+        if ! unzip -q "$tmp_dir/release.zip" -d "$tmp_dir"; then
+            error "Failed to extract archive"
+        fi
+    else
+        if ! tar -xzf "$tmp_dir/release.tar.gz" -C "$tmp_dir"; then
+            error "Failed to extract archive"
+        fi
     fi
 
     # Stop existing worker if running
     info "Stopping existing worker (if running)..."
     pkill -9 -f 'claude-mnemonic.*worker' 2>/dev/null || true
     pkill -9 -f '\.claude/plugins/.*/worker' 2>/dev/null || true
-    lsof -ti :37777 | xargs kill -9 2>/dev/null || true
+    # Kill process on port 37777 (use lsof on macOS, ss/fuser on Linux)
+    if command -v lsof &> /dev/null; then
+        lsof -ti :37777 | xargs kill -9 2>/dev/null || true
+    elif command -v ss &> /dev/null; then
+        ss -tlnp 'sport = :37777' 2>/dev/null | awk 'NR>1 {print $6}' | grep -oP 'pid=\K[0-9]+' | xargs -r kill -9 2>/dev/null || true
+    elif command -v fuser &> /dev/null; then
+        fuser -k 37777/tcp 2>/dev/null || true
+    fi
     sleep 1
 
     # Create installation directories
@@ -327,18 +344,18 @@ check_optional_deps() {
         case "$(uname -s)" in
             Darwin)
                 info "Install on macOS:"
-                echo "  brew install python3"
-                echo "  pip3 install uvx"
+                echo "  brew install python@3.13"
+                echo "  pip3 install uv"
                 ;;
             Linux)
                 info "Install on Linux:"
                 echo "  sudo apt install python3 python3-pip"
-                echo "  pip3 install uvx"
+                echo "  pip3 install uv"
                 ;;
             MINGW*|MSYS*|CYGWIN*)
                 info "Install on Windows:"
-                echo "  winget install Python.Python.3"
-                echo "  pip install uvx"
+                echo "  winget install Python.Python.3.13"
+                echo "  pip install uv"
                 ;;
         esac
         echo ""
@@ -433,7 +450,14 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     info "Stopping worker processes..."
     pkill -9 -f 'claude-mnemonic.*worker' 2>/dev/null || true
     pkill -9 -f '\.claude/plugins/.*/worker' 2>/dev/null || true
-    lsof -ti :37777 | xargs kill -9 2>/dev/null || true
+    # Kill process on port 37777 (use lsof on macOS, ss/fuser on Linux)
+    if command -v lsof &> /dev/null; then
+        lsof -ti :37777 | xargs kill -9 2>/dev/null || true
+    elif command -v ss &> /dev/null; then
+        ss -tlnp 'sport = :37777' 2>/dev/null | awk 'NR>1 {print $6}' | grep -oP 'pid=\K[0-9]+' | xargs -r kill -9 2>/dev/null || true
+    elif command -v fuser &> /dev/null; then
+        fuser -k 37777/tcp 2>/dev/null || true
+    fi
     sleep 1
 
     info "Removing plugin directories..."
