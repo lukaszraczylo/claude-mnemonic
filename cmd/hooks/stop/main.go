@@ -75,13 +75,16 @@ func parseTranscript(path string) (lastUser, lastAssistant string) {
 			continue
 		}
 
-		if msg.Type == "message" {
+		// Transcript entries have type: "user" or "assistant" (not "message")
+		// Check if this is a user/assistant message with content
+		if msg.Type == "user" || msg.Type == "assistant" {
 			text := extractTextContent(msg.Message.Content)
 			if text == "" {
 				continue
 			}
 
-			switch msg.Message.Role {
+			// Use the outer type field for role (message.role may differ)
+			switch msg.Type {
 			case "user":
 				lastUser = text
 			case "assistant":
@@ -98,6 +101,9 @@ func main() {
 }
 
 func handleStop(ctx *hooks.HookContext, input *Input) (string, error) {
+	// Debug: dump raw input
+	fmt.Fprintf(os.Stderr, "[stop] Raw input: %s\n", string(ctx.RawInput))
+
 	// Find session
 	result, err := hooks.GET(ctx.Port, fmt.Sprintf("/api/sessions?claudeSessionId=%s", ctx.SessionID))
 	if err != nil || result == nil {
@@ -116,6 +122,17 @@ func handleStop(ctx *hooks.HookContext, input *Input) (string, error) {
 		lastUser, lastAssistant = parseTranscript(input.TranscriptPath)
 	}
 
+	// Debug: log what we extracted
+	fmt.Fprintf(os.Stderr, "[stop] Transcript path: %s\n", input.TranscriptPath)
+	fmt.Fprintf(os.Stderr, "[stop] Last user message length: %d\n", len(lastUser))
+	fmt.Fprintf(os.Stderr, "[stop] Last assistant message length: %d\n", len(lastAssistant))
+	if len(lastAssistant) > 0 {
+		preview := lastAssistant
+		if len(preview) > 300 {
+			preview = preview[:300] + "..."
+		}
+		fmt.Fprintf(os.Stderr, "[stop] Last assistant preview: %s\n", preview)
+	}
 	fmt.Fprintf(os.Stderr, "[stop] Requesting summary for session %d (transcript: %v)\n", int64(sessionID), input.TranscriptPath != "")
 
 	// Request summary with message context from transcript

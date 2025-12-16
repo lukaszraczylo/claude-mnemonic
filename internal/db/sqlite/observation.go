@@ -175,6 +175,29 @@ func (s *ObservationStore) GetRecentObservations(ctx context.Context, project st
 	return scanObservationRows(rows)
 }
 
+// GetObservationsByProjectStrict retrieves observations strictly for a specific project.
+// Unlike GetRecentObservations, this does NOT include global observations from other projects.
+// Use this for dashboard filtering where the user expects to see only that project's data.
+func (s *ObservationStore) GetObservationsByProjectStrict(ctx context.Context, project string, limit int) ([]*models.Observation, error) {
+	const query = `
+		SELECT id, sdk_session_id, project, COALESCE(scope, 'project') as scope, type, title, subtitle, facts, narrative,
+		       concepts, files_read, files_modified, file_mtimes, prompt_number, discovery_tokens,
+		       created_at, created_at_epoch
+		FROM observations
+		WHERE project = ?
+		ORDER BY created_at_epoch DESC
+		LIMIT ?
+	`
+
+	rows, err := s.store.QueryContext(ctx, query, project, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanObservationRows(rows)
+}
+
 // GetObservationCount returns the count of observations for a project (including global).
 func (s *ObservationStore) GetObservationCount(ctx context.Context, project string) (int, error) {
 	const query = `
