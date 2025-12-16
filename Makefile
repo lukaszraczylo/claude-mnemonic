@@ -45,6 +45,7 @@ hooks:
 	go build $(BUILD_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/hooks/post-tool-use ./cmd/hooks/post-tool-use
 	go build $(BUILD_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/hooks/subagent-stop ./cmd/hooks/subagent-stop
 	go build $(BUILD_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/hooks/stop ./cmd/hooks/stop
+	go build $(BUILD_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/hooks/statusline ./cmd/hooks/statusline
 
 # Build MCP server
 mcp:
@@ -65,6 +66,7 @@ build-linux:
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/linux-amd64/hooks/post-tool-use ./cmd/hooks/post-tool-use
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/linux-amd64/hooks/subagent-stop ./cmd/hooks/subagent-stop
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/linux-amd64/hooks/stop ./cmd/hooks/stop
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/linux-amd64/hooks/statusline ./cmd/hooks/statusline
 
 build-darwin:
 	@echo "Building for macOS..."
@@ -83,6 +85,8 @@ build-darwin:
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/darwin-arm64/hooks/subagent-stop ./cmd/hooks/subagent-stop
 	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/darwin-amd64/hooks/stop ./cmd/hooks/stop
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/darwin-arm64/hooks/stop ./cmd/hooks/stop
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/darwin-amd64/hooks/statusline ./cmd/hooks/statusline
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/darwin-arm64/hooks/statusline ./cmd/hooks/statusline
 
 build-windows:
 	@echo "Building for Windows..."
@@ -94,6 +98,7 @@ build-windows:
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/windows-amd64/hooks/post-tool-use.exe ./cmd/hooks/post-tool-use
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/windows-amd64/hooks/subagent-stop.exe ./cmd/hooks/subagent-stop
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/windows-amd64/hooks/stop.exe ./cmd/hooks/stop
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/windows-amd64/hooks/statusline.exe ./cmd/hooks/statusline
 
 # Stop any running worker
 stop-worker:
@@ -107,8 +112,8 @@ stop-worker:
 start-worker:
 	@echo "Starting worker..."
 	@# Prefer cache directory (where Claude Code looks), fall back to marketplaces
-	@if [ -f "$(HOME)/.claude/plugins/cache/claude-mnemonic/claude-mnemonic/1.0.0/worker" ]; then \
-		nohup $(HOME)/.claude/plugins/cache/claude-mnemonic/claude-mnemonic/1.0.0/worker > /tmp/claude-mnemonic-worker.log 2>&1 & \
+	@if [ -f "$(HOME)/.claude/plugins/cache/claude-mnemonic/claude-mnemonic/$(VERSION)/worker" ]; then \
+		nohup $(HOME)/.claude/plugins/cache/claude-mnemonic/claude-mnemonic/$(VERSION)/worker > /tmp/claude-mnemonic-worker.log 2>&1 & \
 	else \
 		nohup $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/worker > /tmp/claude-mnemonic-worker.log 2>&1 & \
 	fi
@@ -132,22 +137,11 @@ install: build stop-worker
 	cp $(BUILD_DIR)/mcp-server $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/
 	cp $(BUILD_DIR)/hooks/* $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks/
 	cp $(PLUGIN_DIR)/hooks/hooks.json $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks/
-	cp $(PLUGIN_DIR)/.claude-plugin/plugin.json $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/
-	cp $(PLUGIN_DIR)/.claude-plugin/marketplace.json $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/
-	@# Also install to cache directory (where Claude Code looks for plugins)
-	@if [ -d "$(HOME)/.claude/plugins/cache/claude-mnemonic" ]; then \
-		echo "Updating plugin in cache directory..."; \
-		CACHE_DIR=$$(find $(HOME)/.claude/plugins/cache/claude-mnemonic -type d -name "hooks" -exec dirname {} \; 2>/dev/null | head -1); \
-		if [ -n "$$CACHE_DIR" ]; then \
-			cp $(BUILD_DIR)/worker "$$CACHE_DIR/"; \
-			cp $(BUILD_DIR)/mcp-server "$$CACHE_DIR/"; \
-			cp $(BUILD_DIR)/hooks/* "$$CACHE_DIR/hooks/"; \
-			cp $(PLUGIN_DIR)/hooks/hooks.json "$$CACHE_DIR/hooks/"; \
-			echo "Cache directory updated: $$CACHE_DIR"; \
-		fi; \
-	fi
+	@# Update plugin.json and marketplace.json with current version to prevent stale version directories
+	@sed 's/"version": "[^"]*"/"version": "$(VERSION)"/g' $(PLUGIN_DIR)/.claude-plugin/plugin.json > $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/plugin.json
+	@sed 's/"version": "[^"]*"/"version": "$(VERSION)"/g' $(PLUGIN_DIR)/.claude-plugin/marketplace.json > $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/marketplace.json
 	@echo "Registering plugin with Claude Code..."
-	@./scripts/register-plugin.sh
+	@./scripts/register-plugin.sh "$(VERSION)"
 	@$(MAKE) start-worker
 	@echo "Installation complete!"
 

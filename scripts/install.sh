@@ -81,11 +81,44 @@ detect_platform() {
 
 # Get the latest release version from GitHub
 get_latest_version() {
-    local version
-    version=$(curl -sS "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    local response version curl_opts
+
+    # Use GitHub token if available (higher rate limit)
+    curl_opts=(-sS)
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        curl_opts+=(-H "Authorization: token ${GITHUB_TOKEN}")
+    fi
+
+    # Fetch with error handling
+    response=$(curl "${curl_opts[@]}" "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>&1)
+
+    # Check for rate limiting
+    if echo "$response" | grep -q "API rate limit exceeded"; then
+        echo ""
+        error "GitHub API rate limit exceeded.
+
+You have a few options:
+  1. Wait ~1 hour for the rate limit to reset
+  2. Specify a version manually:
+     curl -sSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/scripts/install.sh | bash -s -- v0.6.1
+  3. Use a GitHub token (set GITHUB_TOKEN environment variable)
+  4. Clone and build from source:
+     git clone https://github.com/${GITHUB_REPO}.git
+     cd claude-mnemonic && make build && make install"
+    fi
+
+    # Check for other API errors
+    if echo "$response" | grep -q '"message":'; then
+        local msg
+        msg=$(echo "$response" | grep '"message":' | sed -E 's/.*"message": *"([^"]+)".*/\1/')
+        error "GitHub API error: $msg"
+    fi
+
+    # Extract version
+    version=$(echo "$response" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 
     if [[ -z "$version" ]]; then
-        error "Failed to fetch latest version from GitHub"
+        error "Failed to fetch latest version from GitHub. Response: $response"
     fi
 
     echo "$version"
@@ -151,6 +184,15 @@ register_plugin() {
 
     # Ensure directories exist
     mkdir -p "$HOME/.claude/plugins"
+
+    # Clean up old cache versions to prevent stale binaries
+    local cache_base
+    cache_base=$(dirname "$CACHE_DIR")
+    if [[ -d "$cache_base" ]]; then
+        info "Cleaning up old cache versions..."
+        find "$cache_base" -mindepth 1 -maxdepth 1 -type d ! -name "${version#v}" -exec rm -rf {} \; 2>/dev/null || true
+    fi
+
     mkdir -p "${CACHE_DIR}/${version}"
 
     # Create JSON files if they don't exist
@@ -193,12 +235,24 @@ EOF
 
     success "Plugin registered in installed_plugins.json"
 
-    # Enable in settings.json
-    jq --arg key "$PLUGIN_KEY" \
-        '.enabledPlugins //= {} | .enabledPlugins[$key] = true' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" \
+    # Enable in settings.json and configure statusline
+    local statusline_cmd="$INSTALL_DIR/hooks/statusline"
+    local statusline_entry
+    statusline_entry=$(cat <<EOF
+{
+    "type": "command",
+    "command": "$statusline_cmd",
+    "padding": 0
+}
+EOF
+)
+
+    jq --arg key "$PLUGIN_KEY" --argjson statusline "$statusline_entry" \
+        '.enabledPlugins //= {} | .enabledPlugins[$key] = true | .statusLine = $statusline' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" \
         && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
 
     success "Plugin enabled in settings.json"
+    success "Statusline configured in settings.json"
 
     # Register marketplace
     local marketplace_entry
@@ -394,7 +448,8 @@ if [[ "${1:-}" == "--uninstall" ]]; then
             jq 'del(.plugins["'"$PLUGIN_KEY"'"])' "$PLUGINS_FILE" > "${PLUGINS_FILE}.tmp" && mv "${PLUGINS_FILE}.tmp" "$PLUGINS_FILE"
         fi
         if [[ -f "$SETTINGS_FILE" ]]; then
-            jq 'del(.enabledPlugins["'"$PLUGIN_KEY"'"])' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+            # Remove plugin from enabled plugins and remove statusline if it's ours
+            jq 'del(.enabledPlugins["'"$PLUGIN_KEY"'"]) | if .statusLine.command | test("claude-mnemonic") then del(.statusLine) else . end' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
         fi
         if [[ -f "$MARKETPLACES_FILE" ]]; then
             jq 'del(.["claude-mnemonic"])' "$MARKETPLACES_FILE" > "${MARKETPLACES_FILE}.tmp" && mv "${MARKETPLACES_FILE}.tmp" "$MARKETPLACES_FILE"

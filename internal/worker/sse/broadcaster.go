@@ -6,8 +6,15 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog/log"
+)
+
+const (
+	// WriteTimeout is the timeout for writing to SSE clients.
+	// Prevents blocking on stale connections.
+	WriteTimeout = 2 * time.Second
 )
 
 // Client represents a connected SSE client.
@@ -101,6 +108,7 @@ func (b *Broadcaster) removeClientByID(id string) {
 }
 
 // Broadcast sends a message to all connected clients.
+// Uses non-blocking writes with timeout to prevent stale connections from blocking.
 func (b *Broadcaster) Broadcast(data interface{}) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -117,30 +125,67 @@ func (b *Broadcaster) Broadcast(data interface{}) {
 	}
 	b.mu.RUnlock()
 
-	// Track dead clients for removal
-	var deadClients []*Client
+	if len(clients) == 0 {
+		return
+	}
+
+	// Use a channel to collect dead clients from concurrent writes
+	deadClientsCh := make(chan string, len(clients))
+	var wg sync.WaitGroup
 
 	for _, client := range clients {
 		select {
 		case <-client.Done:
 			continue
 		default:
-			_, err := client.Writer.Write([]byte(message))
-			if err != nil {
-				log.Debug().
-					Str("clientId", client.ID).
-					Err(err).
-					Msg("Failed to write to SSE client, marking for removal")
-				deadClients = append(deadClients, client)
-				continue
-			}
-			client.Flusher.Flush()
+			wg.Add(1)
+			go func(c *Client) {
+				defer wg.Done()
+				b.writeToClient(c, message, deadClientsCh)
+			}(client)
 		}
 	}
 
-	// Remove dead clients outside the iteration
-	for _, client := range deadClients {
-		b.removeClientByID(client.ID)
+	// Wait for all writes to complete (with their individual timeouts)
+	wg.Wait()
+	close(deadClientsCh)
+
+	// Remove dead clients
+	for clientID := range deadClientsCh {
+		b.removeClientByID(clientID)
+	}
+}
+
+// writeToClient writes a message to a single client with timeout.
+func (b *Broadcaster) writeToClient(client *Client, message string, deadCh chan<- string) {
+	// Use a timeout channel to prevent blocking on stale connections
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		_, err := client.Writer.Write([]byte(message))
+		if err != nil {
+			log.Debug().
+				Str("clientId", client.ID).
+				Err(err).
+				Msg("Failed to write to SSE client, marking for removal")
+			deadCh <- client.ID
+			return
+		}
+		client.Flusher.Flush()
+	}()
+
+	select {
+	case <-done:
+		// Write completed successfully
+	case <-time.After(WriteTimeout):
+		log.Warn().
+			Str("clientId", client.ID).
+			Dur("timeout", WriteTimeout).
+			Msg("SSE write timed out, marking client for removal")
+		deadCh <- client.ID
+	case <-client.Done:
+		// Client disconnected during write
 	}
 }
 
