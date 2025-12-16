@@ -478,8 +478,8 @@ func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) 
 	// Fall back to SQLite if vector search not used
 	if !usedVector {
 		if project != "" {
-			// Filter by project - includes project-scoped and global observations
-			observations, err = s.observationStore.GetRecentObservations(r.Context(), project, limit)
+			// Strict project filtering for dashboard - only observations from this project
+			observations, err = s.observationStore.GetObservationsByProjectStrict(r.Context(), project, limit)
 		} else {
 			// All projects
 			observations, err = s.observationStore.GetAllRecentObservations(r.Context(), limit)
