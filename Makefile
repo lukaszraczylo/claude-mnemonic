@@ -14,12 +14,16 @@ GOARCH ?= $(shell go env GOARCH)
 export CGO_ENABLED=1
 BUILD_TAGS := -tags "fts5"
 
-.PHONY: all build clean test install lint hooks worker mcp stop-worker start-worker restart-worker dashboard website dev-website
+.PHONY: all build clean test install lint hooks worker mcp stop-worker start-worker restart-worker dashboard website dev-website setup-libs
 
 all: build
 
+# Download ONNX runtime libraries (all platforms for local dev, skips if present)
+setup-libs:
+	@./scripts/download-onnx-libs.sh all
+
 # Build all binaries
-build: dashboard worker hooks mcp
+build: setup-libs dashboard worker hooks mcp
 
 # Build Vue dashboard
 dashboard:
@@ -154,7 +158,7 @@ uninstall: stop-worker
 	@echo "Uninstallation complete!"
 
 # Run tests
-test:
+test: setup-libs
 	go test -v -race ./...
 
 # Run tests with coverage
