@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/privacy"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/chroma"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sdk"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/session"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
@@ -22,6 +24,53 @@ const (
 	DefaultObservationsLimit = 100
 
 	// DefaultSummariesLimit is the default number of summaries to return.
+)
+
+// ObservationTypes is the canonical list of observation types.
+// Used by both Go backend and served to frontend.
+var ObservationTypes = []string{
+	"bugfix",
+	"feature",
+	"refactor",
+	"discovery",
+	"decision",
+	"change",
+}
+
+// ConceptTypes is the canonical list of valid concept types.
+// Used by both Go backend and served to frontend.
+var ConceptTypes = []string{
+	// Semantic concepts
+	"how-it-works",
+	"why-it-exists",
+	"what-changed",
+	"problem-solution",
+	"gotcha",
+	"pattern",
+	"trade-off",
+	// Globalizable concepts (from models.GlobalizableConcepts)
+	"best-practice",
+	"anti-pattern",
+	"architecture",
+	"security",
+	"performance",
+	"testing",
+	"debugging",
+	"workflow",
+	"tooling",
+	// Additional useful concepts
+	"refactoring",
+	"api",
+	"database",
+	"configuration",
+	"error-handling",
+	"caching",
+	"logging",
+	"auth",
+	"validation",
+}
+
+const (
 	DefaultSummariesLimit = 50
 
 	// DefaultPromptsLimit is the default number of prompts to return.
@@ -401,25 +450,40 @@ func (s *Service) handleSummarize(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetObservations returns recent observations.
+// Supports optional query parameter for semantic search via ChromaDB.
 func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) {
-	limit := DefaultObservationsLimit
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
+	limit := sqlite.ParseLimitParam(r, DefaultObservationsLimit)
 	project := r.URL.Query().Get("project")
+	query := r.URL.Query().Get("query")
 
 	var observations []*models.Observation
 	var err error
+	var usedChroma bool
 
-	if project != "" {
-		// Filter by project - includes project-scoped and global observations
-		observations, err = s.observationStore.GetRecentObservations(r.Context(), project, limit)
-	} else {
-		// All projects
-		observations, err = s.observationStore.GetAllRecentObservations(r.Context(), limit)
+	// Use ChromaDB if query is provided and ChromaDB is available
+	if query != "" && s.chromaClient != nil && s.chromaClient.IsConnected() {
+		where := chroma.BuildWhereFilter(chroma.DocTypeObservation, "")
+		chromaResults, chromaErr := s.chromaClient.Query(r.Context(), query, limit*2, where)
+		if chromaErr == nil && len(chromaResults) > 0 {
+			obsIDs := chroma.ExtractObservationIDs(chromaResults, project)
+			if len(obsIDs) > 0 {
+				observations, err = s.observationStore.GetObservationsByIDs(r.Context(), obsIDs, "date_desc", limit)
+				if err == nil {
+					usedChroma = true
+				}
+			}
+		}
+	}
+
+	// Fall back to SQLite if ChromaDB not used
+	if !usedChroma {
+		if project != "" {
+			// Filter by project - includes project-scoped and global observations
+			observations, err = s.observationStore.GetRecentObservations(r.Context(), project, limit)
+		} else {
+			// All projects
+			observations, err = s.observationStore.GetAllRecentObservations(r.Context(), limit)
+		}
 	}
 
 	if err != nil {
@@ -435,23 +499,38 @@ func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleGetSummaries returns recent summaries.
+// Supports optional query parameter for semantic search via ChromaDB.
 func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
-	limit := DefaultSummariesLimit
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
+	limit := sqlite.ParseLimitParam(r, DefaultSummariesLimit)
 	project := r.URL.Query().Get("project")
+	query := r.URL.Query().Get("query")
 
 	var summaries []*models.SessionSummary
 	var err error
+	var usedChroma bool
 
-	if project != "" {
-		summaries, err = s.summaryStore.GetRecentSummaries(r.Context(), project, limit)
-	} else {
-		summaries, err = s.summaryStore.GetAllRecentSummaries(r.Context(), limit)
+	// Use ChromaDB if query is provided and ChromaDB is available
+	if query != "" && s.chromaClient != nil && s.chromaClient.IsConnected() {
+		where := chroma.BuildWhereFilter(chroma.DocTypeSessionSummary, "")
+		chromaResults, chromaErr := s.chromaClient.Query(r.Context(), query, limit*2, where)
+		if chromaErr == nil && len(chromaResults) > 0 {
+			summaryIDs := chroma.ExtractSummaryIDs(chromaResults, project)
+			if len(summaryIDs) > 0 {
+				summaries, err = s.summaryStore.GetSummariesByIDs(r.Context(), summaryIDs, "date_desc", limit)
+				if err == nil {
+					usedChroma = true
+				}
+			}
+		}
+	}
+
+	// Fall back to SQLite if ChromaDB not used
+	if !usedChroma {
+		if project != "" {
+			summaries, err = s.summaryStore.GetRecentSummaries(r.Context(), project, limit)
+		} else {
+			summaries, err = s.summaryStore.GetAllRecentSummaries(r.Context(), limit)
+		}
 	}
 
 	if err != nil {
@@ -467,23 +546,38 @@ func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetPrompts returns recent user prompts.
+// Supports optional query parameter for semantic search via ChromaDB.
 func (s *Service) handleGetPrompts(w http.ResponseWriter, r *http.Request) {
-	limit := DefaultPromptsLimit
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
+	limit := sqlite.ParseLimitParam(r, DefaultPromptsLimit)
 	project := r.URL.Query().Get("project")
+	query := r.URL.Query().Get("query")
 
 	var prompts []*models.UserPromptWithSession
 	var err error
+	var usedChroma bool
 
-	if project != "" {
-		prompts, err = s.promptStore.GetRecentUserPromptsByProject(r.Context(), project, limit)
-	} else {
-		prompts, err = s.promptStore.GetAllRecentUserPrompts(r.Context(), limit)
+	// Use ChromaDB if query is provided and ChromaDB is available
+	if query != "" && s.chromaClient != nil && s.chromaClient.IsConnected() {
+		where := chroma.BuildWhereFilter(chroma.DocTypeUserPrompt, "")
+		chromaResults, chromaErr := s.chromaClient.Query(r.Context(), query, limit*2, where)
+		if chromaErr == nil && len(chromaResults) > 0 {
+			promptIDs := chroma.ExtractPromptIDs(chromaResults, project)
+			if len(promptIDs) > 0 {
+				prompts, err = s.promptStore.GetPromptsByIDs(r.Context(), promptIDs, "date_desc", limit)
+				if err == nil {
+					usedChroma = true
+				}
+			}
+		}
+	}
+
+	// Fall back to SQLite if ChromaDB not used
+	if !usedChroma {
+		if project != "" {
+			prompts, err = s.promptStore.GetRecentUserPromptsByProject(r.Context(), project, limit)
+		} else {
+			prompts, err = s.promptStore.GetAllRecentUserPrompts(r.Context(), limit)
+		}
 	}
 
 	if err != nil {
@@ -507,6 +601,15 @@ func (s *Service) handleGetProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, projects)
+}
+
+// handleGetTypes returns the canonical list of observation and concept types.
+// This provides a single source of truth for both backend and frontend.
+func (s *Service) handleGetTypes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"observation_types": ObservationTypes,
+		"concept_types":     ConceptTypes,
+	})
 }
 
 // handleGetStats returns worker statistics.
@@ -576,22 +679,42 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := DefaultSearchLimit
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
-			limit = parsed
+	limit := sqlite.ParseLimitParam(r, DefaultSearchLimit)
+
+	var observations []*models.Observation
+	var err error
+	var usedChroma bool
+
+	// Try ChromaDB vector search first if available
+	if s.chromaClient != nil && s.chromaClient.IsConnected() {
+		where := chroma.BuildWhereFilter(chroma.DocTypeObservation, "")
+
+		chromaResults, chromaErr := s.chromaClient.Query(r.Context(), query, limit*2, where)
+		if chromaErr == nil && len(chromaResults) > 0 {
+			// Extract observation IDs with project/scope filtering using shared helper
+			obsIDs := chroma.ExtractObservationIDs(chromaResults, project)
+
+			if len(obsIDs) > 0 {
+				// Fetch full observations from SQLite
+				observations, err = s.observationStore.GetObservationsByIDs(r.Context(), obsIDs, "date_desc", limit)
+				if err == nil {
+					usedChroma = true
+				}
+			}
 		}
 	}
 
-	// Search using FTS
-	observations, err := s.observationStore.SearchObservationsFTS(r.Context(), query, project, limit)
-	if err != nil {
-		// FTS might fail if query has special chars, try without
-		log.Warn().Err(err).Str("query", query).Msg("FTS search failed, falling back to recent")
-		observations, err = s.observationStore.GetRecentObservations(r.Context(), project, limit)
+	// Fall back to FTS if ChromaDB not available or returned no results
+	if !usedChroma || len(observations) == 0 {
+		observations, err = s.observationStore.SearchObservationsFTS(r.Context(), query, project, limit)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			// FTS might fail if query has special chars, try without
+			log.Warn().Err(err).Str("query", query).Msg("FTS search failed, falling back to recent")
+			observations, err = s.observationStore.GetRecentObservations(r.Context(), project, limit)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	}
 

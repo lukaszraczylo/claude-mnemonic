@@ -3,9 +3,7 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/hooks"
@@ -13,55 +11,27 @@ import (
 
 // Input is the hook input from Claude Code.
 type Input struct {
-	SessionID      string `json:"session_id"`
-	CWD            string `json:"cwd"`
-	PermissionMode string `json:"permission_mode"`
-	HookEventName  string `json:"hook_event_name"`
-	StopHookActive bool   `json:"stop_hook_active"`
+	hooks.BaseInput
+	StopHookActive bool `json:"stop_hook_active"`
 }
 
 func main() {
-	// Skip if this is an internal call (from SDK processor)
-	if os.Getenv("CLAUDE_MNEMONIC_INTERNAL") == "1" {
-		hooks.WriteResponse("SubagentStop", true)
-		return
-	}
+	hooks.RunHook("SubagentStop", handleSubagentStop)
+}
 
-	// Read input from stdin
-	inputData, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		hooks.WriteError("SubagentStop", err)
-		os.Exit(1)
-	}
-
-	var input Input
-	if err := json.Unmarshal(inputData, &input); err != nil {
-		hooks.WriteError("SubagentStop", err)
-		os.Exit(1)
-	}
-
-	// Ensure worker is running
-	port, err := hooks.EnsureWorkerRunning()
-	if err != nil {
-		hooks.WriteError("SubagentStop", err)
-		os.Exit(1)
-	}
-
-	// Generate unique project ID from CWD
-	project := hooks.ProjectIDWithName(input.CWD)
-
-	fmt.Fprintf(os.Stderr, "[subagent-stop] Subagent completed in project %s\n", project)
+func handleSubagentStop(ctx *hooks.HookContext, input *Input) (string, error) {
+	fmt.Fprintf(os.Stderr, "[subagent-stop] Subagent completed in project %s\n", ctx.Project)
 
 	// Notify worker that a subagent completed
 	// This can trigger processing of any queued observations from the subagent
-	_, err = hooks.POST(port, "/api/sessions/subagent-complete", map[string]interface{}{
-		"claudeSessionId": input.SessionID,
-		"project":         project,
+	_, err := hooks.POST(ctx.Port, "/api/sessions/subagent-complete", map[string]interface{}{
+		"claudeSessionId": ctx.SessionID,
+		"project":         ctx.Project,
 	})
 	if err != nil {
 		// Non-fatal - just log warning
 		fmt.Fprintf(os.Stderr, "[subagent-stop] Warning: failed to notify worker: %v\n", err)
 	}
 
-	hooks.WriteResponse("SubagentStop", true)
+	return "", nil
 }

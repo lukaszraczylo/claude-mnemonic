@@ -128,9 +128,12 @@ func (s *PromptStore) GetPromptsByIDs(ctx context.Context, ids []int64, orderBy 
 	// #nosec G202 -- query uses parameterized placeholders, not user input
 	query := `
 		SELECT up.id, up.claude_session_id, up.prompt_number, up.prompt_text,
-		       up.created_at, up.created_at_epoch, s.project, s.sdk_session_id
+		       COALESCE(up.matched_observations, 0) as matched_observations,
+		       up.created_at, up.created_at_epoch,
+		       COALESCE(s.project, '') as project,
+		       COALESCE(s.sdk_session_id, '') as sdk_session_id
 		FROM user_prompts up
-		JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+		LEFT JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
 		WHERE up.id IN (?` + repeatPlaceholders(len(ids)-1) + `)
 		ORDER BY up.created_at_epoch `
 
@@ -144,11 +147,7 @@ func (s *PromptStore) GetPromptsByIDs(ctx context.Context, ids []int64, orderBy 
 		query += " LIMIT ?"
 	}
 
-	// Convert []int64 to []interface{}
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
+	args := int64SliceToInterface(ids)
 	if limit > 0 {
 		args = append(args, limit)
 	}
@@ -159,18 +158,7 @@ func (s *PromptStore) GetPromptsByIDs(ctx context.Context, ids []int64, orderBy 
 	}
 	defer rows.Close()
 
-	var prompts []*models.UserPromptWithSession
-	for rows.Next() {
-		var prompt models.UserPromptWithSession
-		if err := rows.Scan(
-			&prompt.ID, &prompt.ClaudeSessionID, &prompt.PromptNumber, &prompt.PromptText,
-			&prompt.CreatedAt, &prompt.CreatedAtEpoch, &prompt.Project, &prompt.SDKSessionID,
-		); err != nil {
-			return nil, err
-		}
-		prompts = append(prompts, &prompt)
-	}
-	return prompts, rows.Err()
+	return scanPromptWithSessionRows(rows)
 }
 
 // GetAllRecentUserPrompts retrieves recent user prompts across all sessions.
@@ -193,19 +181,7 @@ func (s *PromptStore) GetAllRecentUserPrompts(ctx context.Context, limit int) ([
 	}
 	defer rows.Close()
 
-	var prompts []*models.UserPromptWithSession
-	for rows.Next() {
-		var prompt models.UserPromptWithSession
-		if err := rows.Scan(
-			&prompt.ID, &prompt.ClaudeSessionID, &prompt.PromptNumber, &prompt.PromptText,
-			&prompt.MatchedObservations, &prompt.CreatedAt, &prompt.CreatedAtEpoch,
-			&prompt.Project, &prompt.SDKSessionID,
-		); err != nil {
-			return nil, err
-		}
-		prompts = append(prompts, &prompt)
-	}
-	return prompts, rows.Err()
+	return scanPromptWithSessionRows(rows)
 }
 
 // GetRecentUserPromptsByProject retrieves recent user prompts for a specific project.
@@ -229,17 +205,5 @@ func (s *PromptStore) GetRecentUserPromptsByProject(ctx context.Context, project
 	}
 	defer rows.Close()
 
-	var prompts []*models.UserPromptWithSession
-	for rows.Next() {
-		var prompt models.UserPromptWithSession
-		if err := rows.Scan(
-			&prompt.ID, &prompt.ClaudeSessionID, &prompt.PromptNumber, &prompt.PromptText,
-			&prompt.MatchedObservations, &prompt.CreatedAt, &prompt.CreatedAtEpoch,
-			&prompt.Project, &prompt.SDKSessionID,
-		); err != nil {
-			return nil, err
-		}
-		prompts = append(prompts, &prompt)
-	}
-	return prompts, rows.Err()
+	return scanPromptWithSessionRows(rows)
 }
