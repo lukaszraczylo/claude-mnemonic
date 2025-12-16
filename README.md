@@ -18,10 +18,8 @@ It captures what Claude learns during your coding sessions - bug fixes, architec
 |------------|----------|---------|
 | **Claude Code CLI** | Yes | Host application (this is a plugin) |
 | **jq** | Yes | JSON processing during installation |
-| **Python 3.13+** | Optional | ChromaDB semantic search |
-| **uvx** | Optional | Python package runner for ChromaDB |
 
-The installer will check for these and provide installation commands if missing.
+That's it. No Python. No external services. Everything runs locally.
 
 > **No API keys needed!** Claude Mnemonic uses Claude Code CLI, which works with your existing Claude Pro or Max subscription. No separate API costs.
 
@@ -51,30 +49,6 @@ make build && make install
 ```
 
 Requires: Go 1.24+, Node.js 18+, CGO-compatible compiler
-</details>
-
-<details>
-<summary>Install optional dependencies (for semantic search)</summary>
-
-**macOS:**
-```bash
-brew install python@3.13
-pip3 install uv
-```
-
-**Linux (Ubuntu/Debian):**
-```bash
-sudo apt install python3 python3-pip
-pip3 install uv
-```
-
-**Windows:**
-```powershell
-winget install Python.Python.3.13
-pip install uv
-```
-
-Note: Requires Python 3.13+. Most package managers install the latest version.
 </details>
 
 After install, open **http://localhost:37777** to see the dashboard. Start a new Claude Code session - memory is now active.
@@ -115,7 +89,7 @@ Mnemonic captures it automatically
 Next session: Claude remembers
 ```
 
-Behind the scenes: hooks capture Claude's observations → SQLite stores with full-text search → ChromaDB enables semantic search → relevant context is injected at session start.
+Behind the scenes: hooks capture Claude's observations → SQLite stores with full-text search → sqlite-vec enables semantic search with local embeddings (all-MiniLM-L6-v2) → relevant context is injected at session start.
 
 ## Configuration
 
@@ -149,7 +123,7 @@ Example: A bug fix in your auth module stays local. "Always validate JWT server-
 
 ## MCP Tools
 
-When ChromaDB is available, these search tools work via MCP:
+These search tools are available via MCP:
 
 - `search` - semantic search across all memories
 - `timeline` - browse by time
@@ -170,9 +144,6 @@ cat /tmp/claude-mnemonic-worker.log  # view logs
 rm -f ~/.claude-mnemonic/*.db-wal ~/.claude-mnemonic/*.db-shm
 ```
 
-**ChromaDB not working?**
-Needs Python 3.13+ and `uvx`. On macOS: `brew install python@3.13`
-
 ## Uninstall
 
 ```bash
@@ -183,6 +154,15 @@ curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/s
 curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/scripts/uninstall.sh | bash -s -- --keep-data
 ```
 
+## Architecture
+
+- **SQLite + FTS5** - Full-text search for exact matches
+- **sqlite-vec** - Vector database embedded in SQLite
+- **all-MiniLM-L6-v2** - Local embedding model (384 dimensions) via ONNX Runtime
+- **Go** - Single binary, no external dependencies
+
+Everything runs locally. No Python. No external vector database. No API calls for embeddings.
+
 ## Platform support
 
 | Platform | Status |
@@ -190,8 +170,8 @@ curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/s
 | macOS Intel | Supported |
 | macOS Apple Silicon | Supported |
 | Linux amd64 | Supported |
+| Linux arm64 | Supported |
 | Windows amd64 | Supported |
-| Linux arm64 | Not supported (CGO limitation) |
 
 ## Development
 
