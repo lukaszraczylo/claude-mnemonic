@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -48,4 +49,97 @@ func WriteResponse(hookName string, success bool) {
 func WriteError(hookName string, err error) {
 	fmt.Fprintf(os.Stderr, "[%s] Error: %v\n", hookName, err)
 	WriteResponse(hookName, false)
+}
+
+// BaseInput contains common fields shared by all hook inputs.
+type BaseInput struct {
+	SessionID      string `json:"session_id"`
+	CWD            string `json:"cwd"`
+	PermissionMode string `json:"permission_mode"`
+	HookEventName  string `json:"hook_event_name"`
+}
+
+// HookContext provides common context for hook handlers.
+type HookContext struct {
+	HookName  string
+	Port      int
+	Project   string
+	SessionID string
+	CWD       string
+	RawInput  []byte
+}
+
+// HookHandler is a function that handles hook-specific logic.
+// It receives the context and returns an optional context string and error.
+type HookHandler[T any] func(ctx *HookContext, input *T) (additionalContext string, err error)
+
+// RunHook executes a hook with common boilerplate handling.
+// It handles: internal call skip, stdin reading, JSON unmarshaling,
+// worker startup, and project ID generation.
+func RunHook[T any](hookName string, handler HookHandler[T]) {
+	// Skip if this is an internal call (from SDK processor)
+	if os.Getenv("CLAUDE_MNEMONIC_INTERNAL") == "1" {
+		WriteResponse(hookName, true)
+		return
+	}
+
+	// Read input from stdin
+	inputData, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		WriteError(hookName, err)
+		os.Exit(1)
+	}
+
+	// Parse input
+	var input T
+	if err := json.Unmarshal(inputData, &input); err != nil {
+		WriteError(hookName, err)
+		os.Exit(1)
+	}
+
+	// Ensure worker is running
+	port, err := EnsureWorkerRunning()
+	if err != nil {
+		WriteError(hookName, err)
+		os.Exit(1)
+	}
+
+	// Extract base fields using interface assertion or reflection
+	var base BaseInput
+	_ = json.Unmarshal(inputData, &base)
+
+	// Generate project ID from CWD
+	project := ProjectIDWithName(base.CWD)
+
+	// Create context
+	ctx := &HookContext{
+		HookName:  hookName,
+		Port:      port,
+		Project:   project,
+		SessionID: base.SessionID,
+		CWD:       base.CWD,
+		RawInput:  inputData,
+	}
+
+	// Run hook-specific handler
+	additionalContext, err := handler(ctx, &input)
+	if err != nil {
+		WriteError(hookName, err)
+		os.Exit(1)
+	}
+
+	// Output response
+	if additionalContext != "" {
+		response := map[string]interface{}{
+			"continue": true,
+			"hookSpecificOutput": map[string]interface{}{
+				"hookEventName":     hookName,
+				"additionalContext": additionalContext,
+			},
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(response)
+		os.Exit(0)
+	}
+
+	WriteResponse(hookName, true)
 }

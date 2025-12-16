@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -14,10 +13,7 @@ import (
 
 // Input is the hook input from Claude Code.
 type Input struct {
-	SessionID      string `json:"session_id"`
-	CWD            string `json:"cwd"`
-	PermissionMode string `json:"permission_mode"`
-	HookEventName  string `json:"hook_event_name"`
+	hooks.BaseInput
 	StopHookActive bool   `json:"stop_hook_active"`
 	TranscriptPath string `json:"transcript_path"`
 }
@@ -98,44 +94,20 @@ func parseTranscript(path string) (lastUser, lastAssistant string) {
 }
 
 func main() {
-	// Skip if this is an internal call (from SDK processor)
-	if os.Getenv("CLAUDE_MNEMONIC_INTERNAL") == "1" {
-		hooks.WriteResponse("Stop", true)
-		return
-	}
+	hooks.RunHook("Stop", handleStop)
+}
 
-	// Read input from stdin
-	inputData, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		hooks.WriteError("Stop", err)
-		os.Exit(1)
-	}
-
-	var input Input
-	if err := json.Unmarshal(inputData, &input); err != nil {
-		hooks.WriteError("Stop", err)
-		os.Exit(1)
-	}
-
-	// Ensure worker is running
-	port, err := hooks.EnsureWorkerRunning()
-	if err != nil {
-		hooks.WriteError("Stop", err)
-		os.Exit(1)
-	}
-
+func handleStop(ctx *hooks.HookContext, input *Input) (string, error) {
 	// Find session
-	result, err := hooks.GET(port, fmt.Sprintf("/api/sessions?claudeSessionId=%s", input.SessionID))
+	result, err := hooks.GET(ctx.Port, fmt.Sprintf("/api/sessions?claudeSessionId=%s", ctx.SessionID))
 	if err != nil || result == nil {
 		// Session might not exist, that's OK
-		hooks.WriteResponse("Stop", true)
-		return
+		return "", nil
 	}
 
 	sessionID, ok := result["id"].(float64)
 	if !ok {
-		hooks.WriteResponse("Stop", true)
-		return
+		return "", nil
 	}
 
 	// Parse transcript to get last messages for summary context
@@ -147,7 +119,7 @@ func main() {
 	fmt.Fprintf(os.Stderr, "[stop] Requesting summary for session %d (transcript: %v)\n", int64(sessionID), input.TranscriptPath != "")
 
 	// Request summary with message context from transcript
-	_, err = hooks.POST(port, fmt.Sprintf("/sessions/%d/summarize", int64(sessionID)), map[string]interface{}{
+	_, err = hooks.POST(ctx.Port, fmt.Sprintf("/sessions/%d/summarize", int64(sessionID)), map[string]interface{}{
 		"lastUserMessage":      lastUser,
 		"lastAssistantMessage": lastAssistant,
 	})
@@ -155,5 +127,5 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[stop] Warning: summary request failed: %v\n", err)
 	}
 
-	hooks.WriteResponse("Stop", true)
+	return "", nil
 }

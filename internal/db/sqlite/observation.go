@@ -91,28 +91,7 @@ func (s *ObservationStore) StoreObservation(ctx context.Context, sdkSessionID, p
 
 // ensureSessionExists creates a session if it doesn't exist.
 func (s *ObservationStore) ensureSessionExists(ctx context.Context, sdkSessionID, project string) error {
-	const checkQuery = `SELECT id FROM sdk_sessions WHERE sdk_session_id = ?`
-	var id int64
-	err := s.store.QueryRowContext(ctx, checkQuery, sdkSessionID).Scan(&id)
-	if err == nil {
-		return nil // Session exists
-	}
-	if err != sql.ErrNoRows {
-		return err
-	}
-
-	// Auto-create session
-	now := time.Now()
-	const insertQuery = `
-		INSERT INTO sdk_sessions
-		(claude_session_id, sdk_session_id, project, started_at, started_at_epoch, status)
-		VALUES (?, ?, ?, ?, ?, 'active')
-	`
-	_, err = s.store.ExecContext(ctx, insertQuery,
-		sdkSessionID, sdkSessionID, project,
-		now.Format(time.RFC3339), now.UnixMilli(),
-	)
-	return err
+	return EnsureSessionExists(ctx, s.store, sdkSessionID, project)
 }
 
 // GetObservationByID retrieves an observation by ID.
@@ -159,10 +138,7 @@ func (s *ObservationStore) GetObservationsByIDs(ctx context.Context, ids []int64
 	}
 
 	// Convert []int64 to []interface{}
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
+	args := int64SliceToInterface(ids)
 	if limit > 0 {
 		args = append(args, limit)
 	}
@@ -355,37 +331,6 @@ func extractKeywords(query string) []string {
 	return keywords
 }
 
-// ExistsSimilarObservation checks if an observation about the same files exists for a project.
-// Used to prevent duplicate observations when re-reading the same files.
-func (s *ObservationStore) ExistsSimilarObservation(ctx context.Context, project string, filesRead, filesModified []string) (bool, error) {
-	// If no files tracked, can't deduplicate
-	if len(filesRead) == 0 && len(filesModified) == 0 {
-		return false, nil
-	}
-
-	// Check if any observation exists with the same primary file
-	// Use the first file as the key identifier
-	var primaryFile string
-	if len(filesRead) > 0 {
-		primaryFile = filesRead[0]
-	} else if len(filesModified) > 0 {
-		primaryFile = filesModified[0]
-	}
-
-	const query = `
-		SELECT COUNT(*) FROM observations
-		WHERE project = ? AND (files_read LIKE ? OR files_modified LIKE ?)
-	`
-	pattern := "%" + primaryFile + "%"
-
-	var count int
-	err := s.store.QueryRowContext(ctx, query, project, pattern, pattern).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
 // DeleteObservations deletes multiple observations by ID.
 func (s *ObservationStore) DeleteObservations(ctx context.Context, ids []int64) (int64, error) {
 	if len(ids) == 0 {
@@ -497,21 +442,4 @@ func scanObservationRows(rows *sql.Rows) ([]*models.Observation, error) {
 	return observations, rows.Err()
 }
 
-func nullString(s string) sql.NullString {
-	return sql.NullString{String: s, Valid: s != ""}
-}
-
-func nullInt(i int) sql.NullInt64 {
-	return sql.NullInt64{Int64: int64(i), Valid: i > 0}
-}
-
-func repeatPlaceholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	result := ""
-	for i := 0; i < n; i++ {
-		result += ", ?"
-	}
-	return result
-}
+// Note: nullString, nullInt, and repeatPlaceholders are in helpers.go
