@@ -1,7 +1,7 @@
 #!/bin/bash
 # Download ONNX Runtime libraries for embedding
 # Usage: ./download-onnx-libs.sh [platform]
-# Platform: darwin-amd64, darwin-arm64, linux-amd64, linux-arm64, or "all" (default)
+# Platform: darwin-arm64, linux-amd64, windows-amd64, or "all" (default)
 
 set -e
 
@@ -30,14 +30,6 @@ fi
 # Temporary directory for downloads
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf ${TEMP_DIR}" EXIT
-
-download_darwin_amd64() {
-    echo "Downloading darwin-amd64..."
-    mkdir -p "${ASSETS_DIR}/darwin-amd64"
-    curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-osx-x86_64-${ONNX_VERSION}.tgz" -o "${TEMP_DIR}/darwin-amd64.tgz"
-    tar -xzf "${TEMP_DIR}/darwin-amd64.tgz" -C "${TEMP_DIR}"
-    cp "${TEMP_DIR}/onnxruntime-osx-x86_64-${ONNX_VERSION}/lib/libonnxruntime.${ONNX_VERSION}.dylib" "${ASSETS_DIR}/darwin-amd64/libonnxruntime.dylib"
-}
 
 download_darwin_arm64() {
     echo "Downloading darwin-arm64..."
@@ -92,7 +84,6 @@ download_if_needed() {
         return 0
     fi
     case "$plat" in
-        darwin-amd64) download_darwin_amd64 ;;
         darwin-arm64) download_darwin_arm64 ;;
         linux-amd64) download_linux_amd64 ;;
         linux-arm64) download_linux_arm64 ;;
@@ -103,11 +94,10 @@ download_if_needed() {
 echo "ONNX Runtime v${ONNX_VERSION} - Platform: ${PLATFORM}"
 
 case "$PLATFORM" in
-    darwin-amd64|darwin-arm64|linux-amd64|linux-arm64|windows-amd64)
+    darwin-arm64|linux-amd64|linux-arm64|windows-amd64)
         download_if_needed "$PLATFORM"
         ;;
     all)
-        download_if_needed darwin-amd64
         download_if_needed darwin-arm64
         download_if_needed linux-amd64
         download_if_needed linux-arm64
@@ -115,7 +105,7 @@ case "$PLATFORM" in
         ;;
     *)
         echo "Unknown platform: $PLATFORM"
-        echo "Supported: darwin-amd64, darwin-arm64, linux-amd64, linux-arm64, windows-amd64, all, auto"
+        echo "Supported: darwin-arm64, linux-amd64, linux-arm64, windows-amd64, all, auto"
         exit 1
         ;;
 esac
