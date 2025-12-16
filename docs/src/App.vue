@@ -253,17 +253,17 @@
             <div class="bg-slate-800/50 rounded-lg p-3">
               <p class="text-slate-400 mb-2">macOS</p>
               <code class="text-amber-400">brew install python3</code><br>
-              <code class="text-amber-400">pip3 install uvx</code>
+              <code class="text-amber-400">pip3 install uv</code>
             </div>
             <div class="bg-slate-800/50 rounded-lg p-3">
               <p class="text-slate-400 mb-2">Linux</p>
               <code class="text-amber-400">apt install python3</code><br>
-              <code class="text-amber-400">pip3 install uvx</code>
+              <code class="text-amber-400">pip3 install uv</code>
             </div>
             <div class="bg-slate-800/50 rounded-lg p-3">
               <p class="text-slate-400 mb-2">Windows</p>
               <code class="text-amber-400">winget install Python.Python.3</code><br>
-              <code class="text-amber-400">pip install uvx</code>
+              <code class="text-amber-400">pip install uv</code>
             </div>
           </div>
           <p class="text-slate-500 text-xs mt-3">
@@ -468,7 +468,7 @@ const requiredDeps = [
 
 const optionalDeps = [
   { name: 'Python 3.13+', description: 'Required for ChromaDB semantic search. Natural language queries like "that auth bug" work.', icon: 'fab fa-python' },
-  { name: 'uvx', description: 'Python package runner for ChromaDB MCP server.', icon: 'fas fa-box' },
+  { name: 'uv', description: 'Python package manager for ChromaDB MCP server. Provides the uvx command.', icon: 'fas fa-box' },
 ]
 
 const faqs = [
