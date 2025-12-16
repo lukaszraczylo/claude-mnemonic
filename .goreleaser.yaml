@@ -262,10 +262,6 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
-  # Upload plugin config files (from linux build artifacts in split mode)
-  extra_files:
-    - glob: dist/linux/.claude-plugin/plugin.json
-    - glob: dist/linux/.claude-plugin/marketplace.json
   header: |
     ## Claude Mnemonic v{{.Version}}
 
