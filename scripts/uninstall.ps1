@@ -67,10 +67,19 @@ try {
 
     if (Test-Path $SettingsFile) {
         $Settings = Get-Content $SettingsFile -Raw | ConvertFrom-Json
+        $modified = $false
         if ($Settings.enabledPlugins -and $Settings.enabledPlugins.PSObject.Properties[$PluginKey]) {
             $Settings.enabledPlugins.PSObject.Properties.Remove($PluginKey)
+            $modified = $true
+        }
+        # Remove statusline if it's ours
+        if ($Settings.statusLine -and $Settings.statusLine.command -match "claude-mnemonic") {
+            $Settings.PSObject.Properties.Remove("statusLine")
+            $modified = $true
+        }
+        if ($modified) {
             $Settings | ConvertTo-Json -Depth 10 | Out-File -Encoding UTF8 $SettingsFile
-            Write-Success "Removed from settings.json"
+            Write-Success "Removed from settings.json (including statusline)"
         }
     }
 
