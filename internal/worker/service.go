@@ -14,8 +14,9 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/update"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/chroma"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/watcher"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sdk"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/session"
@@ -69,9 +70,10 @@ type Service struct {
 	sseBroadcaster *sse.Broadcaster
 	processor      *sdk.Processor
 
-	// Vector database
-	chromaClient *chroma.Client
-	chromaSync   *chroma.Sync
+	// Vector database (sqlite-vec with local embeddings)
+	embedSvc     *embedding.Service
+	vectorClient *sqlitevec.Client
+	vectorSync   *sqlitevec.Sync
 
 	// HTTP server
 	router    *chi.Mux
@@ -151,7 +153,7 @@ func NewService(version string) (*Service, error) {
 func (s *Service) initializeAsync() {
 	log.Info().Msg("Starting async initialization...")
 
-	// Ensure data directory, vector-db, and settings exist
+	// Ensure data directory and settings exist
 	if err := config.EnsureAll(); err != nil {
 		s.setInitError(fmt.Errorf("ensure data dir: %w", err))
 		return
@@ -177,25 +179,26 @@ func (s *Service) initializeAsync() {
 	// Create session manager
 	sessionManager := session.NewManager(sessionStore)
 
-	// Create ChromaDB client for vector search (optional - will be nil if unavailable)
-	var chromaClient *chroma.Client
-	var chromaSync *chroma.Sync
-	chromaCfg := chroma.Config{
-		Project:   "default", // Collection prefix
-		DataDir:   s.config.VectorDBPath,
-		BatchSize: 100,
-	}
-	client, err := chroma.NewClient(chromaCfg)
+	// Create embedding service and sqlite-vec client for vector search (optional)
+	var embedSvc *embedding.Service
+	var vectorClient *sqlitevec.Client
+	var vectorSync *sqlitevec.Sync
+
+	emb, err := embedding.NewService()
 	if err != nil {
-		log.Warn().Err(err).Msg("ChromaDB client creation failed - vector sync disabled")
+		log.Warn().Err(err).Msg("Embedding service creation failed - vector search disabled")
 	} else {
-		// Connect to ChromaDB (starts the MCP server)
-		if err := client.Connect(s.ctx); err != nil {
-			log.Warn().Err(err).Msg("ChromaDB connection failed - vector sync disabled")
+		embedSvc = emb
+		// Create sqlite-vec client using the same DB connection
+		client, err := sqlitevec.NewClient(sqlitevec.Config{
+			DB: store.DB(),
+		}, embedSvc)
+		if err != nil {
+			log.Warn().Err(err).Msg("sqlite-vec client creation failed - vector search disabled")
 		} else {
-			chromaClient = client
-			chromaSync = chroma.NewSync(client)
-			log.Info().Msg("ChromaDB client connected - vector sync enabled")
+			vectorClient = client
+			vectorSync = sqlitevec.NewSync(client)
+			log.Info().Msg("sqlite-vec vector search enabled")
 		}
 	}
 
@@ -222,38 +225,39 @@ func (s *Service) initializeAsync() {
 	s.promptStore = promptStore
 	s.sessionManager = sessionManager
 	s.processor = processor
-	s.chromaClient = chromaClient
-	s.chromaSync = chromaSync
+	s.embedSvc = embedSvc
+	s.vectorClient = vectorClient
+	s.vectorSync = vectorSync
 	s.initMu.Unlock()
 
 	// Set vector sync callbacks on processor if both are available
-	if processor != nil && chromaSync != nil {
+	if processor != nil && vectorSync != nil {
 		processor.SetSyncObservationFunc(func(obs *models.Observation) {
-			if err := chromaSync.SyncObservation(s.ctx, obs); err != nil {
-				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation to ChromaDB")
+			if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
+				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation to sqlite-vec")
 			}
 		})
 		processor.SetSyncSummaryFunc(func(summary *models.SessionSummary) {
-			if err := chromaSync.SyncSummary(s.ctx, summary); err != nil {
-				log.Warn().Err(err).Int64("id", summary.ID).Msg("Failed to sync summary to ChromaDB")
+			if err := vectorSync.SyncSummary(s.ctx, summary); err != nil {
+				log.Warn().Err(err).Int64("id", summary.ID).Msg("Failed to sync summary to sqlite-vec")
 			}
 		})
 	}
 
-	// Set cleanup callback on observation store to sync deletes to ChromaDB
-	if observationStore != nil && chromaSync != nil {
+	// Set cleanup callback on observation store to sync deletes to vector store
+	if observationStore != nil && vectorSync != nil {
 		observationStore.SetCleanupFunc(func(ctx context.Context, deletedIDs []int64) {
-			if err := chromaSync.DeleteObservations(ctx, deletedIDs); err != nil {
-				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete observations from ChromaDB")
+			if err := vectorSync.DeleteObservations(ctx, deletedIDs); err != nil {
+				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete observations from sqlite-vec")
 			}
 		})
 	}
 
-	// Set cleanup callback on prompt store to sync deletes to ChromaDB
-	if promptStore != nil && chromaSync != nil {
+	// Set cleanup callback on prompt store to sync deletes to vector store
+	if promptStore != nil && vectorSync != nil {
 		promptStore.SetCleanupFunc(func(ctx context.Context, deletedIDs []int64) {
-			if err := chromaSync.DeleteUserPrompts(ctx, deletedIDs); err != nil {
-				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete prompts from ChromaDB")
+			if err := vectorSync.DeleteUserPrompts(ctx, deletedIDs); err != nil {
+				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete prompts from sqlite-vec")
 			}
 		})
 	}
@@ -336,13 +340,13 @@ func (s *Service) reinitializeDatabase() {
 	s.initMu.Lock()
 	oldStore := s.store
 	oldSessionManager := s.sessionManager
-	oldChromaClient := s.chromaClient
+	oldEmbedSvc := s.embedSvc
 	s.initMu.Unlock()
 
-	// Close old stores
-	if oldChromaClient != nil {
-		if err := oldChromaClient.Close(); err != nil {
-			log.Warn().Err(err).Msg("Error closing old ChromaDB client")
+	// Close old embedding service
+	if oldEmbedSvc != nil {
+		if err := oldEmbedSvc.Close(); err != nil {
+			log.Warn().Err(err).Msg("Error closing old embedding service")
 		}
 	}
 	if oldStore != nil {
@@ -356,7 +360,7 @@ func (s *Service) reinitializeDatabase() {
 		oldSessionManager.ShutdownAll(s.ctx)
 	}
 
-	// Ensure data directory, vector-db, and settings exist (may have been deleted)
+	// Ensure data directory and settings exist (may have been deleted)
 	if err := config.EnsureAll(); err != nil {
 		s.setInitError(fmt.Errorf("ensure data dir on reinit: %w", err))
 		return
@@ -382,24 +386,25 @@ func (s *Service) reinitializeDatabase() {
 	// Create new session manager
 	sessionManager := session.NewManager(sessionStore)
 
-	// Recreate ChromaDB client
-	var chromaClient *chroma.Client
-	var chromaSync *chroma.Sync
-	chromaCfg := chroma.Config{
-		Project:   "default",
-		DataDir:   s.config.VectorDBPath,
-		BatchSize: 100,
-	}
-	client, err := chroma.NewClient(chromaCfg)
+	// Recreate embedding service and sqlite-vec client
+	var embedSvc *embedding.Service
+	var vectorClient *sqlitevec.Client
+	var vectorSync *sqlitevec.Sync
+
+	emb, err := embedding.NewService()
 	if err != nil {
-		log.Warn().Err(err).Msg("ChromaDB client creation failed after reinit")
+		log.Warn().Err(err).Msg("Embedding service creation failed after reinit")
 	} else {
-		if err := client.Connect(s.ctx); err != nil {
-			log.Warn().Err(err).Msg("ChromaDB connection failed after reinit")
+		embedSvc = emb
+		client, err := sqlitevec.NewClient(sqlitevec.Config{
+			DB: store.DB(),
+		}, embedSvc)
+		if err != nil {
+			log.Warn().Err(err).Msg("sqlite-vec client creation failed after reinit")
 		} else {
-			chromaClient = client
-			chromaSync = chroma.NewSync(client)
-			log.Info().Msg("ChromaDB client reconnected after reinit")
+			vectorClient = client
+			vectorSync = sqlitevec.NewSync(client)
+			log.Info().Msg("sqlite-vec reconnected after reinit")
 		}
 	}
 
@@ -424,39 +429,40 @@ func (s *Service) reinitializeDatabase() {
 	s.promptStore = promptStore
 	s.sessionManager = sessionManager
 	s.processor = processor
-	s.chromaClient = chromaClient
-	s.chromaSync = chromaSync
+	s.embedSvc = embedSvc
+	s.vectorClient = vectorClient
+	s.vectorSync = vectorSync
 	s.initError = nil
 	s.initMu.Unlock()
 
 	// Set vector sync callbacks on processor if both are available
-	if processor != nil && chromaSync != nil {
+	if processor != nil && vectorSync != nil {
 		processor.SetSyncObservationFunc(func(obs *models.Observation) {
-			if err := chromaSync.SyncObservation(s.ctx, obs); err != nil {
-				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation to ChromaDB")
+			if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
+				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation to sqlite-vec")
 			}
 		})
 		processor.SetSyncSummaryFunc(func(summary *models.SessionSummary) {
-			if err := chromaSync.SyncSummary(s.ctx, summary); err != nil {
-				log.Warn().Err(err).Int64("id", summary.ID).Msg("Failed to sync summary to ChromaDB")
+			if err := vectorSync.SyncSummary(s.ctx, summary); err != nil {
+				log.Warn().Err(err).Int64("id", summary.ID).Msg("Failed to sync summary to sqlite-vec")
 			}
 		})
 	}
 
-	// Set cleanup callback on observation store to sync deletes to ChromaDB
-	if observationStore != nil && chromaSync != nil {
+	// Set cleanup callback on observation store to sync deletes to vector store
+	if observationStore != nil && vectorSync != nil {
 		observationStore.SetCleanupFunc(func(ctx context.Context, deletedIDs []int64) {
-			if err := chromaSync.DeleteObservations(ctx, deletedIDs); err != nil {
-				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete observations from ChromaDB")
+			if err := vectorSync.DeleteObservations(ctx, deletedIDs); err != nil {
+				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete observations from sqlite-vec")
 			}
 		})
 	}
 
-	// Set cleanup callback on prompt store to sync deletes to ChromaDB
-	if promptStore != nil && chromaSync != nil {
+	// Set cleanup callback on prompt store to sync deletes to vector store
+	if promptStore != nil && vectorSync != nil {
 		promptStore.SetCleanupFunc(func(ctx context.Context, deletedIDs []int64) {
-			if err := chromaSync.DeleteUserPrompts(ctx, deletedIDs); err != nil {
-				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete prompts from ChromaDB")
+			if err := vectorSync.DeleteUserPrompts(ctx, deletedIDs); err != nil {
+				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete prompts from sqlite-vec")
 			}
 		})
 	}
@@ -862,10 +868,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// Close ChromaDB client
-	if s.chromaClient != nil {
-		if err := s.chromaClient.Close(); err != nil {
-			log.Error().Err(err).Msg("ChromaDB close error")
+	// Close embedding service
+	if s.embedSvc != nil {
+		if err := s.embedSvc.Close(); err != nil {
+			log.Error().Err(err).Msg("Embedding service close error")
+		}
+	}
+
+	// Close vector client
+	if s.vectorClient != nil {
+		if err := s.vectorClient.Close(); err != nil {
+			log.Error().Err(err).Msg("Vector client close error")
 		}
 	}
 
