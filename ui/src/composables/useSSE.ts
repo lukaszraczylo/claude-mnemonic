@@ -1,18 +1,22 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import type { SSEEvent } from '@/types'
 
-export function useSSE() {
-  const isConnected = ref(false)
-  const isProcessing = ref(false)
-  const queueDepth = ref(0)
-  const lastEvent = ref<SSEEvent | null>(null)
+// Singleton state - shared across all useSSE() calls
+const isConnected = ref(false)
+const isProcessing = ref(false)
+const queueDepth = ref(0)
+const lastEvent = ref<SSEEvent | null>(null)
 
-  let eventSource: EventSource | null = null
-  let reconnectTimeout: number | null = null
+let eventSource: EventSource | null = null
+let reconnectTimeout: number | null = null
+let connectionCount = 0
+
+export function useSSE() {
 
   const connect = () => {
+    // Only create connection if not already connected
     if (eventSource) {
-      eventSource.close()
+      return
     }
 
     eventSource = new EventSource('/api/events')
@@ -25,6 +29,12 @@ export function useSSE() {
     eventSource.onmessage = (event) => {
       try {
         const data: SSEEvent = JSON.parse(event.data)
+
+        // Debug: log all SSE events
+        if (data.type !== 'processing_status') {
+          console.log('[SSE] Event received:', data.type, data)
+        }
+
         lastEvent.value = data
 
         if (data.type === 'processing_status') {
@@ -82,18 +92,25 @@ export function useSSE() {
   }
 
   onMounted(() => {
-    // Add listeners to close SSE on page refresh/navigation
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    window.addEventListener('pagehide', handlePageHide)
-    window.addEventListener('pageshow', handlePageShow)
-    connect()
+    connectionCount++
+    if (connectionCount === 1) {
+      // First consumer - add listeners and connect
+      window.addEventListener('beforeunload', handleBeforeUnload)
+      window.addEventListener('pagehide', handlePageHide)
+      window.addEventListener('pageshow', handlePageShow)
+      connect()
+    }
   })
 
   onUnmounted(() => {
-    window.removeEventListener('beforeunload', handleBeforeUnload)
-    window.removeEventListener('pagehide', handlePageHide)
-    window.removeEventListener('pageshow', handlePageShow)
-    disconnect()
+    connectionCount--
+    if (connectionCount === 0) {
+      // Last consumer - remove listeners and disconnect
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      window.removeEventListener('pagehide', handlePageHide)
+      window.removeEventListener('pageshow', handlePageShow)
+      disconnect()
+    }
   })
 
   return {

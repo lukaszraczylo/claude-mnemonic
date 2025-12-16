@@ -258,9 +258,22 @@ func (s *Service) initializeAsync() {
 		})
 	}
 
-	// Set callback for session deletion
+	// Set callbacks for session lifecycle events
+	sessionManager.SetOnSessionCreated(func(id int64) {
+		s.broadcastProcessingStatus()
+		s.sseBroadcaster.Broadcast(map[string]interface{}{
+			"type":   "session",
+			"action": "created",
+			"id":     id,
+		})
+	})
 	sessionManager.SetOnSessionDeleted(func(id int64) {
 		s.broadcastProcessingStatus()
+		s.sseBroadcaster.Broadcast(map[string]interface{}{
+			"type":   "session",
+			"action": "deleted",
+			"id":     id,
+		})
 	})
 
 	// Mark as ready
@@ -448,9 +461,22 @@ func (s *Service) reinitializeDatabase() {
 		})
 	}
 
-	// Set callback for session deletion
+	// Set callbacks for session lifecycle events
+	sessionManager.SetOnSessionCreated(func(id int64) {
+		s.broadcastProcessingStatus()
+		s.sseBroadcaster.Broadcast(map[string]interface{}{
+			"type":   "session",
+			"action": "created",
+			"id":     id,
+		})
+	})
 	sessionManager.SetOnSessionDeleted(func(id int64) {
 		s.broadcastProcessingStatus()
+		s.sseBroadcaster.Broadcast(map[string]interface{}{
+			"type":   "session",
+			"action": "deleted",
+			"id":     id,
+		})
 	})
 
 	// Mark as ready again
@@ -719,6 +745,7 @@ func (s *Service) Start() error {
 }
 
 // processQueue processes the observation queue in the background.
+// Processes immediately when notified, or every QueueProcessInterval as fallback.
 func (s *Service) processQueue() {
 	defer s.wg.Done()
 
@@ -729,7 +756,11 @@ func (s *Service) processQueue() {
 		select {
 		case <-s.ctx.Done():
 			return
+		case <-s.sessionManager.ProcessNotify:
+			// Immediate processing when observation is queued
+			s.processAllSessions()
 		case <-ticker.C:
+			// Fallback periodic processing
 			s.processAllSessions()
 		}
 	}

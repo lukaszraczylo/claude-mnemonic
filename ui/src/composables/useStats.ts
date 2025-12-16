@@ -1,11 +1,15 @@
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import type { Stats } from '@/types'
 import { fetchStats } from '@/utils/api'
+import { useSSE } from './useSSE'
 
 export function useStats(pollInterval: number = 5000) {
   const stats = ref<Stats | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
+
+  // SSE for real-time session updates
+  const { lastEvent } = useSSE()
 
   let intervalId: number | null = null
 
@@ -34,6 +38,14 @@ export function useStats(pollInterval: number = 5000) {
       intervalId = null
     }
   }
+
+  // Watch for SSE session events and refresh immediately
+  watch(lastEvent, (event) => {
+    if (event && event.type === 'session') {
+      console.log('[Stats] SSE session event triggered refresh:', event.action)
+      refresh()
+    }
+  })
 
   onMounted(() => {
     refresh()

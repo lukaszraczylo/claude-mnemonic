@@ -62,20 +62,88 @@ type ActiveSession struct {
 	generatorActive atomic.Bool
 }
 
+// SessionTimeout is how long an inactive session can exist before cleanup.
+const SessionTimeout = 30 * time.Minute
+
+// CleanupInterval is how often to check for stale sessions.
+const CleanupInterval = 5 * time.Minute
+
 // Manager manages active session lifecycles.
 type Manager struct {
 	sessionStore *sqlite.SessionStore
 	sessions     map[int64]*ActiveSession
 	mu           sync.RWMutex
+	onCreated    func(int64)
 	onDeleted    func(int64)
+	ctx          context.Context
+	cancel       context.CancelFunc
+	// Global notification channel for immediate processing
+	ProcessNotify chan struct{}
 }
 
 // NewManager creates a new session manager.
 func NewManager(sessionStore *sqlite.SessionStore) *Manager {
-	return &Manager{
-		sessionStore: sessionStore,
-		sessions:     make(map[int64]*ActiveSession),
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &Manager{
+		sessionStore:  sessionStore,
+		sessions:      make(map[int64]*ActiveSession),
+		ctx:           ctx,
+		cancel:        cancel,
+		ProcessNotify: make(chan struct{}, 1),
 	}
+	// Start background cleanup goroutine
+	go m.cleanupLoop()
+	return m
+}
+
+// cleanupLoop periodically removes stale sessions.
+func (m *Manager) cleanupLoop() {
+	ticker := time.NewTicker(CleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			m.cleanupStaleSessions()
+		}
+	}
+}
+
+// cleanupStaleSessions removes sessions that have been inactive too long.
+func (m *Manager) cleanupStaleSessions() {
+	m.mu.RLock()
+	var staleIDs []int64
+	now := time.Now()
+	for id, session := range m.sessions {
+		// Check if session has been inactive for too long
+		session.messageMu.Lock()
+		hasPending := len(session.pendingMessages) > 0
+		session.messageMu.Unlock()
+
+		// Don't delete sessions with pending messages or active processing
+		if hasPending || session.generatorActive.Load() {
+			continue
+		}
+
+		// Delete if session is older than timeout
+		if now.Sub(session.StartTime) > SessionTimeout {
+			staleIDs = append(staleIDs, id)
+		}
+	}
+	m.mu.RUnlock()
+
+	// Delete stale sessions
+	for _, id := range staleIDs {
+		log.Info().Int64("sessionId", id).Dur("age", SessionTimeout).Msg("Cleaning up stale session")
+		m.DeleteSession(id)
+	}
+}
+
+// SetOnSessionCreated sets a callback for when a session is created.
+func (m *Manager) SetOnSessionCreated(callback func(int64)) {
+	m.onCreated = callback
 }
 
 // SetOnSessionDeleted sets a callback for when a session is deleted.
@@ -86,7 +154,6 @@ func (m *Manager) SetOnSessionDeleted(callback func(int64)) {
 // InitializeSession initializes a session, creating it if needed.
 func (m *Manager) InitializeSession(ctx context.Context, sessionDBID int64, userPrompt string, promptNumber int) (*ActiveSession, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Check if already active
 	if session, ok := m.sessions[sessionDBID]; ok {
@@ -95,10 +162,12 @@ func (m *Manager) InitializeSession(ctx context.Context, sessionDBID int64, user
 			session.UserPrompt = userPrompt
 			session.LastPromptNumber = promptNumber
 		}
+		m.mu.Unlock()
 		return session, nil
 	}
 
-	// Fetch from database
+	// Fetch from database (unlock during DB call to avoid blocking)
+	m.mu.Unlock()
 	dbSession, err := m.sessionStore.GetSessionByID(ctx, sessionDBID)
 	if err != nil {
 		return nil, err
@@ -135,13 +204,28 @@ func (m *Manager) InitializeSession(ctx context.Context, sessionDBID int64, user
 		cancel:           cancel,
 	}
 
+	// Re-acquire lock to add session
+	m.mu.Lock()
+	// Double-check another goroutine didn't create it
+	if existing, ok := m.sessions[sessionDBID]; ok {
+		m.mu.Unlock()
+		cancel() // Clean up unused context
+		return existing, nil
+	}
 	m.sessions[sessionDBID] = session
+	onCreated := m.onCreated
+	m.mu.Unlock()
 
 	log.Info().
 		Int64("sessionId", sessionDBID).
 		Str("project", session.Project).
 		Str("claudeSessionId", session.ClaudeSessionID).
 		Msg("Session initialized")
+
+	// Notify callback (outside lock)
+	if onCreated != nil {
+		onCreated(sessionDBID)
+	}
 
 	return session, nil
 }
@@ -170,9 +254,15 @@ func (m *Manager) QueueObservation(ctx context.Context, sessionDBID int64, data 
 	queueDepth := len(session.pendingMessages)
 	session.messageMu.Unlock()
 
-	// Non-blocking notification
+	// Non-blocking notification to session
 	select {
 	case session.notify <- struct{}{}:
+	default:
+	}
+
+	// Non-blocking notification to global processor
+	select {
+	case m.ProcessNotify <- struct{}{}:
 	default:
 	}
 
@@ -212,9 +302,15 @@ func (m *Manager) QueueSummarize(ctx context.Context, sessionDBID int64, lastUse
 	queueDepth := len(session.pendingMessages)
 	session.messageMu.Unlock()
 
-	// Non-blocking notification
+	// Non-blocking notification to session
 	select {
 	case session.notify <- struct{}{}:
+	default:
+	}
+
+	// Non-blocking notification to global processor
+	select {
+	case m.ProcessNotify <- struct{}{}:
 	default:
 	}
 
@@ -255,6 +351,9 @@ func (m *Manager) DeleteSession(sessionDBID int64) {
 
 // ShutdownAll shuts down all active sessions.
 func (m *Manager) ShutdownAll(ctx context.Context) {
+	// Stop cleanup goroutine
+	m.cancel()
+
 	m.mu.Lock()
 	sessionIDs := make([]int64, 0, len(m.sessions))
 	for id := range m.sessions {
