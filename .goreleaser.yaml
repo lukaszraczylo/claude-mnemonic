@@ -13,11 +13,13 @@ before:
     - bash -c "cd ui && npm ci --silent && npm run build"
     - bash -c "rm -rf internal/worker/static && mkdir -p internal/worker/static && cp -r ui/dist/* internal/worker/static/"
 
-# Generate versioned plugin configuration files (GoReleaser Pro feature)
+# Generate versioned plugin configuration files (GoReleaser Pro)
 template_files:
-  - src: plugin/.claude-plugin/plugin.json.tpl
+  - id: plugin-json
+    src: plugin/.claude-plugin/plugin.json.tpl
     dst: .claude-plugin/plugin.json
-  - src: plugin/.claude-plugin/marketplace.json.tpl
+  - id: marketplace-json
+    src: plugin/.claude-plugin/marketplace.json.tpl
     dst: .claude-plugin/marketplace.json
 
 builds:
@@ -212,7 +214,8 @@ builds:
 
 archives:
   - id: default
-    format: tar.gz
+    formats:
+      - tar.gz
     name_template: >-
       {{ .ProjectName }}_
       {{- .Version }}_
@@ -227,7 +230,8 @@ archives:
         strip_parent: true
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: 'checksums.txt'

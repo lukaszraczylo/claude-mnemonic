@@ -202,14 +202,13 @@
     <!-- Requirements Section -->
     <section id="requirements" class="py-20 lg:py-28 px-4 sm:px-6 bg-slate-900/30">
       <div class="max-w-6xl mx-auto">
-        <SectionHeader title="Requirements" subtitle="Minimal dependencies. Maximum functionality." />
+        <SectionHeader title="Requirements" subtitle="Minimal dependencies. Everything else is built-in." />
 
-        <div class="grid md:grid-cols-2 gap-6 sm:gap-8">
-          <!-- Required -->
+        <div class="max-w-xl mx-auto">
           <div class="glass rounded-2xl p-5 sm:p-6">
             <div class="flex items-center gap-2 mb-4">
               <i class="fas fa-check-circle text-green-500"></i>
-              <span class="text-white font-semibold text-sm sm:text-base">Required</span>
+              <span class="text-white font-semibold text-sm sm:text-base">That's all you need</span>
             </div>
             <div class="space-y-3">
               <div v-for="req in requiredDeps" :key="req.name" class="flex items-start gap-3 p-3 bg-slate-800/50 rounded-lg">
@@ -220,56 +219,11 @@
                 </div>
               </div>
             </div>
-          </div>
-
-          <!-- Optional -->
-          <div class="glass rounded-2xl p-5 sm:p-6">
-            <div class="flex items-center gap-2 mb-4">
-              <i class="fas fa-plus-circle text-amber-500"></i>
-              <span class="text-white font-semibold text-sm sm:text-base">Optional (for semantic search)</span>
-            </div>
-            <div class="space-y-3">
-              <div v-for="req in optionalDeps" :key="req.name" class="flex items-start gap-3 p-3 bg-slate-800/50 rounded-lg">
-                <i :class="[req.icon, 'text-slate-500 mt-0.5']"></i>
-                <div>
-                  <code class="text-white text-xs sm:text-sm font-semibold">{{ req.name }}</code>
-                  <p class="text-slate-400 text-xs mt-1">{{ req.description }}</p>
-                </div>
-              </div>
-            </div>
             <p class="text-slate-500 text-xs mt-4">
               <i class="fas fa-info-circle mr-1"></i>
-              Without these, core functionality (SQLite storage, full-text search) still works.
+              No Python. No external services. Semantic search with local embeddings is built-in.
             </p>
           </div>
-        </div>
-
-        <div class="mt-6 sm:mt-8 glass rounded-xl p-4 sm:p-5">
-          <div class="flex items-center gap-2 mb-3">
-            <i class="fas fa-terminal text-amber-500"></i>
-            <span class="text-white font-semibold text-sm">Install optional dependencies</span>
-          </div>
-          <div class="grid sm:grid-cols-3 gap-3 text-xs">
-            <div class="bg-slate-800/50 rounded-lg p-3">
-              <p class="text-slate-400 mb-2">macOS</p>
-              <code class="text-amber-400">brew install python3</code><br>
-              <code class="text-amber-400">pip3 install uv</code>
-            </div>
-            <div class="bg-slate-800/50 rounded-lg p-3">
-              <p class="text-slate-400 mb-2">Linux</p>
-              <code class="text-amber-400">apt install python3</code><br>
-              <code class="text-amber-400">pip3 install uv</code>
-            </div>
-            <div class="bg-slate-800/50 rounded-lg p-3">
-              <p class="text-slate-400 mb-2">Windows</p>
-              <code class="text-amber-400">winget install Python.Python.3</code><br>
-              <code class="text-amber-400">pip install uv</code>
-            </div>
-          </div>
-          <p class="text-slate-500 text-xs mt-3">
-            <i class="fas fa-info-circle mr-1"></i>
-            Requires Python 3.13+. Most package managers install the latest version.
-          </p>
         </div>
       </div>
     </section>
@@ -320,18 +274,22 @@
     <section class="py-20 lg:py-28 px-4 sm:px-6">
       <div class="max-w-6xl mx-auto">
         <SectionHeader title="Under the hood" subtitle="Built with simplicity and performance in mind" />
-        <div class="grid sm:grid-cols-3 gap-4 sm:gap-8 text-center">
+        <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 text-center">
           <div class="glass rounded-2xl p-6 sm:p-8 hover:border-amber-500/30 transition-colors">
             <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">Go</div>
-            <p class="text-slate-400 text-xs sm:text-sm">Worker service and hooks. Fast startup, low memory footprint, zero runtime dependencies.</p>
+            <p class="text-slate-400 text-xs sm:text-sm">Single binary. Fast startup, low memory. Zero runtime dependencies.</p>
           </div>
           <div class="glass rounded-2xl p-6 sm:p-8 hover:border-amber-500/30 transition-colors">
             <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">SQLite</div>
-            <p class="text-slate-400 text-xs sm:text-sm">FTS5 full-text search. Single file database. No server to manage. Survives restarts.</p>
+            <p class="text-slate-400 text-xs sm:text-sm">FTS5 full-text search. Single file database. Survives restarts.</p>
           </div>
           <div class="glass rounded-2xl p-6 sm:p-8 hover:border-amber-500/30 transition-colors">
-            <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">ChromaDB</div>
-            <p class="text-slate-400 text-xs sm:text-sm">Vector embeddings for semantic search. "Fix auth" finds "JWT validation issue" automatically.</p>
+            <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">sqlite-vec</div>
+            <p class="text-slate-400 text-xs sm:text-sm">Embedded vector database. No external services required.</p>
+          </div>
+          <div class="glass rounded-2xl p-6 sm:p-8 hover:border-amber-500/30 transition-colors">
+            <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">MiniLM</div>
+            <p class="text-slate-400 text-xs sm:text-sm">Local embeddings via ONNX. "Fix auth" finds "JWT issue" automatically.</p>
           </div>
         </div>
       </div>
@@ -464,11 +422,6 @@ const configOptions = [
 const requiredDeps = [
   { name: 'Claude Code CLI', description: 'Host application - this is a plugin for Claude Code. Uses your existing subscription (Pro/Max) instead of API keys.', icon: 'fas fa-terminal' },
   { name: 'jq', description: 'JSON processor used during installation. Usually pre-installed on most systems.', icon: 'fas fa-code' },
-]
-
-const optionalDeps = [
-  { name: 'Python 3.13+', description: 'Required for ChromaDB semantic search. Natural language queries like "that auth bug" work.', icon: 'fab fa-python' },
-  { name: 'uv', description: 'Python package manager for ChromaDB MCP server. Provides the uvx command.', icon: 'fas fa-box' },
 ]
 
 const faqs = [
