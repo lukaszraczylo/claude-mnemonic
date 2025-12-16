@@ -6,16 +6,16 @@ import (
 	"strings"
 
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/chroma"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 )
 
-// Manager provides unified search across SQLite and ChromaDB.
+// Manager provides unified search across SQLite and sqlite-vec.
 type Manager struct {
 	observationStore *sqlite.ObservationStore
 	summaryStore     *sqlite.SummaryStore
 	promptStore      *sqlite.PromptStore
-	chromaClient     *chroma.Client
+	vectorClient     *sqlitevec.Client
 }
 
 // NewManager creates a new search manager.
@@ -23,13 +23,13 @@ func NewManager(
 	observationStore *sqlite.ObservationStore,
 	summaryStore *sqlite.SummaryStore,
 	promptStore *sqlite.PromptStore,
-	chromaClient *chroma.Client,
+	vectorClient *sqlitevec.Client,
 ) *Manager {
 	return &Manager{
 		observationStore: observationStore,
 		summaryStore:     summaryStore,
 		promptStore:      promptStore,
-		chromaClient:     chromaClient,
+		vectorClient:     vectorClient,
 	}
 }
 
@@ -83,8 +83,8 @@ func (m *Manager) UnifiedSearch(ctx context.Context, params SearchParams) (*Unif
 		params.OrderBy = "date_desc"
 	}
 
-	// If query is provided and Chroma is available, use vector search
-	if params.Query != "" && m.chromaClient != nil {
+	// If query is provided and vector client is available, use vector search
+	if params.Query != "" && m.vectorClient != nil && m.vectorClient.IsConnected() {
 		return m.vectorSearch(ctx, params)
 	}
 
@@ -92,29 +92,29 @@ func (m *Manager) UnifiedSearch(ctx context.Context, params SearchParams) (*Unif
 	return m.filterSearch(ctx, params)
 }
 
-// vectorSearch performs semantic search via ChromaDB.
+// vectorSearch performs semantic search via sqlite-vec.
 func (m *Manager) vectorSearch(ctx context.Context, params SearchParams) (*UnifiedSearchResult, error) {
 	// Build where filter based on search type
-	var docType chroma.DocType
+	var docType sqlitevec.DocType
 	switch params.Type {
 	case "observations":
-		docType = chroma.DocTypeObservation
+		docType = sqlitevec.DocTypeObservation
 	case "sessions":
-		docType = chroma.DocTypeSessionSummary
+		docType = sqlitevec.DocTypeSessionSummary
 	case "prompts":
-		docType = chroma.DocTypeUserPrompt
+		docType = sqlitevec.DocTypeUserPrompt
 	}
-	where := chroma.BuildWhereFilter(docType, params.Project)
+	where := sqlitevec.BuildWhereFilter(docType, params.Project)
 
-	// Query ChromaDB
-	chromaResults, err := m.chromaClient.Query(ctx, params.Query, params.Limit*2, where)
+	// Query sqlite-vec
+	vectorResults, err := m.vectorClient.Query(ctx, params.Query, params.Limit*2, where)
 	if err != nil {
 		// Fall back to filter search on error
 		return m.filterSearch(ctx, params)
 	}
 
 	// Extract IDs grouped by document type using shared helper
-	extracted := chroma.ExtractIDsByDocType(chromaResults)
+	extracted := sqlitevec.ExtractIDsByDocType(vectorResults)
 	obsIDs := extracted.ObservationIDs
 	summaryIDs := extracted.SummaryIDs
 	promptIDs := extracted.PromptIDs

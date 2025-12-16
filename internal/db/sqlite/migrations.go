@@ -254,6 +254,24 @@ var Migrations = []Migration{
 			ALTER TABLE user_prompts ADD COLUMN matched_observations INTEGER DEFAULT 0;
 		`,
 	},
+	{
+		Version: 17,
+		Name:    "sqlite_vec_vectors",
+		SQL: `
+			-- Vector embeddings table using sqlite-vec
+			-- Each document (narrative, fact, summary field, prompt) gets one vector
+			-- Uses all-MiniLM-L6-v2 embeddings (384 dimensions)
+			CREATE VIRTUAL TABLE IF NOT EXISTS vectors USING vec0(
+				doc_id TEXT PRIMARY KEY,
+				embedding float[384],
+				sqlite_id INTEGER,
+				doc_type TEXT,
+				field_type TEXT,
+				project TEXT,
+				scope TEXT
+			);
+		`,
+	},
 }
 
 // MigrationManager handles database schema migrations.

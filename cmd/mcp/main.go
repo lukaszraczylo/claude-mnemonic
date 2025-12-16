@@ -11,9 +11,10 @@ import (
 
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/mcp"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/search"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/chroma"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/watcher"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -40,7 +41,7 @@ func main() {
 		log.Fatal().Msg("--project is required")
 	}
 
-	// Ensure data directory, vector-db, and settings exist
+	// Ensure data directory and settings exist
 	if err := config.EnsureAll(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to ensure data directories")
 	}
@@ -54,10 +55,8 @@ func main() {
 
 	// Override data directory if specified
 	dbPath := cfg.DBPath
-	vectorDBPath := cfg.VectorDBPath
 	if *dataDir != "" {
 		dbPath = *dataDir + "/claude-mnemonic.db"
-		vectorDBPath = *dataDir + "/vector-db"
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -89,31 +88,26 @@ func main() {
 	summaryStore := sqlite.NewSummaryStore(store)
 	promptStore := sqlite.NewPromptStore(store)
 
-	// Initialize ChromaDB client (optional)
-	var chromaClient *chroma.Client
-	chromaCfg := chroma.Config{
-		Project:   *project,
-		DataDir:   vectorDBPath,
-		PythonVer: cfg.PythonVersion,
-		BatchSize: 100,
-	}
-	chromaClient, err = chroma.NewClient(chromaCfg)
+	// Initialize embedding service and vector client
+	var vectorClient *sqlitevec.Client
+	embedSvc, err := embedding.NewService()
 	if err != nil {
-		log.Warn().Err(err).Msg("ChromaDB unavailable, vector search disabled")
+		log.Warn().Err(err).Msg("Embedding service unavailable, vector search disabled")
 	} else {
-		if err := chromaClient.Connect(ctx); err != nil {
-			log.Warn().Err(err).Msg("Failed to connect to ChromaDB, vector search disabled")
-			chromaClient = nil
+		defer embedSvc.Close()
+		vectorClient, err = sqlitevec.NewClient(sqlitevec.Config{DB: store.DB()}, embedSvc)
+		if err != nil {
+			log.Warn().Err(err).Msg("Vector client unavailable, vector search disabled")
 		} else {
-			defer chromaClient.Close()
+			log.Info().Msg("Vector search enabled via sqlite-vec")
 		}
 	}
 
 	// Initialize search manager
-	searchMgr := search.NewManager(observationStore, summaryStore, promptStore, chromaClient)
+	searchMgr := search.NewManager(observationStore, summaryStore, promptStore, vectorClient)
 
 	// Start file watchers
-	startWatchers(ctx, vectorDBPath, chromaClient)
+	startWatchers(ctx, dbPath)
 
 	// Create and run MCP server
 	server := mcp.NewServer(searchMgr, Version)
@@ -124,27 +118,8 @@ func main() {
 	}
 }
 
-// startWatchers initializes file watchers for vector DB and config.
-func startWatchers(ctx context.Context, vectorDBPath string, chromaClient *chroma.Client) {
-	// Watch vector DB directory for deletion
-	if chromaClient != nil {
-		vectorWatcher, err := watcher.New(vectorDBPath, func() {
-			log.Warn().Str("path", vectorDBPath).Msg("Vector database deleted, reconnecting ChromaDB...")
-			if err := chromaClient.Reconnect(ctx); err != nil {
-				log.Error().Err(err).Msg("Failed to reconnect ChromaDB after deletion")
-			}
-		})
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to create vector DB watcher")
-		} else {
-			if err := vectorWatcher.Start(); err != nil {
-				log.Warn().Err(err).Msg("Failed to start vector DB watcher")
-			} else {
-				log.Info().Str("path", vectorDBPath).Msg("Vector DB file watcher started")
-			}
-		}
-	}
-
+// startWatchers initializes file watchers for config.
+func startWatchers(ctx context.Context, dbPath string) {
 	// Watch config file for changes (triggers process exit for restart)
 	configPath := config.SettingsPath()
 	configWatcher, err := watcher.New(configPath, func() {
