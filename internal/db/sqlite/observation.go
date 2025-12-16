@@ -74,12 +74,16 @@ func (s *ObservationStore) StoreObservation(ctx context.Context, sdkSessionID, p
 
 	id, _ := result.LastInsertId()
 
-	// Cleanup old observations beyond the limit for this project
+	// Cleanup old observations beyond the limit for this project (async to not block handler)
 	if project != "" {
-		deletedIDs, _ := s.CleanupOldObservations(ctx, project)
-		if len(deletedIDs) > 0 && s.cleanupFunc != nil {
-			s.cleanupFunc(ctx, deletedIDs)
-		}
+		go func(proj string) {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			deletedIDs, _ := s.CleanupOldObservations(cleanupCtx, proj)
+			if len(deletedIDs) > 0 && s.cleanupFunc != nil {
+				s.cleanupFunc(cleanupCtx, deletedIDs)
+			}
+		}(project)
 	}
 
 	return id, nowEpoch, nil

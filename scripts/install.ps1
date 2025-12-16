@@ -27,9 +27,28 @@ function Write-Error { param($Message) Write-Host "[ERROR] $Message" -Foreground
 
 function Get-LatestVersion {
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GitHubRepo/releases/latest"
+        $headers = @{}
+        if ($env:GITHUB_TOKEN) {
+            $headers["Authorization"] = "token $env:GITHUB_TOKEN"
+        }
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GitHubRepo/releases/latest" -Headers $headers
         return $release.tag_name
     } catch {
+        $errorMsg = $_.Exception.Message
+        if ($errorMsg -match "rate limit" -or $_.Exception.Response.StatusCode -eq 403) {
+            Write-Host ""
+            Write-Host "[ERROR] GitHub API rate limit exceeded." -ForegroundColor Red
+            Write-Host ""
+            Write-Host "You have a few options:" -ForegroundColor Yellow
+            Write-Host "  1. Wait ~1 hour for the rate limit to reset"
+            Write-Host "  2. Specify a version manually:"
+            Write-Host "     `$env:MNEMONIC_VERSION = 'v0.6.1'; irm https://raw.githubusercontent.com/$GitHubRepo/main/scripts/install.ps1 | iex" -ForegroundColor Cyan
+            Write-Host "  3. Use a GitHub token (set `$env:GITHUB_TOKEN)"
+            Write-Host "  4. Clone and build from source:"
+            Write-Host "     git clone https://github.com/$GitHubRepo.git" -ForegroundColor Cyan
+            Write-Host "     cd claude-mnemonic; make build; make install" -ForegroundColor Cyan
+            exit 1
+        }
         Write-Error "Failed to fetch latest version from GitHub: $_"
     }
 }
@@ -88,6 +107,14 @@ function Register-Plugin {
 
     # Ensure directories exist
     New-Item -ItemType Directory -Path "$env:USERPROFILE\.claude\plugins" -Force | Out-Null
+
+    # Clean up old cache versions to prevent stale binaries
+    $CacheBase = Split-Path $CachePath -Parent
+    if (Test-Path $CacheBase) {
+        Write-Info "Cleaning up old cache versions..."
+        Get-ChildItem -Path $CacheBase -Directory | Where-Object { $_.Name -ne $VersionClean } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     New-Item -ItemType Directory -Path $CachePath -Force | Out-Null
 
     # Create JSON files if they don't exist
@@ -132,8 +159,19 @@ function Register-Plugin {
             $Settings | Add-Member -NotePropertyName "enabledPlugins" -NotePropertyValue @{} -Force
         }
         $Settings.enabledPlugins | Add-Member -NotePropertyName $PluginKey -NotePropertyValue $true -Force
+
+        # Configure statusline
+        $StatuslineCmd = "$InstallDir\hooks\statusline.exe"
+        $StatuslineEntry = @{
+            type = "command"
+            command = $StatuslineCmd
+            padding = 0
+        }
+        $Settings | Add-Member -NotePropertyName "statusLine" -NotePropertyValue $StatuslineEntry -Force
+
         $Settings | ConvertTo-Json -Depth 10 | Out-File -Encoding UTF8 $SettingsFile
         Write-Success "Plugin enabled in settings.json"
+        Write-Success "Statusline configured in settings.json"
 
         # Update known_marketplaces.json
         $Marketplaces = Get-Content $MarketplacesFile -Raw | ConvertFrom-Json
@@ -194,8 +232,12 @@ function Uninstall-ClaudeMnemonic {
             $Settings = Get-Content $SettingsFile -Raw | ConvertFrom-Json
             if ($Settings.enabledPlugins) {
                 $Settings.enabledPlugins.PSObject.Properties.Remove($PluginKey)
-                $Settings | ConvertTo-Json -Depth 10 | Out-File -Encoding UTF8 $SettingsFile
             }
+            # Remove statusline if it's ours
+            if ($Settings.statusLine -and $Settings.statusLine.command -match "claude-mnemonic") {
+                $Settings.PSObject.Properties.Remove("statusLine")
+            }
+            $Settings | ConvertTo-Json -Depth 10 | Out-File -Encoding UTF8 $SettingsFile
         }
         if (Test-Path $MarketplacesFile) {
             $Marketplaces = Get-Content $MarketplacesFile -Raw | ConvertFrom-Json

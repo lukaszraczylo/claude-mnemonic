@@ -431,7 +431,7 @@ const features = [
   { icon: 'fas fa-folder-tree', title: 'Project-aware context', description: 'Your React knowledge stays in React projects. Your Go patterns stay in Go projects. No context pollution.' },
   { icon: 'fas fa-globe', title: 'Shared best practices', description: 'Security patterns, performance tips, and universal learnings automatically available across all your projects.' },
   { icon: 'fas fa-search', title: 'Finds what matters', description: 'Semantic search finds relevant memories even when you don\'t remember the exact words. "That auth thing" just works.' },
-  { icon: 'fas fa-credit-card', title: 'No API keys needed', description: 'Uses Claude Code CLI - works with your existing Claude Pro/Max subscription. No separate API costs.' },
+  { icon: 'fas fa-chart-line', title: 'Live statusline', description: 'Real-time metrics right in Claude Code: memories served, searches performed, and project memory count at a glance.' },
   { icon: 'fas fa-lock', title: '100% private', description: 'Your code context never leaves your machine. No telemetry. No cloud sync. Your memories are yours.' },
 ]
 

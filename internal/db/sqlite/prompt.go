@@ -51,11 +51,15 @@ func (s *PromptStore) SaveUserPromptWithMatches(ctx context.Context, claudeSessi
 
 	id, _ := result.LastInsertId()
 
-	// Cleanup old prompts beyond the global limit
-	deletedIDs, _ := s.CleanupOldPrompts(ctx)
-	if len(deletedIDs) > 0 && s.cleanupFunc != nil {
-		s.cleanupFunc(ctx, deletedIDs)
-	}
+	// Cleanup old prompts beyond the global limit (async to not block handler)
+	go func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		deletedIDs, _ := s.CleanupOldPrompts(cleanupCtx)
+		if len(deletedIDs) > 0 && s.cleanupFunc != nil {
+			s.cleanupFunc(cleanupCtx, deletedIDs)
+		}
+	}()
 
 	return id, nil
 }

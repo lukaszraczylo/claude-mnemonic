@@ -100,6 +100,7 @@ cosign verify-blob \
 | **Project Isolation** | Each project has its own knowledge base |
 | **Global Patterns** | Best practices are shared across all projects |
 | **Semantic Search** | Find relevant context with natural language |
+| **Live Statusline** | Real-time metrics in Claude Code: `[mnemonic] ● served:42 | project:28 memories` |
 | **Web Dashboard** | Browse and manage memories at `localhost:37777` |
 
 ### How knowledge flows
