@@ -13,9 +13,6 @@ const (
 	// DefaultWorkerPort is the default HTTP port for the worker service.
 	DefaultWorkerPort = 37777
 
-	// DefaultPythonVersion for ChromaDB (avoid onnxruntime issues with 3.14+).
-	DefaultPythonVersion = "3.13"
-
 	// DefaultModel for SDK agent (use "haiku" for cost-efficient processing).
 	// Claude Code CLI accepts aliases: haiku, sonnet, opus (always latest versions)
 	DefaultModel = "haiku"
@@ -46,10 +43,6 @@ type Config struct {
 	// Database settings
 	DBPath   string `json:"db_path"`
 	MaxConns int    `json:"max_conns"`
-
-	// ChromaDB settings
-	VectorDBPath  string `json:"vector_db_path"`
-	PythonVersion string `json:"python_version"`
 
 	// SDK Agent settings
 	Model          string `json:"model"`
@@ -84,11 +77,6 @@ func DBPath() string {
 	return filepath.Join(DataDir(), "claude-mnemonic.db")
 }
 
-// VectorDBPath returns the vector database directory path.
-func VectorDBPath() string {
-	return filepath.Join(DataDir(), "vector-db")
-}
-
 // SettingsPath returns the settings file path.
 func SettingsPath() string {
 	return filepath.Join(DataDir(), "settings.json")
@@ -97,11 +85,6 @@ func SettingsPath() string {
 // EnsureDataDir creates the data directory if it doesn't exist.
 func EnsureDataDir() error {
 	return os.MkdirAll(DataDir(), 0750)
-}
-
-// EnsureVectorDBDir creates the vector database directory if it doesn't exist.
-func EnsureVectorDBDir() error {
-	return os.MkdirAll(VectorDBPath(), 0750)
 }
 
 // EnsureSettings creates a default settings file if it doesn't exist.
@@ -116,7 +99,6 @@ func EnsureSettings() error {
 	// Create default settings file with comments
 	defaultSettings := `{
   "CLAUDE_MNEMONIC_WORKER_PORT": 37777,
-  "CLAUDE_MNEMONIC_PYTHON_VERSION": "3.13",
   "CLAUDE_MNEMONIC_MODEL": "haiku",
   "CLAUDE_MNEMONIC_CONTEXT_OBSERVATIONS": 100,
   "CLAUDE_MNEMONIC_CONTEXT_FULL_COUNT": 25,
@@ -131,9 +113,6 @@ func EnsureAll() error {
 	if err := EnsureDataDir(); err != nil {
 		return err
 	}
-	if err := EnsureVectorDBDir(); err != nil {
-		return err
-	}
 	if err := EnsureSettings(); err != nil {
 		return err
 	}
@@ -146,8 +125,6 @@ func Default() *Config {
 		WorkerPort:             DefaultWorkerPort,
 		DBPath:                 DBPath(),
 		MaxConns:               4,
-		VectorDBPath:           VectorDBPath(),
-		PythonVersion:          DefaultPythonVersion,
 		Model:                  DefaultModel,
 		ContextObservations:    100,
 		ContextFullCount:       25,
@@ -182,9 +159,6 @@ func Load() (*Config, error) {
 	// Map settings to config
 	if v, ok := settings["CLAUDE_MNEMONIC_WORKER_PORT"].(float64); ok {
 		cfg.WorkerPort = int(v)
-	}
-	if v, ok := settings["CLAUDE_MNEMONIC_PYTHON_VERSION"].(string); ok {
-		cfg.PythonVersion = v
 	}
 	if v, ok := settings["CLAUDE_MNEMONIC_MODEL"].(string); ok {
 		cfg.Model = v
