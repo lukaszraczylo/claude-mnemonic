@@ -82,3 +82,4 @@ logs/
 # goreleaser
 dist/
 docs/dist
+.claude-plugin

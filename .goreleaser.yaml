@@ -14,9 +14,8 @@ before:
     - bash -c "sed 's/{{ .Version }}/{{ .Version }}/g' ui/package.json.tpl > ui/package.json"
     - bash -c "cd ui && npm ci --silent && npm run build"
     - bash -c "rm -rf internal/worker/static && mkdir -p internal/worker/static && cp -r ui/dist/* internal/worker/static/"
-    # Generate plugin config files (must be before archives, using GORELEASER_CURRENT_TAG)
-    - bash -c "mkdir -p .claude-plugin && VERSION=${GORELEASER_CURRENT_TAG#v} && sed \"s/{{.Version}}/$VERSION/g; s/{{ .Version }}/$VERSION/g\" plugin/.claude-plugin/plugin.json.tpl > .claude-plugin/plugin.json"
-    - bash -c "VERSION=${GORELEASER_CURRENT_TAG#v} && sed \"s/{{.Version}}/$VERSION/g; s/{{ .Version }}/$VERSION/g\" plugin/.claude-plugin/marketplace.json.tpl > .claude-plugin/marketplace.json"
+    # Generate plugin config files for archives (in .claude-plugin/)
+    - bash scripts/generate-plugin-config.sh
 
 builds:
   # Worker service
@@ -263,10 +262,10 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
-  # Upload plugin config files
+  # Upload plugin config files (from linux build artifacts in split mode)
   extra_files:
-    - glob: .claude-plugin/plugin.json
-    - glob: .claude-plugin/marketplace.json
+    - glob: dist/linux/.claude-plugin/plugin.json
+    - glob: dist/linux/.claude-plugin/marketplace.json
   header: |
     ## Claude Mnemonic v{{.Version}}
 
