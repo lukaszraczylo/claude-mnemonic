@@ -642,25 +642,57 @@ Your response:`,
 // rather than actual user work. These summaries should be filtered out.
 func isSelfReferentialSummary(summary *models.ParsedSummary) bool {
 	// Combine all summary fields for checking
-	content := strings.ToLower(summary.Request + " " + summary.Completed + " " + summary.Learned + " " + summary.NextSteps)
+	content := strings.ToLower(summary.Request + " " + summary.Completed + " " + summary.Learned + " " + summary.NextSteps + " " + summary.Investigated + " " + summary.Notes)
 
 	// Indicators that the summary is about the memory agent, not user work
 	selfReferentialPhrases := []string{
+		// Agent references
 		"memory extraction",
 		"memory agent",
+		"extraction agent",
 		"hook execution",
 		"hook mechanism",
+		// Session meta-state
 		"session initialization",
 		"session setup",
+		"session has just started",
+		"session just started",
 		"agent initialization",
 		"no technical learnings",
 		"no code or project work",
+		// Waiting states
 		"waiting for the user",
 		"waiting for user",
 		"awaiting actual",
 		"awaiting claude code",
+		"awaiting tool",
+		"awaiting user",
+		// Meta checkpoint references
 		"progress checkpoint",
 		"checkpoint request",
+		// Common no-work phrases
+		"no work has been completed",
+		"no work completed",
+		"no work done",
+		"no actual work",
+		"nothing has been completed",
+		"nothing completed",
+		// Role/guideline parroting
+		"role definition",
+		"operational guidelines",
+		"providing role",
+		"providing guidelines",
+		// System prompt echoes
+		"extract meaningful observations",
+		"meaningful learnings",
+		"analyze tool executions",
+		"observations for future sessions",
+		// Empty session indicators
+		"empty session",
+		"no substantive work",
+		"no meaningful work",
+		"just beginning",
+		"just begun",
 	}
 
 	matchCount := 0
@@ -685,20 +717,33 @@ func hasMeaningfulContent(assistantMsg string) bool {
 
 	lowerMsg := strings.ToLower(assistantMsg)
 
-	// Skip messages that are primarily about system/hook status
+	// Skip messages that are primarily about system/hook status or meta-instructions
 	skipIndicators := []string{
+		// System/hook markers
 		"hook success",
 		"callback hook",
 		"session start",
 		"sessionstart",
 		"system-reminder",
+		// Agent self-references
 		"memory extraction agent",
 		"memory agent",
+		"extraction agent",
+		// No-work indicators
 		"no technical learnings",
 		"waiting for",
 		"waiting to",
 		"no code or project work",
 		"no substantive",
+		"no work has been completed",
+		"no work done",
+		"awaiting tool",
+		"awaiting user",
+		// Meta-instruction echoes
+		"role definition",
+		"operational guidelines",
+		"analyze tool executions",
+		"extract meaningful observations",
 	}
 
 	skipCount := 0
