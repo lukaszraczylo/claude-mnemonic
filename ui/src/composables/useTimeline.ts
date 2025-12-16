@@ -1,7 +1,20 @@
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { FeedItem, FilterType, ObservationType, ConceptType } from '@/types'
 import { fetchObservations, fetchPrompts, fetchSummaries, combineTimeline } from '@/utils/api'
 import { useSSE } from './useSSE'
+
+// Debounce utility
+function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number): T & { cancel: () => void } {
+  let timeoutId: number | null = null
+  const debounced = ((...args: unknown[]) => {
+    if (timeoutId) clearTimeout(timeoutId)
+    timeoutId = window.setTimeout(() => fn(...args), ms)
+  }) as T & { cancel: () => void }
+  debounced.cancel = () => {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
+  return debounced
+}
 
 export function useTimeline() {
   const observations = ref<FeedItem[]>([])
@@ -17,6 +30,9 @@ export function useTimeline() {
   const currentProject = ref<string | null>(null)
   const currentTypeFilter = ref<ObservationType | null>(null)
   const currentConceptFilter = ref<ConceptType | null>(null)
+
+  // Request cancellation
+  let abortController: AbortController | null = null
 
   // SSE for real-time updates
   const { lastEvent } = useSSE()
@@ -60,6 +76,13 @@ export function useTimeline() {
   })
 
   const refresh = async () => {
+    // Cancel any in-flight request
+    if (abortController) {
+      abortController.abort()
+    }
+    abortController = new AbortController()
+    const signal = abortController.signal
+
     loading.value = true
     error.value = null
 
@@ -71,9 +94,9 @@ export function useTimeline() {
       const limit = project ? 100 : 50
 
       const [obs, prm, sum] = await Promise.all([
-        fetchObservations(limit, project),
-        fetchPrompts(limit, project),
-        fetchSummaries(limit, project)
+        fetchObservations(limit, project, signal),
+        fetchPrompts(limit, project, signal),
+        fetchSummaries(limit, project, signal)
       ])
 
       // Combine into timeline
@@ -84,12 +107,22 @@ export function useTimeline() {
       prompts.value = allItems.value.filter(i => i.itemType === 'prompt')
       summaries.value = allItems.value.filter(i => i.itemType === 'summary')
     } catch (err) {
+      // Ignore aborted requests
+      if (err instanceof Error && err.name === 'AbortError') {
+        return
+      }
       error.value = err instanceof Error ? err.message : 'Failed to fetch timeline'
       console.error('[Timeline] Error:', err)
     } finally {
       loading.value = false
     }
   }
+
+  // Debounced refresh for SSE events (300ms delay)
+  const debouncedRefresh = debounce(() => {
+    console.log('[Timeline] Debounced refresh triggered')
+    refresh()
+  }, 300)
 
   const setFilter = (filter: FilterType) => {
     currentFilter.value = filter
@@ -109,16 +142,24 @@ export function useTimeline() {
     currentConceptFilter.value = concept
   }
 
-  // Watch for SSE events and refresh
+  // Watch for SSE events and debounced refresh
   watch(lastEvent, (event) => {
     if (event && (event.type === 'observation' || event.type === 'prompt' || event.type === 'summary')) {
-      console.log('[Timeline] SSE event triggered refresh:', event.type)
-      refresh()
+      console.log('[Timeline] SSE event queued refresh:', event.type)
+      debouncedRefresh()
     }
   })
 
   onMounted(() => {
     refresh()
+  })
+
+  onUnmounted(() => {
+    // Cancel pending requests and debounced calls
+    debouncedRefresh.cancel()
+    if (abortController) {
+      abortController.abort()
+    }
   })
 
   return {
