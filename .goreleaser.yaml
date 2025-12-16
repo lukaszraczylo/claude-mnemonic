@@ -8,8 +8,8 @@ project_name: claude-mnemonic
 before:
   hooks:
     - go mod tidy
-    # Download ONNX runtime library for current platform if not present
-    - bash -c "./scripts/download-onnx-libs.sh auto"
+    # Download ONNX runtime library (workflow-prepare.sh already handles CI, this is fallback for local builds)
+    - ./scripts/download-onnx-libs.sh auto
     # Generate versioned package.json from template and build Vue dashboard
     - bash -c "sed 's/{{ .Version }}/{{ .Version }}/g' ui/package.json.tpl > ui/package.json"
     - bash -c "cd ui && npm ci --silent && npm run build"
@@ -47,6 +47,8 @@ builds:
       - amd64
       - arm64
     ignore:
+      - goos: darwin
+        goarch: amd64
       - goos: linux
         goarch: arm64
       - goos: windows
@@ -74,6 +76,8 @@ builds:
       - amd64
       - arm64
     ignore:
+      - goos: darwin
+        goarch: amd64
       - goos: linux
         goarch: arm64
       - goos: windows
@@ -101,6 +105,8 @@ builds:
       - amd64
       - arm64
     ignore:
+      - goos: darwin
+        goarch: amd64
       - goos: linux
         goarch: arm64
       - goos: windows
@@ -128,6 +134,8 @@ builds:
       - amd64
       - arm64
     ignore:
+      - goos: darwin
+        goarch: amd64
       - goos: linux
         goarch: arm64
       - goos: windows
@@ -155,6 +163,8 @@ builds:
       - amd64
       - arm64
     ignore:
+      - goos: darwin
+        goarch: amd64
       - goos: linux
         goarch: arm64
       - goos: windows
@@ -182,6 +192,8 @@ builds:
       - amd64
       - arm64
     ignore:
+      - goos: darwin
+        goarch: amd64
       - goos: linux
         goarch: arm64
       - goos: windows
@@ -209,6 +221,8 @@ builds:
       - amd64
       - arm64
     ignore:
+      - goos: darwin
+        goarch: amd64
       - goos: linux
         goarch: arm64
       - goos: windows
