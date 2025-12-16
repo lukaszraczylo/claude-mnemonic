@@ -210,6 +210,51 @@ function Start-Worker {
     }
 }
 
+function Test-OptionalDependencies {
+    $missingDeps = @()
+
+    # Check for Python 3.13+
+    try {
+        $pythonVersion = & python --version 2>&1
+        if ($pythonVersion -match "Python (\d+)\.(\d+)") {
+            $major = [int]$Matches[1]
+            $minor = [int]$Matches[2]
+            if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 13)) {
+                $missingDeps += "Python 3.13+ (found $major.$minor)"
+            }
+        }
+    } catch {
+        $missingDeps += "Python 3.13+"
+    }
+
+    # Check for uvx
+    try {
+        $null = Get-Command uvx -ErrorAction Stop
+    } catch {
+        $missingDeps += "uvx"
+    }
+
+    if ($missingDeps.Count -gt 0) {
+        Write-Host ""
+        Write-Warn "Optional dependencies missing (needed for semantic search):"
+        foreach ($dep in $missingDeps) {
+            Write-Host "  - $dep"
+        }
+        Write-Host ""
+        Write-Info "Install on Windows:"
+        Write-Host "  winget install Python.Python.3.13"
+        Write-Host "  pip install uv"
+        Write-Host ""
+        Write-Info "Note: Requires Python 3.13+."
+        Write-Host ""
+        Write-Info "Semantic search will be disabled until these are installed."
+        Write-Info "Core functionality (SQLite storage, full-text search) will work."
+        Write-Host ""
+    } else {
+        Write-Success "Optional dependencies found (semantic search enabled)"
+    }
+}
+
 function Uninstall-ClaudeMnemonic {
     param([switch]$KeepData)
 
@@ -286,6 +331,7 @@ Write-Info "Installing version: $Version"
 Install-Release -Version $Version
 Register-Plugin -Version $Version
 Start-Worker
+Test-OptionalDependencies
 
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Green

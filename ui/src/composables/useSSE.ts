@@ -61,11 +61,38 @@ export function useSSE() {
     isConnected.value = false
   }
 
+  // Handle page unload/refresh to ensure SSE connection is closed immediately
+  const handleBeforeUnload = () => {
+    disconnect()
+  }
+
+  // Handle pagehide for mobile browsers and bfcache
+  const handlePageHide = (event: PageTransitionEvent) => {
+    if (event.persisted) {
+      // Page is being cached (bfcache), disconnect but don't prevent reconnect
+      disconnect()
+    }
+  }
+
+  // Handle pageshow to reconnect if page was restored from bfcache
+  const handlePageShow = (event: PageTransitionEvent) => {
+    if (event.persisted && !eventSource) {
+      connect()
+    }
+  }
+
   onMounted(() => {
+    // Add listeners to close SSE on page refresh/navigation
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    window.addEventListener('pagehide', handlePageHide)
+    window.addEventListener('pageshow', handlePageShow)
     connect()
   })
 
   onUnmounted(() => {
+    window.removeEventListener('beforeunload', handleBeforeUnload)
+    window.removeEventListener('pagehide', handlePageHide)
+    window.removeEventListener('pageshow', handlePageShow)
     disconnect()
   })
 
