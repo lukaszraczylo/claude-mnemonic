@@ -29,6 +29,7 @@ coverage.html
 ui/node_modules/
 ui/dist/
 ui/.vite/
+ui/package.json
 docs/node_modules/
 docs/dist/
 *.log
