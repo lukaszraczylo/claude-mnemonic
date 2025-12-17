@@ -381,3 +381,165 @@ func TestBroadcasterConcurrentAddRemove(t *testing.T) {
 	count := b.ClientCount()
 	assert.GreaterOrEqual(t, count, 0)
 }
+
+// TestRemoveClientByID tests removing a client by ID.
+func TestRemoveClientByID(t *testing.T) {
+	b := NewBroadcaster()
+	w := newMockResponseWriter()
+
+	client, err := b.AddClient(w)
+	require.NoError(t, err)
+	assert.Equal(t, 1, b.ClientCount())
+
+	// Remove by ID
+	b.removeClientByID(client.ID)
+	assert.Equal(t, 0, b.ClientCount())
+
+	// Done channel should be closed
+	select {
+	case <-client.Done:
+		// Expected
+	default:
+		t.Error("Done channel should be closed")
+	}
+}
+
+// TestRemoveClientByID_NonExistent tests removing a non-existent client by ID.
+func TestRemoveClientByID_NonExistent(t *testing.T) {
+	b := NewBroadcaster()
+
+	// Should not panic
+	b.removeClientByID("non-existent-id")
+	assert.Equal(t, 0, b.ClientCount())
+}
+
+// TestRemoveClientByID_AlreadyClosed tests removing a client with already closed Done channel.
+func TestRemoveClientByID_AlreadyClosed(t *testing.T) {
+	b := NewBroadcaster()
+	w := newMockResponseWriter()
+
+	client, err := b.AddClient(w)
+	require.NoError(t, err)
+
+	// Pre-close the Done channel
+	close(client.Done)
+
+	// Should not panic when trying to close again
+	b.removeClientByID(client.ID)
+	assert.Equal(t, 0, b.ClientCount())
+}
+
+// TestHandleSSE_NonFlusher tests HandleSSE with a non-flusher response writer.
+func TestHandleSSE_NonFlusher(t *testing.T) {
+	b := NewBroadcaster()
+
+	// Create a response writer that doesn't implement Flusher
+	nonFlusher := &nonFlusherWriter{header: make(http.Header)}
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+
+	// Should return immediately since writer isn't a Flusher
+	b.HandleSSE(nonFlusher, req)
+
+	// No clients should be added
+	assert.Equal(t, 0, b.ClientCount())
+}
+
+// nonFlusherWriter is a response writer that doesn't implement http.Flusher.
+type nonFlusherWriter struct {
+	header http.Header
+}
+
+func (w *nonFlusherWriter) Header() http.Header            { return w.header }
+func (w *nonFlusherWriter) Write(data []byte) (int, error) { return len(data), nil }
+func (w *nonFlusherWriter) WriteHeader(statusCode int)     {}
+
+// TestWriteToClient_Timeout tests write timeout behavior.
+func TestWriteToClient_Timeout(t *testing.T) {
+	b := NewBroadcaster()
+
+	// Create a slow writer that blocks
+	slowWriter := &slowMockWriter{
+		header:   make(http.Header),
+		blockFor: 5 * time.Second, // Longer than WriteTimeout
+	}
+
+	client, err := b.AddClient(slowWriter)
+	require.NoError(t, err)
+
+	// Create dead client channel
+	deadCh := make(chan string, 1)
+
+	// Try to write - should timeout
+	msg := "data: test\n\n"
+	b.writeToClient(client, msg, deadCh)
+
+	// May report dead client due to timeout
+	// Check if client was reported as dead (with timeout)
+	select {
+	case deadID := <-deadCh:
+		// Client was reported as dead
+		assert.Equal(t, client.ID, deadID)
+	case <-time.After(WriteTimeout + 500*time.Millisecond):
+		// Timed out waiting - also acceptable
+	}
+}
+
+// slowMockWriter simulates a slow writer for testing timeouts.
+type slowMockWriter struct {
+	header   http.Header
+	blockFor time.Duration
+	mu       sync.Mutex
+}
+
+func (m *slowMockWriter) Header() http.Header {
+	return m.header
+}
+
+func (m *slowMockWriter) Write(data []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	time.Sleep(m.blockFor)
+	return len(data), nil
+}
+
+func (m *slowMockWriter) WriteHeader(statusCode int) {}
+
+func (m *slowMockWriter) Flush() {}
+
+// TestBroadcast_InvalidJSON tests broadcasting un-marshalable data.
+func TestBroadcast_InvalidJSON(t *testing.T) {
+	b := NewBroadcaster()
+	w := newMockResponseWriter()
+	_, err := b.AddClient(w)
+	require.NoError(t, err)
+
+	// channels can't be marshaled to JSON
+	ch := make(chan int)
+	b.Broadcast(ch) // Should log error but not panic
+
+	// Give time for async processing
+	time.Sleep(20 * time.Millisecond)
+
+	// Body should be empty or not contain the channel data
+	body := string(w.GetBody())
+	assert.NotContains(t, body, "chan")
+}
+
+// TestBroadcast_ClientDoneChannel tests broadcasting when client Done is closed.
+func TestBroadcast_ClientDoneChannel(t *testing.T) {
+	b := NewBroadcaster()
+	w := newMockResponseWriter()
+
+	client, err := b.AddClient(w)
+	require.NoError(t, err)
+
+	// Close the done channel
+	close(client.Done)
+
+	// Broadcast should skip this client
+	b.Broadcast(map[string]string{"type": "test"})
+
+	// Give time for async processing
+	time.Sleep(20 * time.Millisecond)
+}

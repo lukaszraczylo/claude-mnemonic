@@ -347,6 +347,58 @@ func TestLoad_ClaudeCodePath(t *testing.T) {
 	assert.Equal(t, "/usr/local/bin/claude", cfg.ClaudeCodePath)
 }
 
+// TestGet tests the global config getter.
+func TestGet(t *testing.T) {
+	// Save and restore HOME
+	origHome := os.Getenv("HOME")
+	tempDir, err := os.MkdirTemp("", "config-get-test-*")
+	require.NoError(t, err)
+	defer func() {
+		os.Setenv("HOME", origHome)
+		os.RemoveAll(tempDir)
+	}()
+	os.Setenv("HOME", tempDir)
+
+	// Create data dir
+	err = os.MkdirAll(filepath.Join(tempDir, ".claude-mnemonic"), 0750)
+	require.NoError(t, err)
+
+	// Get() should return a valid config
+	cfg := Get()
+	require.NotNil(t, cfg)
+	assert.Greater(t, cfg.WorkerPort, 0)
+	assert.NotEmpty(t, cfg.Model)
+}
+
+// TestGetWorkerPort_WithEnv tests GetWorkerPort with environment variable.
+func TestGetWorkerPort_WithEnv(t *testing.T) {
+	// Save original env
+	origEnv := os.Getenv("CLAUDE_MNEMONIC_WORKER_PORT")
+	defer os.Setenv("CLAUDE_MNEMONIC_WORKER_PORT", origEnv)
+
+	// Test with valid port in env
+	os.Setenv("CLAUDE_MNEMONIC_WORKER_PORT", "45678")
+	port := GetWorkerPort()
+	assert.Equal(t, 45678, port)
+
+	// Test with invalid port (should fall back to config)
+	os.Setenv("CLAUDE_MNEMONIC_WORKER_PORT", "not-a-number")
+	port = GetWorkerPort()
+	// Should return from Get().WorkerPort, which is default
+	assert.Greater(t, port, 0)
+
+	// Test with zero port (should fall back to config)
+	os.Setenv("CLAUDE_MNEMONIC_WORKER_PORT", "0")
+	port = GetWorkerPort()
+	// Zero is invalid, so should use default
+	assert.Greater(t, port, 0)
+
+	// Test with no env (should use config)
+	os.Unsetenv("CLAUDE_MNEMONIC_WORKER_PORT")
+	port = GetWorkerPort()
+	assert.Greater(t, port, 0)
+}
+
 // TestLoad_ContextSettings tests context-related settings loading.
 func TestLoad_ContextSettings(t *testing.T) {
 	// Create temp dir

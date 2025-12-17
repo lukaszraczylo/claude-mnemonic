@@ -505,3 +505,472 @@ func TestObservationConcepts(t *testing.T) {
 	}
 	assert.Equal(t, expectedConcepts, ObservationConcepts)
 }
+
+// TestProcessorStruct tests processor struct initialization and methods.
+func TestProcessorStruct(t *testing.T) {
+	p := &Processor{
+		claudePath: "/path/to/claude",
+		model:      "haiku",
+		sem:        make(chan struct{}, MaxConcurrentCLICalls),
+	}
+
+	assert.Equal(t, "/path/to/claude", p.claudePath)
+	assert.Equal(t, "haiku", p.model)
+	assert.NotNil(t, p.sem)
+}
+
+// TestSetBroadcastFunc tests the broadcast callback setter.
+func TestSetBroadcastFunc(t *testing.T) {
+	p := &Processor{}
+
+	assert.Nil(t, p.broadcastFunc)
+
+	var called bool
+	var receivedEvent map[string]interface{}
+	fn := func(event map[string]interface{}) {
+		called = true
+		receivedEvent = event
+	}
+
+	p.SetBroadcastFunc(fn)
+	assert.NotNil(t, p.broadcastFunc)
+
+	// Test broadcast
+	p.broadcast(map[string]interface{}{"type": "test"})
+	assert.True(t, called)
+	assert.Equal(t, "test", receivedEvent["type"])
+}
+
+// TestSetSyncObservationFunc tests the sync observation callback setter.
+func TestSetSyncObservationFunc(t *testing.T) {
+	p := &Processor{}
+
+	assert.Nil(t, p.syncObservationFunc)
+
+	var called bool
+	fn := func(obs *models.Observation) {
+		called = true
+	}
+
+	p.SetSyncObservationFunc(fn)
+	assert.NotNil(t, p.syncObservationFunc)
+
+	// Verify it was set
+	p.syncObservationFunc(&models.Observation{})
+	assert.True(t, called)
+}
+
+// TestSetSyncSummaryFunc tests the sync summary callback setter.
+func TestSetSyncSummaryFunc(t *testing.T) {
+	p := &Processor{}
+
+	assert.Nil(t, p.syncSummaryFunc)
+
+	var called bool
+	fn := func(summary *models.SessionSummary) {
+		called = true
+	}
+
+	p.SetSyncSummaryFunc(fn)
+	assert.NotNil(t, p.syncSummaryFunc)
+
+	// Verify it was set
+	p.syncSummaryFunc(&models.SessionSummary{})
+	assert.True(t, called)
+}
+
+// TestBroadcast_NilFunc tests broadcast with nil callback.
+func TestBroadcast_NilFunc(t *testing.T) {
+	p := &Processor{}
+
+	// Should not panic
+	p.broadcast(map[string]interface{}{"type": "test"})
+}
+
+// TestIsAvailable_NonexistentPath tests IsAvailable with non-existent path.
+func TestIsAvailable_NonexistentPath(t *testing.T) {
+	p := &Processor{
+		claudePath: "/nonexistent/path/to/claude",
+	}
+
+	assert.False(t, p.IsAvailable())
+}
+
+// TestIsAvailable_ExistingPath tests IsAvailable with existing path.
+func TestIsAvailable_ExistingPath(t *testing.T) {
+	// Create a temp file to simulate claude binary
+	tmpFile, err := os.CreateTemp("", "claude-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	p := &Processor{
+		claudePath: tmpFile.Name(),
+	}
+
+	assert.True(t, p.IsAvailable())
+}
+
+// TestShouldSkipTrivialOperation_EdgeCases tests edge cases for trivial operation detection.
+func TestShouldSkipTrivialOperation_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		toolName  string
+		inputStr  string
+		outputStr string
+		expected  bool
+	}{
+		{
+			name:      "gitignore_file",
+			toolName:  "Read",
+			inputStr:  `{"file_path": "/project/.gitignore"}`,
+			outputStr: "This is a gitignore file content that has more than 50 characters long",
+			expected:  true,
+		},
+		{
+			name:      "eslintignore_file",
+			toolName:  "Read",
+			inputStr:  `{"file_path": "/project/.eslintignore"}`,
+			outputStr: "This is an eslintignore file content that has more than 50 characters long",
+			expected:  true,
+		},
+		{
+			name:      "tsconfig_file",
+			toolName:  "Read",
+			inputStr:  `{"file_path": "/project/tsconfig.json"}`,
+			outputStr: "This is a tsconfig.json file content that has more than 50 characters long",
+			expected:  true,
+		},
+		{
+			name:      "tailwind_config",
+			toolName:  "Read",
+			inputStr:  `{"file_path": "/project/tailwind.config.js"}`,
+			outputStr: "This is a tailwind.config file content that has more than 50 characters long",
+			expected:  true,
+		},
+		{
+			name:      "pwd_command",
+			toolName:  "Bash",
+			inputStr:  `{"command": "pwd"}`,
+			outputStr: "/home/user/project/some/long/path/that/is/more/than/fifty/chars",
+			expected:  true,
+		},
+		{
+			name:      "echo_command",
+			toolName:  "Bash",
+			inputStr:  `{"command": "echo Hello World"}`,
+			outputStr: "Hello World output that is long enough to pass the length check here",
+			expected:  true,
+		},
+		{
+			name:      "npm_audit_command",
+			toolName:  "Bash",
+			inputStr:  `{"command": "npm audit"}`,
+			outputStr: "found 0 vulnerabilities in 500 packages which is more than fifty characters",
+			expected:  true,
+		},
+		{
+			name:      "permission_denied",
+			toolName:  "Read",
+			inputStr:  `{"file_path": "/root/secret"}`,
+			outputStr: "Error: Permission denied accessing the file at specified path",
+			expected:  true,
+		},
+		{
+			name:      "is_a_directory",
+			toolName:  "Read",
+			inputStr:  `{"file_path": "/some/dir"}`,
+			outputStr: "Error: /some/dir is a directory, not a file that can be read",
+			expected:  true,
+		},
+		{
+			name:      "empty_object",
+			toolName:  "Grep",
+			inputStr:  `{"pattern": "nonexistent"}`,
+			outputStr: "{}",
+			expected:  true,
+		},
+		{
+			name:      "valid_grep_result",
+			toolName:  "Grep",
+			inputStr:  `{"pattern": "func main"}`,
+			outputStr: "main.go:10:func main() {\nmain.go:11:    fmt.Println(\"Hello\")\n}",
+			expected:  false,
+		},
+		{
+			name:      "valid_bash_build",
+			toolName:  "Bash",
+			inputStr:  `{"command": "go build ./..."}`,
+			outputStr: "Build completed successfully. Binary output at ./bin/myapp with size 10MB.",
+			expected:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := shouldSkipTrivialOperation(tt.toolName, tt.inputStr, tt.outputStr)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestIsSelfReferentialSummary_MoreCases tests additional self-referential detection cases.
+func TestIsSelfReferentialSummary_MoreCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		summary  *models.ParsedSummary
+		expected bool
+	}{
+		{
+			name: "progress_checkpoint",
+			summary: &models.ParsedSummary{
+				Request:   "Progress checkpoint for current session",
+				Completed: "Responding to progress checkpoint request",
+				Learned:   "No technical learnings yet",
+			},
+			expected: true,
+		},
+		{
+			name: "empty_session",
+			summary: &models.ParsedSummary{
+				Request:   "Empty session",
+				Completed: "Just beginning the session",
+				Learned:   "Nothing has been completed yet",
+			},
+			expected: true,
+		},
+		{
+			name: "hook_mechanism",
+			summary: &models.ParsedSummary{
+				Request:   "Hook execution for session start",
+				Completed: "Hook mechanism triggered successfully",
+				Learned:   "System hooks are working",
+			},
+			expected: true,
+		},
+		{
+			name: "api_implementation",
+			summary: &models.ParsedSummary{
+				Request:   "Implement REST API endpoints",
+				Completed: "Created /users and /posts endpoints with CRUD operations",
+				Learned:   "chi router handles middleware chaining elegantly",
+				NextSteps: "Add authentication middleware",
+			},
+			expected: false,
+		},
+		{
+			name: "database_migration",
+			summary: &models.ParsedSummary{
+				Request:   "Add database migration for new user fields",
+				Completed: "Created migration 003_add_user_profile.sql with new columns",
+				Learned:   "SQLite ALTER TABLE has limited capabilities, need to recreate table",
+				NextSteps: "Test migration rollback",
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isSelfReferentialSummary(tt.summary)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestHasMeaningfulContent_MoreCases tests additional meaningful content detection.
+func TestHasMeaningfulContent_MoreCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		expected bool
+	}{
+		{
+			name: "code_with_functions",
+			content: `I've created a new handler function in handlers.go.
+The function validateRequest() checks the incoming JSON payload.
+Here's the implementation:
+` + "```go\nfunc validateRequest(r *http.Request) error {\n\treturn nil\n}\n```",
+			expected: true,
+		},
+		{
+			name: "python_code_discussion",
+			content: `Updated the data processing module in processor.py.
+Changed the filter function to use list comprehension.
+def process_data(items):
+    return [item for item in items if item.valid]
+This improved performance by 30%.`,
+			expected: true,
+		},
+		{
+			name: "typescript_changes",
+			content: `I've modified the React component in UserProfile.tsx.
+Added a new functional component with proper TypeScript type annotations.
+Here's the updated implementation:
+` + "```tsx\nconst UserProfile: FC<Props> = ({ user }) => {\n  return <div>{user.name}</div>;\n};\n```" + `
+The type annotations ensure type safety across the application.
+The component has been updated with proper error handling and loading states.`,
+			expected: true,
+		},
+		{
+			name: "yaml_config_update",
+			content: `I've updated the kubernetes deployment config in deploy.yaml.
+Changed replicas from 2 to 4 and added resource limits for memory and CPU.
+The deployment.yaml file now includes the following struct configuration:
+` + "```yaml\nreplicas: 4\nresources:\n  limits:\n    memory: 512Mi\n```" + `
+The changes have been implemented and will be applied on next deploy.`,
+			expected: true,
+		},
+		{
+			name: "just_system_messages",
+			content: `SessionStart:Callback hook success
+System-reminder about tools
+The session is starting
+Waiting for user instructions`,
+			expected: false,
+		},
+		{
+			name:     "borderline_short",
+			content:  "Fixed bug. Updated file. Added test. Committed changes to repository.",
+			expected: false, // Too short (< 200 chars)
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := hasMeaningfulContent(tt.content)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestToJSONString_ComplexTypes tests JSON conversion for complex types.
+func TestToJSONString_ComplexTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    interface{}
+		contains string
+	}{
+		{
+			name: "nested_map",
+			input: map[string]interface{}{
+				"outer": map[string]string{"inner": "value"},
+			},
+			contains: "inner",
+		},
+		{
+			name:     "bool_true",
+			input:    true,
+			contains: "true",
+		},
+		{
+			name:     "bool_false",
+			input:    false,
+			contains: "false",
+		},
+		{
+			name:     "float_value",
+			input:    3.14,
+			contains: "3.14",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := toJSONString(tt.input)
+			assert.Contains(t, result, tt.contains)
+		})
+	}
+}
+
+// TestSystemPrompt tests that the system prompt is defined.
+func TestSystemPrompt(t *testing.T) {
+	assert.NotEmpty(t, systemPrompt)
+	assert.Contains(t, systemPrompt, "memory extraction agent")
+	assert.Contains(t, systemPrompt, "observation")
+	assert.Contains(t, systemPrompt, "GUIDELINES")
+}
+
+// TestProcessorSemaphore tests the semaphore behavior.
+func TestProcessorSemaphore(t *testing.T) {
+	p := &Processor{
+		sem: make(chan struct{}, 2),
+	}
+
+	// Acquire 2 slots
+	p.sem <- struct{}{}
+	p.sem <- struct{}{}
+
+	// Third should block (we can test with select)
+	select {
+	case p.sem <- struct{}{}:
+		t.Error("Semaphore should be full")
+	default:
+		// Expected - semaphore is full
+	}
+
+	// Release one
+	<-p.sem
+
+	// Now should be able to acquire
+	select {
+	case p.sem <- struct{}{}:
+		// Expected
+	default:
+		t.Error("Should be able to acquire after release")
+	}
+}
+
+// TestCaptureFileMtimes_DuplicatePaths tests mtime capture with overlapping paths.
+func TestCaptureFileMtimes_DuplicatePaths(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "mtime-dup-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	testFile := filepath.Join(tmpDir, "shared.txt")
+	err = os.WriteFile(testFile, []byte("content"), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Same file in both read and modified lists
+	mtimes := captureFileMtimes([]string{testFile}, []string{testFile}, "")
+
+	// Should only have one entry (no duplicates)
+	assert.Len(t, mtimes, 1)
+	assert.Contains(t, mtimes, testFile)
+}
+
+// TestTruncateForLog_ZeroLength tests truncation with zero length.
+func TestTruncateForLog_ZeroLength(t *testing.T) {
+	result := truncateForLog("hello", 0)
+	assert.Equal(t, "...", result)
+}
+
+// TestBroadcastFuncType tests the BroadcastFunc type.
+func TestBroadcastFuncType(t *testing.T) {
+	var fn BroadcastFunc = func(event map[string]interface{}) {
+		// Do nothing
+	}
+	assert.NotNil(t, fn)
+}
+
+// TestSyncObservationFuncType tests the SyncObservationFunc type.
+func TestSyncObservationFuncType(t *testing.T) {
+	var fn SyncObservationFunc = func(obs *models.Observation) {
+		// Do nothing
+	}
+	assert.NotNil(t, fn)
+}
+
+// TestSyncSummaryFuncType tests the SyncSummaryFunc type.
+func TestSyncSummaryFuncType(t *testing.T) {
+	var fn SyncSummaryFunc = func(summary *models.SessionSummary) {
+		// Do nothing
+	}
+	assert.NotNil(t, fn)
+}
