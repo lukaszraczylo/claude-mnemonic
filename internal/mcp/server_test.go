@@ -957,3 +957,127 @@ func TestToolCallParamsWithComplexArgs(t *testing.T) {
 	assert.Equal(t, "search", params.Name)
 	assert.NotEmpty(t, params.Arguments)
 }
+
+// TestCallTool_UnknownToolName tests callTool with various unknown tool names.
+func TestCallTool_UnknownToolName(t *testing.T) {
+	server := NewServer(nil, "1.0.0")
+	ctx := context.Background()
+
+	unknownTools := []string{
+		"invalid_tool",
+		"nonexistent",
+		"search_v2",
+		"timeline_special",
+	}
+
+	for _, name := range unknownTools {
+		t.Run(name, func(t *testing.T) {
+			result, err := server.callTool(ctx, name, json.RawMessage(`{}`))
+			assert.Error(t, err)
+			assert.Empty(t, result)
+			assert.Contains(t, err.Error(), "unknown tool")
+		})
+	}
+}
+
+// TestTimelineParams_Validation tests TimelineParams struct field validation.
+func TestTimelineParams_Validation(t *testing.T) {
+	tests := []struct {
+		name   string
+		json   string
+		wantOK bool
+	}{
+		{"valid with anchor_id", `{"anchor_id":123,"before":5,"after":5}`, true},
+		{"valid with query only", `{"query":"test query"}`, true},
+		{"empty params", `{}`, true},
+		{"with all fields", `{"anchor_id":1,"query":"test","before":10,"after":10,"project":"proj","obs_type":"bugfix","format":"full"}`, true},
+		{"invalid json", `{invalid`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var params TimelineParams
+			err := json.Unmarshal([]byte(tt.json), &params)
+			if tt.wantOK {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+}
+
+// TestHandleToolsCall_UnknownToolNameError tests tools/call with unknown tool returns error.
+func TestHandleToolsCall_UnknownToolNameError(t *testing.T) {
+	server := NewServer(nil, "1.0.0")
+	ctx := context.Background()
+
+	req := &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"very_unknown_tool_name","arguments":{}}`),
+	}
+
+	resp := server.handleToolsCall(ctx, req)
+
+	// Should get an error response
+	assert.Equal(t, "2.0", resp.JSONRPC)
+	assert.Equal(t, 1, resp.ID)
+	require.NotNil(t, resp.Error)
+	// Error is "Tool error" with message containing "unknown tool"
+	assert.True(t, resp.Error.Code != 0)
+}
+
+// TestHandleToolsCall_EmptyParams tests tools/call with empty params.
+func TestHandleToolsCall_EmptyParams(t *testing.T) {
+	server := NewServer(nil, "1.0.0")
+	ctx := context.Background()
+
+	req := &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{}`),
+	}
+
+	resp := server.handleToolsCall(ctx, req)
+
+	// Should error due to missing name
+	require.NotNil(t, resp.Error)
+}
+
+// TestSendResponse_WithError tests sendResponse with an error response.
+func TestSendResponse_WithError(t *testing.T) {
+	var buf bytes.Buffer
+	server := &Server{stdout: &buf}
+
+	resp := &Response{
+		JSONRPC: "2.0",
+		ID:      1,
+		Error:   &Error{Code: -32600, Message: "Invalid Request"},
+	}
+
+	server.sendResponse(resp)
+
+	output := buf.String()
+	assert.Contains(t, output, `"error"`)
+	assert.Contains(t, output, `-32600`)
+}
+
+// TestSendResponse_NilID tests sendResponse with nil ID.
+func TestSendResponse_NilID(t *testing.T) {
+	var buf bytes.Buffer
+	server := &Server{stdout: &buf}
+
+	resp := &Response{
+		JSONRPC: "2.0",
+		ID:      nil,
+		Result:  "notification response",
+	}
+
+	server.sendResponse(resp)
+
+	output := buf.String()
+	assert.Contains(t, output, `"id":null`)
+}

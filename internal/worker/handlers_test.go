@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/update"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/session"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sse"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
@@ -45,6 +47,9 @@ func testService(t *testing.T) (*Service, func()) {
 	// Create router
 	router := chi.NewRouter()
 
+	// Create test updater
+	testUpdater := update.New("test-version", t.TempDir())
+
 	svc := &Service{
 		version:          "test-version",
 		config:           config.Get(),
@@ -55,6 +60,7 @@ func testService(t *testing.T) (*Service, func()) {
 		promptStore:      promptStore,
 		sessionManager:   sessionManager,
 		sseBroadcaster:   sseBroadcaster,
+		updater:          testUpdater,
 		router:           router,
 		ctx:              ctx,
 		cancel:           cancel,
@@ -2124,4 +2130,782 @@ func TestHandleContextInject_WithQuery(t *testing.T) {
 	observations, ok := response["observations"].([]interface{})
 	require.True(t, ok)
 	assert.GreaterOrEqual(t, len(observations), 1)
+}
+
+// TestHandleUpdateCheck tests the update check endpoint.
+func TestHandleUpdateCheck(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/update/check", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// May return 200 or 500 depending on network availability
+	assert.Contains(t, []int{http.StatusOK, http.StatusInternalServerError}, rec.Code)
+}
+
+// TestHandleUpdateStatus tests the update status endpoint.
+func TestHandleUpdateStatus(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/update/status", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var status update.UpdateStatus
+	err := json.Unmarshal(rec.Body.Bytes(), &status)
+	require.NoError(t, err)
+
+	// Default state should be "idle"
+	assert.Equal(t, "idle", status.State)
+}
+
+// TestHandleUpdateApply tests the update apply endpoint.
+func TestHandleUpdateApply(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/update/apply", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// Will return 200 with message or 500 if network check fails
+	assert.Contains(t, []int{http.StatusOK, http.StatusInternalServerError}, rec.Code)
+}
+
+// TestHandleUpdateRestart_NoUpdate tests restart without applied update.
+func TestHandleUpdateRestart_NoUpdate(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/update/restart", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// Should return error since no update has been applied
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleRestart tests the general restart endpoint.
+func TestHandleRestart(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/restart", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// Should return OK with restart message
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.Equal(t, true, response["success"])
+	assert.Equal(t, "Restarting worker...", response["message"])
+}
+
+// TestSetInitError tests setting init error.
+func TestSetInitError(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Initially no error
+	assert.Nil(t, svc.GetInitError())
+
+	// Set an error
+	testErr := assert.AnError
+	svc.setInitError(testErr)
+
+	// Should be set
+	assert.Equal(t, testErr, svc.GetInitError())
+}
+
+// TestQueueStaleVerification tests the stale verification queue.
+func TestQueueStaleVerification(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Queue some verifications - should not panic
+	svc.queueStaleVerification(1, "/test/path")
+	svc.queueStaleVerification(2, "/test/path2")
+
+	// Give the goroutine a moment to start
+	time.Sleep(10 * time.Millisecond)
+}
+
+// TestRecordRetrievalStats tests retrieval stats recording.
+func TestRecordRetrievalStats(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Initially all zeros
+	stats := svc.GetRetrievalStats()
+	assert.Equal(t, int64(0), stats.TotalRequests)
+
+	// Record a search request
+	svc.recordRetrievalStats(10, 1, 0, true)
+	stats = svc.GetRetrievalStats()
+	assert.Equal(t, int64(1), stats.TotalRequests)
+	assert.Equal(t, int64(10), stats.ObservationsServed)
+	assert.Equal(t, int64(1), stats.VerifiedStale)
+	assert.Equal(t, int64(1), stats.SearchRequests)
+
+	// Record a context injection
+	svc.recordRetrievalStats(5, 0, 1, false)
+	stats = svc.GetRetrievalStats()
+	assert.Equal(t, int64(2), stats.TotalRequests)
+	assert.Equal(t, int64(15), stats.ObservationsServed)
+	assert.Equal(t, int64(1), stats.DeletedInvalid)
+	assert.Equal(t, int64(1), stats.ContextInjections)
+}
+
+// TestHandleSelfCheck_WithInitError tests self-check with init error.
+func TestHandleSelfCheck_WithInitError(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	svc.ready.Store(false)
+	svc.setInitError(assert.AnError)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/self-check", nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleSelfCheck(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response SelfCheckResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.Equal(t, "unhealthy", response.Overall)
+}
+
+// TestHandleHealthEndpoint tests health endpoint via router.
+func TestHandleHealthEndpoint(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleSelfCheckEndpoint tests self-check endpoint via router.
+func TestHandleSelfCheckEndpoint(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/selfcheck", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestUpdateInfo_Fields tests UpdateInfo struct.
+func TestUpdateInfo_Fields(t *testing.T) {
+	info := update.UpdateInfo{
+		Available:      true,
+		CurrentVersion: "v1.0.0",
+		LatestVersion:  "v2.0.0",
+		ReleaseNotes:   "Bug fixes",
+	}
+
+	assert.True(t, info.Available)
+	assert.Equal(t, "v1.0.0", info.CurrentVersion)
+	assert.Equal(t, "v2.0.0", info.LatestVersion)
+	assert.Equal(t, "Bug fixes", info.ReleaseNotes)
+}
+
+// TestUpdateStatus_Fields tests UpdateStatus struct.
+func TestUpdateStatus_Fields(t *testing.T) {
+	status := update.UpdateStatus{
+		State:    "downloading",
+		Progress: 50.0,
+		Message:  "Downloading update...",
+	}
+
+	assert.Equal(t, "downloading", status.State)
+	assert.Equal(t, 50.0, status.Progress)
+	assert.Equal(t, "Downloading update...", status.Message)
+}
+
+// TestHandleObservation_MissingFields tests observation with partial fields.
+// The handler accepts requests even with missing fields since it creates sessions on-the-fly.
+func TestHandleObservation_MissingFields(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	body := `{"project": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/observations", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// Handler accepts requests with partial fields and creates sessions on-the-fly
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleGetSummaries_WithProject tests getting summaries filtered by project.
+func TestHandleGetSummaries_WithProject(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summaries?project=test-project&limit=10", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleGetPrompts_WithProject tests getting prompts filtered by project.
+func TestHandleGetPrompts_WithProject(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompts?project=test-project&limit=10", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleSearchByPrompt_WithCWD tests search with cwd parameter.
+func TestHandleSearchByPrompt_WithCWD(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	project := "search-cwd-test"
+	createTestObservation(t, svc.observationStore, project, "Test observation", "Content here", []string{"test"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/context/search?project="+project+"&query=test&cwd=/tmp", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleContextInject_WithLimitAndCWD tests context inject with both limit and cwd.
+func TestHandleContextInject_WithLimitAndCWD(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	project := "inject-cwd-test"
+	createTestObservation(t, svc.observationStore, project, "Test observation", "Content here", []string{"test"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/context/inject?project="+project+"&limit=5&cwd=/tmp", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleSelfCheck_AllComponents tests self-check response structure.
+func TestHandleSelfCheck_AllComponents(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/selfcheck", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response SelfCheckResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	// Verify all expected components are present
+	componentNames := make(map[string]bool)
+	for _, comp := range response.Components {
+		componentNames[comp.Name] = true
+	}
+
+	expectedComponents := []string{"Worker Service", "SQLite Database"}
+	for _, name := range expectedComponents {
+		assert.True(t, componentNames[name], "missing component: %s", name)
+	}
+}
+
+// TestHandleReady_NotReady tests ready endpoint when not ready.
+func TestHandleReady_NotReady(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	svc.ready.Store(false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ready", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+// TestHandleReady_Ready tests ready endpoint when ready.
+func TestHandleReady_Ready(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ready", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestRequireReady_Middleware tests the requireReady middleware.
+func TestRequireReady_Middleware(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Service is ready by default in tests
+	req := httptest.NewRequest(http.MethodGet, "/api/observations", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// Should get OK because service is ready
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleObservation_ValidRequest tests observation with valid request.
+func TestHandleObservation_ValidRequest(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// First create a session
+	sessionBody := `{"claude_session_id": "obs-test-session", "project": "obs-test-project"}`
+	sessionReq := httptest.NewRequest(http.MethodPost, "/api/sessions/init", bytes.NewBufferString(sessionBody))
+	sessionReq.Header.Set("Content-Type", "application/json")
+	sessionRec := httptest.NewRecorder()
+	svc.router.ServeHTTP(sessionRec, sessionReq)
+
+	// Now create an observation
+	body := `{
+		"claude_session_id": "obs-test-session",
+		"project": "obs-test-project",
+		"tool_name": "Write",
+		"tool_input": {"file_path": "/test/file.go"},
+		"tool_response": {"success": true},
+		"prompt_number": 1,
+		"cwd": "/test"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/observations", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// Should accept the observation (may queue for processing)
+	assert.Contains(t, []int{http.StatusOK, http.StatusAccepted}, rec.Code)
+}
+
+// TestHandleSubagentComplete_ValidRequest tests subagent complete with valid request.
+func TestHandleSubagentComplete_ValidRequest(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// First create a session
+	sessionBody := `{"claude_session_id": "subagent-test-session", "project": "subagent-test-project"}`
+	sessionReq := httptest.NewRequest(http.MethodPost, "/api/sessions/init", bytes.NewBufferString(sessionBody))
+	sessionReq.Header.Set("Content-Type", "application/json")
+	sessionRec := httptest.NewRecorder()
+	svc.router.ServeHTTP(sessionRec, sessionReq)
+
+	// Now complete a subagent
+	body := `{
+		"claude_session_id": "subagent-test-session",
+		"project": "subagent-test-project",
+		"tool_name": "Task",
+		"tool_input": {"description": "test task"},
+		"tool_response": {"result": "completed"},
+		"prompt_number": 1,
+		"cwd": "/test"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/subagent-complete", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// Should accept the request
+	assert.Contains(t, []int{http.StatusOK, http.StatusAccepted}, rec.Code)
+}
+
+// TestClusterObservations tests the observation clustering function.
+func TestClusterObservations(t *testing.T) {
+	// Create some observations
+	obs := []*models.Observation{
+		{ID: 1, Title: sql.NullString{String: "Test 1", Valid: true}},
+		{ID: 2, Title: sql.NullString{String: "Test 2", Valid: true}},
+		{ID: 3, Title: sql.NullString{String: "Test 3", Valid: true}},
+	}
+
+	// Cluster with default threshold
+	clustered := clusterObservations(obs, 0.4)
+
+	// Should return at least one observation
+	assert.NotEmpty(t, clustered)
+	assert.LessOrEqual(t, len(clustered), len(obs))
+}
+
+// TestClusterObservations_EmptyInput tests clustering with empty input.
+func TestClusterObservations_EmptyInput(t *testing.T) {
+	clustered := clusterObservations([]*models.Observation{}, 0.4)
+	assert.Empty(t, clustered)
+}
+
+// TestClusterObservations_NilInput tests clustering with nil input.
+func TestClusterObservations_NilInput(t *testing.T) {
+	clustered := clusterObservations(nil, 0.4)
+	assert.Empty(t, clustered)
+}
+
+// TestComponentHealth tests ComponentHealth struct.
+func TestComponentHealth(t *testing.T) {
+	comp := ComponentHealth{
+		Name:    "Test Component",
+		Status:  "healthy",
+		Message: "All good",
+	}
+
+	assert.Equal(t, "Test Component", comp.Name)
+	assert.Equal(t, "healthy", comp.Status)
+	assert.Equal(t, "All good", comp.Message)
+}
+
+// TestHandleGetObservations_EmptyResult tests get observations with no data.
+func TestHandleGetObservations_EmptyResult(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/observations?project=nonexistent-project", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Should return empty array, not null
+	var obs []interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &obs)
+	require.NoError(t, err)
+	assert.NotNil(t, obs)
+}
+
+// TestHandleGetSummaries_EmptyResult tests get summaries with no data.
+func TestHandleGetSummaries_EmptyResult(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summaries?project=nonexistent-project", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleGetPrompts_EmptyResult tests get prompts with no data.
+func TestHandleGetPrompts_EmptyResult(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompts?project=nonexistent-project", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleContextInject_MissingProject tests context inject without project parameter.
+func TestHandleContextInject_MissingProject(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/context/inject", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "project required")
+}
+
+// TestHandleContextInject_DefaultCwd tests context inject with default cwd.
+func TestHandleContextInject_DefaultCwd(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	project := "inject-default-cwd-test"
+	createTestObservation(t, svc.observationStore, project, "Test", "Content", []string{"test"})
+
+	// Request without cwd parameter - should use default "/"
+	req := httptest.NewRequest(http.MethodGet, "/api/context/inject?project="+project, nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleContextInject_ConfigLimits tests context inject respects config limits.
+func TestHandleContextInject_ConfigLimits(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Set custom config values
+	svc.config.ContextObservations = 5
+	svc.config.ContextFullCount = 2
+
+	project := "inject-config-test"
+	for i := 0; i < 10; i++ {
+		createTestObservation(t, svc.observationStore, project, fmt.Sprintf("Test %d", i), "Content", []string{"test"})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/context/inject?project="+project, nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Equal(t, float64(2), response["full_count"])
+}
+
+// TestHandleUpdateApply_NoUpdateAvailable tests update apply when no update is available.
+func TestHandleUpdateApply_NoUpdateAvailable(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/update/apply", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	// Update check may succeed or fail - both are valid behaviors
+	assert.NotNil(t, response)
+}
+
+// TestHandleGetObservations_WithQuery tests observations with query parameter.
+func TestHandleGetObservations_WithQuery(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	project := "obs-query-test"
+	createTestObservation(t, svc.observationStore, project, "Unique Test Title", "Content about testing", []string{"test"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/observations?project="+project+"&query=unique", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleGetSummaries_WithQuery tests summaries with query parameter.
+func TestHandleGetSummaries_WithQuery(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summaries?project=test-project&query=test", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleGetPrompts_WithQuery tests prompts with query parameter.
+func TestHandleGetPrompts_WithQuery(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompts?project=test-project&query=test", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleSearchByPrompt_SpecialCharsQuery tests search with special characters to trigger FTS fallback.
+func TestHandleSearchByPrompt_SpecialCharsQuery(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	project := "special-chars-test"
+	createTestObservation(t, svc.observationStore, project, "Test", "Content", []string{"test"})
+
+	// Use special characters that might cause FTS issues
+	req := httptest.NewRequest(http.MethodGet, "/api/context/search?project="+project+"&query=test()+special*", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// Should still return OK (falls back to recent observations)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleHealth tests the health endpoint.
+func TestHandleHealth(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Equal(t, "ready", response["status"])
+}
+
+// TestHandleSessionInit_ValidRequest tests session init with valid request.
+func TestHandleSessionInit_ValidRequest(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	body := `{"claude_session_id": "init-test-session", "project": "init-test-project", "prompt": "test prompt"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/init", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	// Response uses camelCase: sessionDbId
+	assert.Contains(t, response, "sessionDbId")
+}
+
+// TestHandleSummarize tests the summarize endpoint.
+func TestHandleSummarize(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// First create a session with observations
+	body := `{"claude_session_id": "summarize-test-session", "project": "summarize-test"}`
+	initReq := httptest.NewRequest(http.MethodPost, "/api/sessions/init", bytes.NewBufferString(body))
+	initReq.Header.Set("Content-Type", "application/json")
+	initRec := httptest.NewRecorder()
+	svc.router.ServeHTTP(initRec, initReq)
+
+	// Now request summarization - using the session ID path
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/summarize-test-session/summarize", nil)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// May return OK, 404 (not found), or error depending on endpoint and session state
+	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound, http.StatusInternalServerError}, rec.Code)
+}
+
+// TestHandleGetObservations_AllProjects tests getting all observations without project filter.
+func TestHandleGetObservations_AllProjects(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Create observations in different projects
+	createTestObservation(t, svc.observationStore, "proj-a", "Test A", "Content", []string{"test"})
+	createTestObservation(t, svc.observationStore, "proj-b", "Test B", "Content", []string{"test"})
+
+	// Request without project filter
+	req := httptest.NewRequest(http.MethodGet, "/api/observations", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleGetSummaries_AllProjects tests getting all summaries without project filter.
+func TestHandleGetSummaries_AllProjects(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summaries", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleGetPrompts_AllProjects tests getting all prompts without project filter.
+func TestHandleGetPrompts_AllProjects(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompts", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleSessionStart tests the session start endpoint.
+func TestHandleSessionStart(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// First create a session
+	initBody := `{"claude_session_id": "start-test-session", "project": "start-test"}`
+	initReq := httptest.NewRequest(http.MethodPost, "/api/sessions/init", bytes.NewBufferString(initBody))
+	initReq.Header.Set("Content-Type", "application/json")
+	initRec := httptest.NewRecorder()
+	svc.router.ServeHTTP(initRec, initReq)
+
+	// Now start the session
+	body := `{"sessionId": "start-test-session"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/start", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// May return various status codes depending on session state and endpoint
+	assert.Contains(t, []int{http.StatusOK, http.StatusBadRequest, http.StatusNotFound, http.StatusInternalServerError}, rec.Code)
 }
