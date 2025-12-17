@@ -159,7 +159,13 @@ type SessionInitResponse struct {
 	Reason       string `json:"reason,omitempty"`
 }
 
+// DuplicatePromptWindowSeconds is the time window for detecting duplicate prompt submissions.
+// If the same prompt text is seen within this window, it's considered a duplicate hook invocation.
+const DuplicatePromptWindowSeconds = 10
+
 // handleSessionInit handles session initialization from user-prompt hook.
+// This handler is idempotent - duplicate requests within a short time window
+// return the existing prompt data without creating duplicates.
 func (s *Service) handleSessionInit(w http.ResponseWriter, r *http.Request) {
 	var req SessionInitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -182,8 +188,31 @@ func (s *Service) handleSessionInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clean prompt and create session
+	// Clean prompt
 	cleanedPrompt := privacy.Clean(req.Prompt)
+
+	// DUPLICATE DETECTION: Check if this exact prompt was already saved recently.
+	// This prevents the bug where the hook fires multiple times for the same user action,
+	// creating many duplicate prompts with incrementing numbers.
+	if existingID, existingNum, found := s.promptStore.FindRecentPromptByText(r.Context(), req.ClaudeSessionID, cleanedPrompt, DuplicatePromptWindowSeconds); found {
+		// Get or create session (idempotent)
+		sessionID, _ := s.sessionStore.CreateSDKSession(r.Context(), req.ClaudeSessionID, req.Project, cleanedPrompt)
+
+		log.Debug().
+			Int64("sessionId", sessionID).
+			Int("promptNumber", existingNum).
+			Int64("promptId", existingID).
+			Msg("Duplicate prompt detected - returning existing")
+
+		// Return existing prompt data without incrementing or saving again
+		writeJSON(w, SessionInitResponse{
+			SessionDBID:  sessionID,
+			PromptNumber: existingNum,
+		})
+		return
+	}
+
+	// Create session (idempotent)
 	sessionID, err := s.sessionStore.CreateSDKSession(r.Context(), req.ClaudeSessionID, req.Project, cleanedPrompt)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
