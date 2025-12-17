@@ -266,6 +266,9 @@ archives:
       - src: plugin/hooks/hooks.json
         dst: hooks
         strip_parent: true
+      - src: plugin/commands/*
+        dst: commands
+        strip_parent: true
     format_overrides:
       - goos: windows
         formats:
