@@ -176,6 +176,7 @@ download_release() {
     info "Installing to ${INSTALL_DIR}..."
     mkdir -p "$INSTALL_DIR/hooks"
     mkdir -p "$INSTALL_DIR/.claude-plugin"
+    mkdir -p "$INSTALL_DIR/commands"
 
     # Copy binaries
     cp "$tmp_dir/worker" "$INSTALL_DIR/"
@@ -184,6 +185,11 @@ download_release() {
 
     # Copy plugin configuration
     cp "$tmp_dir/.claude-plugin/"* "$INSTALL_DIR/.claude-plugin/"
+
+    # Copy slash commands if they exist in the release
+    if [[ -d "$tmp_dir/commands" ]]; then
+        cp -r "$tmp_dir/commands/"* "$INSTALL_DIR/commands/" 2>/dev/null || true
+    fi
 
     # Make binaries executable
     chmod +x "$INSTALL_DIR/worker"
@@ -230,6 +236,7 @@ register_plugin() {
     # Copy files to cache directory
     mkdir -p "$cache_path/.claude-plugin"
     mkdir -p "$cache_path/hooks"
+    mkdir -p "$cache_path/commands"
     cp -r "$INSTALL_DIR/"* "$cache_path/" 2>/dev/null || true
 
     # Register in installed_plugins.json

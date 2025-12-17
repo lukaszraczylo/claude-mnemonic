@@ -3,12 +3,15 @@ import type { SSEEvent } from '@/types'
 
 // Singleton state - shared across all useSSE() calls
 const isConnected = ref(false)
+const isReconnecting = ref(false)
+const reconnectCountdown = ref(0)
 const isProcessing = ref(false)
 const queueDepth = ref(0)
 const lastEvent = ref<SSEEvent | null>(null)
 
 let eventSource: EventSource | null = null
 let reconnectTimeout: number | null = null
+let countdownInterval: number | null = null
 let connectionCount = 0
 let reconnectAttempt = 0
 
@@ -24,6 +27,28 @@ function getBackoffDelay(): number {
   return Math.floor(baseDelay + jitter)
 }
 
+function startCountdown(delayMs: number) {
+  reconnectCountdown.value = Math.ceil(delayMs / 1000)
+  if (countdownInterval) {
+    clearInterval(countdownInterval)
+  }
+  countdownInterval = window.setInterval(() => {
+    reconnectCountdown.value = Math.max(0, reconnectCountdown.value - 1)
+    if (reconnectCountdown.value <= 0 && countdownInterval) {
+      clearInterval(countdownInterval)
+      countdownInterval = null
+    }
+  }, 1000)
+}
+
+function stopCountdown() {
+  if (countdownInterval) {
+    clearInterval(countdownInterval)
+    countdownInterval = null
+  }
+  reconnectCountdown.value = 0
+}
+
 export function useSSE() {
 
   const connect = () => {
@@ -36,6 +61,8 @@ export function useSSE() {
 
     eventSource.onopen = () => {
       isConnected.value = true
+      isReconnecting.value = false
+      stopCountdown()
       reconnectAttempt = 0 // Reset backoff on successful connection
       console.log('[SSE] Connected')
     }
@@ -62,6 +89,7 @@ export function useSSE() {
 
     eventSource.onerror = () => {
       isConnected.value = false
+      isReconnecting.value = true
       eventSource?.close()
       eventSource = null
 
@@ -70,6 +98,7 @@ export function useSSE() {
       reconnectAttempt++
       console.log(`[SSE] Reconnecting in ${Math.round(delay/1000)}s (attempt ${reconnectAttempt})`)
 
+      startCountdown(delay)
       reconnectTimeout = window.setTimeout(() => {
         connect()
       }, delay)
@@ -81,11 +110,13 @@ export function useSSE() {
       clearTimeout(reconnectTimeout)
       reconnectTimeout = null
     }
+    stopCountdown()
     if (eventSource) {
       eventSource.close()
       eventSource = null
     }
     isConnected.value = false
+    isReconnecting.value = false
   }
 
   // Handle page unload/refresh to ensure SSE connection is closed immediately
@@ -132,6 +163,8 @@ export function useSSE() {
 
   return {
     isConnected,
+    isReconnecting,
+    reconnectCountdown,
     isProcessing,
     queueDepth,
     lastEvent,

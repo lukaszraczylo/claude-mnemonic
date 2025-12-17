@@ -1024,7 +1024,7 @@ func (s *Service) handleSelfCheck(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleUpdateRestart restarts the worker with the new binary.
+// handleUpdateRestart restarts the worker with the new binary (after update).
 func (s *Service) handleUpdateRestart(w http.ResponseWriter, r *http.Request) {
 	status := s.updater.GetStatus()
 	if status.State != "done" {
@@ -1045,6 +1045,32 @@ func (s *Service) handleUpdateRestart(w http.ResponseWriter, r *http.Request) {
 
 	// Restart in background after response is sent
 	go func() {
+		if err := s.updater.Restart(); err != nil {
+			log.Error().Err(err).Msg("Failed to restart worker")
+		}
+	}()
+}
+
+// handleRestart restarts the worker process (general restart, not tied to update).
+func (s *Service) handleRestart(w http.ResponseWriter, r *http.Request) {
+	log.Info().Msg("Manual restart requested via API")
+
+	// Send response before restarting
+	writeJSON(w, map[string]interface{}{
+		"success": true,
+		"message": "Restarting worker...",
+		"version": s.version,
+	})
+
+	// Flush the response
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	// Restart in background after response is sent
+	go func() {
+		// Small delay to ensure response is sent
+		time.Sleep(100 * time.Millisecond)
 		if err := s.updater.Restart(); err != nil {
 			log.Error().Err(err).Msg("Failed to restart worker")
 		}
