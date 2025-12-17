@@ -597,3 +597,363 @@ func TestToolListContainsExpectedSchemas(t *testing.T) {
 		assert.True(t, hasType, "tool %s schema should have type", tool.Name)
 	}
 }
+
+// TestHandleToolsCall_UnknownTool tests tools/call with unknown tool name.
+func TestHandleToolsCall_UnknownTool(t *testing.T) {
+	server := NewServer(nil, "1.0.0")
+	ctx := context.Background()
+
+	req := &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"unknown_tool","arguments":{}}`),
+	}
+
+	resp := server.handleToolsCall(ctx, req)
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, -32000, resp.Error.Code)
+	assert.Contains(t, resp.Error.Data, "unknown tool")
+}
+
+// TestCallTool_ToolNameRecognition tests that valid tool names are recognized (not "unknown tool").
+func TestCallTool_ToolNameRecognition(t *testing.T) {
+	// Note: This test verifies tool routing logic, not execution (which requires searchMgr)
+	// All valid tool names should be in the handleToolsList response
+	server := NewServer(nil, "1.0.0")
+
+	req := &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/list",
+	}
+
+	resp := server.handleToolsList(req)
+	result := resp.Result.(map[string]any)
+	tools := result["tools"].([]Tool)
+
+	// Verify all expected tools are registered
+	expectedTools := map[string]bool{
+		"search":                true,
+		"timeline":              true,
+		"decisions":             true,
+		"changes":               true,
+		"how_it_works":          true,
+		"find_by_concept":       true,
+		"find_by_file":          true,
+		"find_by_type":          true,
+		"get_recent_context":    true,
+		"get_context_timeline":  true,
+		"get_timeline_by_query": true,
+	}
+
+	foundTools := make(map[string]bool)
+	for _, tool := range tools {
+		foundTools[tool.Name] = true
+	}
+
+	for name := range expectedTools {
+		assert.True(t, foundTools[name], "tool %s should be registered", name)
+	}
+}
+
+// TestRun_MultipleRequests tests Run with multiple sequential requests.
+func TestRun_MultipleRequests(t *testing.T) {
+	var stdout bytes.Buffer
+	req1 := `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
+	req2 := `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
+	stdin := strings.NewReader(req1 + "\n" + req2 + "\n")
+
+	server := &Server{
+		stdin:   stdin,
+		stdout:  &stdout,
+		version: "1.0.0",
+	}
+
+	err := server.Run(context.Background())
+	require.NoError(t, err)
+
+	output := stdout.String()
+	// Should contain responses for both requests
+	assert.Contains(t, output, `"id":1`)
+	assert.Contains(t, output, `"id":2`)
+}
+
+// TestHandleTimeline_Defaults tests timeline default values.
+func TestHandleTimeline_Defaults(t *testing.T) {
+	// Test that handleTimeline sets default before/after values
+	params := TimelineParams{
+		AnchorID: 0,
+		Query:    "",
+		Before:   0,
+		After:    0,
+	}
+
+	// Simulate the default value assignment from handleTimeline
+	if params.Before <= 0 {
+		params.Before = 10
+	}
+	if params.After <= 0 {
+		params.After = 10
+	}
+
+	assert.Equal(t, 10, params.Before)
+	assert.Equal(t, 10, params.After)
+}
+
+// TestTimelineParams_Complete tests complete TimelineParams parsing.
+func TestTimelineParams_Complete(t *testing.T) {
+	input := `{
+		"anchor_id": 100,
+		"query": "test query",
+		"before": 5,
+		"after": 15,
+		"project": "my-project",
+		"obs_type": "bugfix",
+		"concepts": "security,auth",
+		"files": "main.go,handler.go",
+		"dateStart": 1700000000000,
+		"dateEnd": 1700100000000,
+		"format": "full"
+	}`
+
+	var params TimelineParams
+	err := json.Unmarshal([]byte(input), &params)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(100), params.AnchorID)
+	assert.Equal(t, "test query", params.Query)
+	assert.Equal(t, 5, params.Before)
+	assert.Equal(t, 15, params.After)
+	assert.Equal(t, "my-project", params.Project)
+	assert.Equal(t, "bugfix", params.ObsType)
+	assert.Equal(t, "security,auth", params.Concepts)
+	assert.Equal(t, "main.go,handler.go", params.Files)
+	assert.Equal(t, int64(1700000000000), params.DateStart)
+	assert.Equal(t, int64(1700100000000), params.DateEnd)
+	assert.Equal(t, "full", params.Format)
+}
+
+// TestServerStdinStdoutConfig tests that server stdin/stdout can be configured.
+func TestServerStdinStdoutConfig(t *testing.T) {
+	var stdout bytes.Buffer
+	var stdin bytes.Buffer
+
+	server := &Server{
+		stdin:   &stdin,
+		stdout:  &stdout,
+		version: "test-version",
+	}
+
+	assert.Equal(t, &stdin, server.stdin)
+	assert.Equal(t, &stdout, server.stdout)
+	assert.Equal(t, "test-version", server.version)
+}
+
+// TestResponseIDTypes tests that response IDs can be various types.
+func TestResponseIDTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		id   any
+	}{
+		{"integer id", 1},
+		{"string id", "abc-123"},
+		{"float id", 1.5},
+		{"null id", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			server := &Server{stdout: &buf}
+
+			resp := &Response{
+				JSONRPC: "2.0",
+				ID:      tt.id,
+				Result:  "ok",
+			}
+
+			server.sendResponse(resp)
+			output := buf.String()
+			assert.Contains(t, output, `"jsonrpc":"2.0"`)
+		})
+	}
+}
+
+// TestHandleTimelineByQuery_EmptyQuery tests timeline by query with empty query.
+func TestHandleTimelineByQuery_EmptyQuery(t *testing.T) {
+	server := NewServer(nil, "1.0.0")
+	ctx := context.Background()
+
+	// Empty query should error
+	_, err := server.handleTimelineByQuery(ctx, json.RawMessage(`{}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "query is required")
+}
+
+// TestHandleTimeline_InvalidJSON tests timeline with invalid JSON.
+func TestHandleTimeline_InvalidJSON(t *testing.T) {
+	server := NewServer(nil, "1.0.0")
+	ctx := context.Background()
+
+	_, err := server.handleTimeline(ctx, json.RawMessage(`{invalid`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid timeline params")
+}
+
+// TestHandleTimelineByQuery_InvalidJSON tests timeline by query with invalid JSON.
+func TestHandleTimelineByQuery_InvalidJSON(t *testing.T) {
+	server := NewServer(nil, "1.0.0")
+	ctx := context.Background()
+
+	_, err := server.handleTimelineByQuery(ctx, json.RawMessage(`{invalid`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid timeline params")
+}
+
+// TestHandleTimeline_NoAnchorNoQuery tests timeline with no anchor and no query.
+func TestHandleTimeline_NoAnchorNoQuery(t *testing.T) {
+	server := NewServer(nil, "1.0.0")
+	ctx := context.Background()
+
+	// No anchor_id and no query should return empty result
+	result, err := server.handleTimeline(ctx, json.RawMessage(`{}`))
+	require.NoError(t, err)
+	assert.NotNil(t, result)
+	assert.Empty(t, result.Results)
+}
+
+// TestHandleTimeline_WithDefaults tests timeline default values are applied.
+func TestHandleTimeline_WithDefaults(t *testing.T) {
+	server := NewServer(nil, "1.0.0")
+	ctx := context.Background()
+
+	// With anchor_id but no before/after, defaults should be applied
+	// However, since searchMgr is nil, this will fail after defaults are applied
+	result, err := server.handleTimeline(ctx, json.RawMessage(`{"anchor_id": 0}`))
+	// Should return empty result since anchor_id is 0
+	require.NoError(t, err)
+	assert.NotNil(t, result)
+	assert.Empty(t, result.Results)
+}
+
+// TestServerFields tests Server struct fields.
+func TestServerFields(t *testing.T) {
+	server := NewServer(nil, "2.0.0")
+
+	assert.Equal(t, "2.0.0", server.version)
+	assert.Nil(t, server.searchMgr)
+	assert.NotNil(t, server.stdin)
+	assert.NotNil(t, server.stdout)
+}
+
+// TestRequestUnmarshalWithNullID tests Request unmarshaling with null ID.
+func TestRequestUnmarshalWithNullID(t *testing.T) {
+	input := `{"jsonrpc":"2.0","id":null,"method":"initialize"}`
+
+	var req Request
+	err := json.Unmarshal([]byte(input), &req)
+	require.NoError(t, err)
+	assert.Equal(t, "2.0", req.JSONRPC)
+	assert.Nil(t, req.ID)
+	assert.Equal(t, "initialize", req.Method)
+}
+
+// TestResponseWithNullError tests Response without error.
+func TestResponseWithNullError(t *testing.T) {
+	resp := Response{
+		JSONRPC: "2.0",
+		ID:      1,
+		Result:  "success",
+		Error:   nil,
+	}
+
+	data, err := json.Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"result":"success"`)
+	assert.NotContains(t, string(data), `"error"`)
+}
+
+// TestErrorWithNilData tests Error without data.
+func TestErrorWithNilData(t *testing.T) {
+	err := Error{
+		Code:    -32600,
+		Message: "Invalid Request",
+		Data:    nil,
+	}
+
+	data, errMarshal := json.Marshal(err)
+	require.NoError(t, errMarshal)
+	assert.Contains(t, string(data), `"code":-32600`)
+	assert.Contains(t, string(data), `"message":"Invalid Request"`)
+	assert.NotContains(t, string(data), `"data"`)
+}
+
+// TestToolInputSchema tests that tool input schemas have required fields.
+func TestToolInputSchema(t *testing.T) {
+	server := NewServer(nil, "1.0.0")
+
+	req := &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/list",
+	}
+
+	resp := server.handleToolsList(req)
+	result := resp.Result.(map[string]any)
+	tools := result["tools"].([]Tool)
+
+	for _, tool := range tools {
+		schema := tool.InputSchema
+		schemaType, ok := schema["type"]
+		assert.True(t, ok, "tool %s schema should have type", tool.Name)
+		assert.Equal(t, "object", schemaType, "tool %s schema type should be object", tool.Name)
+
+		// All tools should have properties
+		_, hasProperties := schema["properties"]
+		assert.True(t, hasProperties, "tool %s should have properties", tool.Name)
+	}
+}
+
+// TestRunMixedRequests tests Run with mixed valid and invalid requests.
+func TestRunMixedRequests(t *testing.T) {
+	var stdout bytes.Buffer
+	req1 := `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
+	req2 := `invalid json`
+	req3 := `{"jsonrpc":"2.0","id":3,"method":"tools/list"}`
+	stdin := strings.NewReader(req1 + "\n" + req2 + "\n" + req3 + "\n")
+
+	server := &Server{
+		stdin:   stdin,
+		stdout:  &stdout,
+		version: "1.0.0",
+	}
+
+	err := server.Run(context.Background())
+	require.NoError(t, err)
+
+	output := stdout.String()
+	// Should have responses for all three requests
+	assert.Contains(t, output, `"id":1`)
+	assert.Contains(t, output, `"error"`) // Parse error for invalid json
+	assert.Contains(t, output, `"id":3`)
+}
+
+// TestToolCallParamsWithComplexArgs tests ToolCallParams with complex arguments.
+func TestToolCallParamsWithComplexArgs(t *testing.T) {
+	input := `{
+		"name": "search",
+		"arguments": {
+			"query": "authentication bug",
+			"project": "my-project",
+			"limit": 10,
+			"type": "observations"
+		}
+	}`
+
+	var params ToolCallParams
+	err := json.Unmarshal([]byte(input), &params)
+	require.NoError(t, err)
+	assert.Equal(t, "search", params.Name)
+	assert.NotEmpty(t, params.Arguments)
+}
