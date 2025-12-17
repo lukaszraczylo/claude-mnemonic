@@ -27,7 +27,7 @@ const (
 	GitHubRepo       = "lukaszraczylo/claude-mnemonic"
 	ReleasesAPI      = "https://api.github.com/repos/" + GitHubRepo + "/releases/latest"
 	CheckInterval    = 24 * time.Hour
-	MaxExtractedSize = 100 * 1024 * 1024 // 100MB max per extracted file
+	MaxExtractedSize = 250 * 1024 * 1024 // 250MB max per extracted file
 	RestartDelay     = 500 * time.Millisecond
 )
 
