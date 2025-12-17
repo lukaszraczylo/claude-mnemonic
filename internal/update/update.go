@@ -49,22 +49,36 @@ type Asset struct {
 
 // UpdateInfo contains information about an available update.
 type UpdateInfo struct {
-	Available      bool      `json:"available"`
-	CurrentVersion string    `json:"current_version"`
-	LatestVersion  string    `json:"latest_version"`
-	ReleaseNotes   string    `json:"release_notes,omitempty"`
-	PublishedAt    time.Time `json:"published_at,omitempty"`
-	DownloadURL    string    `json:"download_url,omitempty"`
-	ChecksumsURL   string    `json:"checksums_url,omitempty"`
-	BundleURL      string    `json:"bundle_url,omitempty"` // Sigstore bundle (.sigstore.json)
+	Available           bool      `json:"available"`
+	CurrentVersion      string    `json:"current_version"`
+	LatestVersion       string    `json:"latest_version"`
+	ReleaseNotes        string    `json:"release_notes,omitempty"`
+	PublishedAt         time.Time `json:"published_at,omitempty"`
+	DownloadURL         string    `json:"download_url,omitempty"`
+	ChecksumsURL        string    `json:"checksums_url,omitempty"`
+	BundleURL           string    `json:"bundle_url,omitempty"` // Sigstore bundle (.sigstore.json)
+	ManualUpdateCommand string    `json:"manual_update_command,omitempty"`
+}
+
+// InstallScriptURL is the URL to the remote installation script.
+const InstallScriptURL = "https://raw.githubusercontent.com/" + GitHubRepo + "/main/scripts/install.sh"
+
+// GetManualUpdateCommand returns the curl command for manual update.
+// If version is empty, it installs the latest version.
+func GetManualUpdateCommand(version string) string {
+	if version == "" {
+		return fmt.Sprintf("curl -sSL %s | bash", InstallScriptURL)
+	}
+	return fmt.Sprintf("curl -sSL %s | bash -s -- %s", InstallScriptURL, version)
 }
 
 // UpdateStatus represents the current update status.
 type UpdateStatus struct {
-	State    string  `json:"state"` // "idle", "checking", "downloading", "verifying", "applying", "done", "error"
-	Progress float64 `json:"progress"`
-	Message  string  `json:"message"`
-	Error    string  `json:"error,omitempty"`
+	State               string  `json:"state"` // "idle", "checking", "downloading", "verifying", "applying", "done", "error"
+	Progress            float64 `json:"progress"`
+	Message             string  `json:"message"`
+	Error               string  `json:"error,omitempty"`
+	ManualUpdateCommand string  `json:"manual_update_command,omitempty"` // Shown when update fails
 }
 
 // Updater handles self-updates.
@@ -112,9 +126,10 @@ func (u *Updater) setError(err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.status = UpdateStatus{
-		State:   "error",
-		Message: "Update failed",
-		Error:   err.Error(),
+		State:               "error",
+		Message:             "Update failed",
+		Error:               err.Error(),
+		ManualUpdateCommand: GetManualUpdateCommand(""), // Always provide fallback command
 	}
 }
 
@@ -168,6 +183,9 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*UpdateInfo, error) {
 
 	// Compare versions
 	info.Available = isNewerVersion(info.LatestVersion, u.currentVersion)
+
+	// Always include manual update command as an alternative option
+	info.ManualUpdateCommand = GetManualUpdateCommand("v" + info.LatestVersion)
 
 	if info.Available {
 		// Find download URLs for current platform

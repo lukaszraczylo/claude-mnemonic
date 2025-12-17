@@ -32,11 +32,15 @@ func (s *PromptStore) SetCleanupFunc(fn PromptCleanupFunc) {
 }
 
 // SaveUserPromptWithMatches saves a user prompt with matched observation count.
+// Uses INSERT OR IGNORE to be idempotent - duplicate (session, prompt_number) pairs are silently ignored.
+// This prevents duplicate prompts when the user-prompt hook fires multiple times.
 func (s *PromptStore) SaveUserPromptWithMatches(ctx context.Context, claudeSessionID string, promptNumber int, promptText string, matchedObservations int) (int64, error) {
 	now := time.Now()
 
+	// Use INSERT OR IGNORE for idempotency - if (claude_session_id, prompt_number) already exists,
+	// the insert is silently ignored. This handles concurrent/duplicate hook invocations.
 	const query = `
-		INSERT INTO user_prompts
+		INSERT OR IGNORE INTO user_prompts
 		(claude_session_id, prompt_number, prompt_text, matched_observations, created_at, created_at_epoch)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`
@@ -50,6 +54,17 @@ func (s *PromptStore) SaveUserPromptWithMatches(ctx context.Context, claudeSessi
 	}
 
 	id, _ := result.LastInsertId()
+
+	// If id is 0, the insert was ignored (duplicate) - fetch the existing ID
+	if id == 0 {
+		const selectQuery = `SELECT id FROM user_prompts WHERE claude_session_id = ? AND prompt_number = ?`
+		row := s.store.QueryRowContext(ctx, selectQuery, claudeSessionID, promptNumber)
+		if err := row.Scan(&id); err != nil {
+			return 0, err
+		}
+		// Return existing ID without triggering cleanup (already handled when first inserted)
+		return id, nil
+	}
 
 	// Cleanup old prompts beyond the global limit (async to not block handler)
 	go func() {
@@ -182,6 +197,31 @@ func (s *PromptStore) GetAllRecentUserPrompts(ctx context.Context, limit int) ([
 	defer rows.Close()
 
 	return scanPromptWithSessionRows(rows)
+}
+
+// FindRecentPromptByText finds a prompt with the same text for a session within the last few seconds.
+// This is used to detect duplicate hook invocations.
+// Returns (promptID, promptNumber, found).
+func (s *PromptStore) FindRecentPromptByText(ctx context.Context, claudeSessionID, promptText string, withinSeconds int) (int64, int, bool) {
+	// Look for an existing prompt with the same text within the time window
+	// This catches duplicate hook invocations that happen in quick succession
+	const query = `
+		SELECT id, prompt_number FROM user_prompts
+		WHERE claude_session_id = ? AND prompt_text = ?
+		AND created_at_epoch > ?
+		ORDER BY created_at_epoch DESC
+		LIMIT 1
+	`
+
+	cutoff := time.Now().Add(-time.Duration(withinSeconds) * time.Second).UnixMilli()
+
+	var id int64
+	var promptNumber int
+	err := s.store.QueryRowContext(ctx, query, claudeSessionID, promptText, cutoff).Scan(&id, &promptNumber)
+	if err != nil {
+		return 0, 0, false
+	}
+	return id, promptNumber, true
 }
 
 // GetRecentUserPromptsByProject retrieves recent user prompts for a specific project.
