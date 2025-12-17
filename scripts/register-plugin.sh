@@ -45,6 +45,7 @@ if command -v jq &> /dev/null; then
     # Ensure cache directory exists and copy plugin files
     mkdir -p "$CACHE_PATH/.claude-plugin"
     mkdir -p "$CACHE_PATH/hooks"
+    mkdir -p "$CACHE_PATH/commands"
 
     # Copy files from marketplace to cache
     cp -r "$MARKETPLACE_PATH/"* "$CACHE_PATH/" 2>/dev/null || true

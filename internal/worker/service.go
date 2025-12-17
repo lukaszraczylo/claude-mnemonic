@@ -635,6 +635,9 @@ func (s *Service) setupRoutes() {
 	s.router.Get("/api/update/status", s.handleUpdateStatus)
 	s.router.Post("/api/update/restart", s.handleUpdateRestart)
 
+	// General restart endpoint (works before DB is ready)
+	s.router.Post("/api/restart", s.handleRestart)
+
 	// Selfcheck endpoint (works before DB is ready - checks all components)
 	s.router.Get("/api/selfcheck", s.handleSelfCheck)
 

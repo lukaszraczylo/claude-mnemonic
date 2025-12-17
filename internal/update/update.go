@@ -469,55 +469,98 @@ func (u *Updater) extractTarGz(archivePath, destDir string) error {
 }
 
 func (u *Updater) replaceBinaries(extractDir string) error {
-	// Files to replace
-	binaries := []struct {
-		src  string
-		dest string
-	}{
-		{"worker", filepath.Join(u.installDir, "worker")},
-		{"mcp-server", filepath.Join(u.installDir, "mcp-server")},
-		{"hooks/session-start", filepath.Join(u.installDir, "hooks", "session-start")},
-		{"hooks/user-prompt", filepath.Join(u.installDir, "hooks", "user-prompt")},
-		{"hooks/post-tool-use", filepath.Join(u.installDir, "hooks", "post-tool-use")},
-		{"hooks/stop", filepath.Join(u.installDir, "hooks", "stop")},
-		{"hooks/subagent-stop", filepath.Join(u.installDir, "hooks", "subagent-stop")},
+	// Binary files to replace
+	binaryFiles := []string{
+		"worker",
+		"mcp-server",
+		"hooks/session-start",
+		"hooks/user-prompt",
+		"hooks/post-tool-use",
+		"hooks/stop",
+		"hooks/subagent-stop",
+		"hooks/statusline",
 	}
 
-	for _, b := range binaries {
-		src := filepath.Join(extractDir, b.src)
-		if _, err := os.Stat(src); os.IsNotExist(err) {
-			continue // Skip if not in archive
-		}
+	// Get all install directories (marketplaces and cache directories)
+	installDirs := u.getInstallDirectories()
 
-		// Backup existing binary
-		if _, err := os.Stat(b.dest); err == nil {
-			backup := b.dest + ".bak"
-			if err := os.Rename(b.dest, backup); err != nil {
-				return fmt.Errorf("failed to backup %s: %w", b.dest, err)
+	for _, installDir := range installDirs {
+		log.Debug().Str("dir", installDir).Msg("Installing binaries to directory")
+
+		for _, binaryFile := range binaryFiles {
+			src := filepath.Join(extractDir, binaryFile)
+			if _, err := os.Stat(src); os.IsNotExist(err) {
+				continue // Skip if not in archive
 			}
-			defer func(backup, dest string) {
-				// Clean up backup on success, restore on failure
-				if _, err := os.Stat(dest); err == nil {
-					_ = os.Remove(backup)
+
+			dest := filepath.Join(installDir, binaryFile)
+
+			// Backup existing binary
+			if _, err := os.Stat(dest); err == nil {
+				backup := dest + ".bak"
+				if err := os.Rename(dest, backup); err != nil {
+					log.Warn().Err(err).Str("file", dest).Msg("Failed to backup, continuing anyway")
 				} else {
-					_ = os.Rename(backup, dest)
+					defer func(backup, dest string) {
+						// Clean up backup on success, restore on failure
+						if _, err := os.Stat(dest); err == nil {
+							_ = os.Remove(backup)
+						} else {
+							_ = os.Rename(backup, dest)
+						}
+					}(backup, dest)
 				}
-			}(backup, b.dest)
-		}
+			}
 
-		// Copy new binary
-		if err := copyFile(src, b.dest); err != nil {
-			return fmt.Errorf("failed to install %s: %w", b.dest, err)
-		}
+			// Copy new binary
+			if err := copyFile(src, dest); err != nil {
+				return fmt.Errorf("failed to install %s: %w", dest, err)
+			}
 
-		// Make executable
-		// #nosec G302 -- executables require 0755 permissions
-		if err := os.Chmod(b.dest, 0755); err != nil {
-			return fmt.Errorf("failed to chmod %s: %w", b.dest, err)
+			// Make executable
+			// #nosec G302 -- executables require 0755 permissions
+			if err := os.Chmod(dest, 0755); err != nil {
+				return fmt.Errorf("failed to chmod %s: %w", dest, err)
+			}
 		}
 	}
 
 	return nil
+}
+
+// getInstallDirectories returns all directories where binaries should be installed.
+// This includes the marketplaces directory and any cache directories.
+func (u *Updater) getInstallDirectories() []string {
+	dirs := []string{u.installDir}
+
+	// Also check cache directories where Claude Code looks for plugins
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return dirs
+	}
+
+	// Look for cache directories under ~/.claude/plugins/cache/claude-mnemonic/claude-mnemonic/
+	cacheBase := filepath.Join(home, ".claude/plugins/cache/claude-mnemonic/claude-mnemonic")
+	entries, err := os.ReadDir(cacheBase)
+	if err != nil {
+		return dirs
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			cacheDir := filepath.Join(cacheBase, entry.Name())
+			// Only add if it's different from installDir and contains a worker binary
+			if cacheDir != u.installDir {
+				workerPath := filepath.Join(cacheDir, "worker")
+				if _, err := os.Stat(workerPath); err == nil {
+					dirs = append(dirs, cacheDir)
+					log.Debug().Str("dir", cacheDir).Msg("Found cache directory to update")
+				}
+			}
+		}
+	}
+
+	return dirs
 }
 
 func copyFile(src, dst string) error {
