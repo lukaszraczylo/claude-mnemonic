@@ -272,6 +272,17 @@ var Migrations = []Migration{
 			);
 		`,
 	},
+	{
+		Version: 18,
+		Name:    "user_prompts_unique_constraint",
+		SQL: `
+			-- Add unique constraint to prevent duplicate prompts
+			-- This fixes a bug where the user-prompt hook could fire multiple times
+			-- creating duplicate prompt records with incrementing numbers
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_user_prompts_session_number_unique
+			ON user_prompts(claude_session_id, prompt_number);
+		`,
+	},
 }
 
 // MigrationManager handles database schema migrations.
