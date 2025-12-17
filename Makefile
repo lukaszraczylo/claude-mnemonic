@@ -138,10 +138,13 @@ install: build stop-worker
 	@# Install to marketplaces directory (for direct installs)
 	@mkdir -p $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks
 	@mkdir -p $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin
+	@mkdir -p $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/commands
 	cp $(BUILD_DIR)/worker $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/
 	cp $(BUILD_DIR)/mcp-server $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/
 	cp $(BUILD_DIR)/hooks/* $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks/
 	cp $(PLUGIN_DIR)/hooks/hooks.json $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks/
+	@# Copy slash commands if they exist
+	@if [ -d "$(PLUGIN_DIR)/commands" ]; then cp -r $(PLUGIN_DIR)/commands/* $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/commands/ 2>/dev/null || true; fi
 	@# Update plugin.json and marketplace.json with current version to prevent stale version directories
 	@sed 's/"version": "[^"]*"/"version": "$(VERSION)"/g' $(PLUGIN_DIR)/.claude-plugin/plugin.json > $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/plugin.json
 	@sed 's/"version": "[^"]*"/"version": "$(VERSION)"/g' $(PLUGIN_DIR)/.claude-plugin/marketplace.json > $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/marketplace.json
