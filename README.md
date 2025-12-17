@@ -12,6 +12,15 @@ Claude Code forgets everything when your session ends. Claude Mnemonic fixes tha
 
 It captures what Claude learns during your coding sessions - bug fixes, architecture decisions, patterns that work - and brings that knowledge back in future conversations. No more re-explaining your codebase.
 
+## What's New in v0.6
+
+- **Auto-Updates** - Automatically stays up-to-date with the latest version
+- **Slash Command: `/restart`** - Restart the worker directly from Claude Code
+- **Local Embeddings** - All semantic search runs locally via ONNX Runtime (no external API calls)
+- **Async Queue Processing** - Non-blocking observation capture for faster sessions
+- **Smarter Storage** - Filters out system/agent summaries to keep knowledge relevant
+- **Improved Reliability** - Better handling of connectivity issues and dead connections
+
 ## Requirements
 
 | Dependency | Required | Purpose |
@@ -73,9 +82,11 @@ cosign verify-blob \
 | **Persistent Memory** | Observations survive across sessions and restarts |
 | **Project Isolation** | Each project has its own knowledge base |
 | **Global Patterns** | Best practices are shared across all projects |
-| **Semantic Search** | Find relevant context with natural language |
+| **Semantic Search** | Find relevant context with natural language (local embeddings) |
 | **Live Statusline** | Real-time metrics in Claude Code: `[mnemonic] ● served:42 | project:28 memories` |
 | **Web Dashboard** | Browse and manage memories at `localhost:37777` |
+| **Auto-Updates** | Automatically downloads and applies new versions |
+| **Slash Commands** | Control the worker directly from Claude Code |
 
 ### How knowledge flows
 
@@ -131,6 +142,25 @@ These search tools are available via MCP:
 - `changes` - find code modifications
 - `how_it_works` - system understanding queries
 
+## Slash Commands
+
+Available commands within Claude Code:
+
+| Command | Description |
+|---------|-------------|
+| `/restart` | Restart the worker process when experiencing issues |
+
+## Auto-Updates
+
+Claude Mnemonic automatically checks for updates and applies them. Updates are downloaded in the background and applied on restart.
+
+- Automatic update checks on startup
+- Background downloads (up to 250MB)
+- Seamless restart after update
+- Manual trigger: `curl -X POST http://127.0.0.1:37777/api/update/apply`
+
+Check update status: `curl http://127.0.0.1:37777/api/update/status`
+
 ## Troubleshooting
 
 **Worker won't start?**
@@ -142,6 +172,20 @@ cat /tmp/claude-mnemonic-worker.log  # view logs
 **Database locked?**
 ```bash
 rm -f ~/.claude-mnemonic/*.db-wal ~/.claude-mnemonic/*.db-shm
+```
+
+**Worker unresponsive?**
+```bash
+# Restart via API
+curl -X POST http://127.0.0.1:37777/api/restart
+
+# Or use the slash command in Claude Code
+/restart
+```
+
+**Check health status:**
+```bash
+curl http://127.0.0.1:37777/api/selfcheck
 ```
 
 ## Uninstall
