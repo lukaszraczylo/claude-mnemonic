@@ -2,11 +2,13 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -550,4 +552,730 @@ func TestRequireReadyMiddleware_Allows(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "success", rec.Body.String())
+}
+
+func TestHandleGetStats(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleGetStats(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	// Check basic stats fields exist
+	_, hasUptime := response["uptime"]
+	assert.True(t, hasUptime)
+	_, hasReady := response["ready"]
+	assert.True(t, hasReady)
+}
+
+func TestHandleGetStats_WithProject(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	project := "test-project"
+	createTestObservation(t, svc.observationStore, project, "Test", "Test content", []string{"test"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stats?project="+project, nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleGetStats(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	// Check project-specific stats
+	assert.Equal(t, project, response["project"])
+	assert.Equal(t, float64(1), response["projectObservations"])
+}
+
+func TestHandleGetRetrievalStats(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stats/retrieval", nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleGetRetrievalStats(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response RetrievalStats
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	// Initially all stats should be 0
+	assert.Equal(t, int64(0), response.TotalRequests)
+}
+
+func TestHandleContextCount(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	project := "count-project"
+
+	// Create some observations
+	for i := 0; i < 5; i++ {
+		createTestObservation(t, svc.observationStore, project, "Test "+string(rune('A'+i)), "Content", []string{"test"})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/context/count?project="+project, nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleContextCount(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.Equal(t, project, response["project"])
+	assert.Equal(t, float64(5), response["count"])
+}
+
+func TestHandleContextCount_MissingProject(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/context/count", nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleContextCount(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleGetProjects(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Create sessions for different projects
+	ctx := context.Background()
+	svc.sessionStore.CreateSDKSession(ctx, "session-1", "project-alpha", "")
+	svc.sessionStore.CreateSDKSession(ctx, "session-2", "project-beta", "")
+	svc.sessionStore.CreateSDKSession(ctx, "session-3", "project-gamma", "")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleGetProjects(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var projects []string
+	err := json.Unmarshal(rec.Body.Bytes(), &projects)
+	require.NoError(t, err)
+
+	assert.Len(t, projects, 3)
+	assert.Contains(t, projects, "project-alpha")
+	assert.Contains(t, projects, "project-beta")
+	assert.Contains(t, projects, "project-gamma")
+}
+
+func TestHandleGetTypes(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/types", nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleGetTypes(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	// Check observation types
+	obsTypes, ok := response["observation_types"].([]interface{})
+	require.True(t, ok)
+	assert.Contains(t, toStringSlice(obsTypes), "bugfix")
+	assert.Contains(t, toStringSlice(obsTypes), "feature")
+
+	// Check concept types
+	conceptTypes, ok := response["concept_types"].([]interface{})
+	require.True(t, ok)
+	assert.Contains(t, toStringSlice(conceptTypes), "security")
+}
+
+func toStringSlice(arr []interface{}) []string {
+	result := make([]string, len(arr))
+	for i, v := range arr {
+		result[i] = v.(string)
+	}
+	return result
+}
+
+func TestHandleGetSummaries(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Create some summaries
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		parsed := &models.ParsedSummary{
+			Request:   "Test request " + string(rune('A'+i)),
+			Completed: "Test completed",
+		}
+		sdkSessionID := "sdk-" + string(rune('a'+i))
+		_, _, err := svc.summaryStore.StoreSummary(ctx, sdkSessionID, "project-a", parsed, i+1, 100)
+		require.NoError(t, err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summaries?project=project-a&limit=10", nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleGetSummaries(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var summaries []map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &summaries)
+	require.NoError(t, err)
+
+	assert.Len(t, summaries, 3)
+}
+
+func TestHandleGetPrompts(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Create sessions and prompts
+	ctx := context.Background()
+	svc.sessionStore.CreateSDKSession(ctx, "claude-test", "project-x", "")
+
+	// Save prompts
+	for i := 0; i < 5; i++ {
+		_, err := svc.promptStore.SaveUserPromptWithMatches(ctx, "claude-test", i+1, "Test prompt "+string(rune('A'+i)), 0)
+		require.NoError(t, err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompts?project=project-x&limit=10", nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleGetPrompts(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var prompts []map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &prompts)
+	require.NoError(t, err)
+
+	assert.Len(t, prompts, 5)
+}
+
+func TestHandleSelfCheck(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	svc.ready.Store(true)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/self-check", nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleSelfCheck(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response SelfCheckResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	// Overall health should be healthy or degraded (not unhealthy for basic tests)
+	assert.NotEqual(t, "unhealthy", response.Overall)
+	assert.NotEmpty(t, response.Version)
+	assert.NotEmpty(t, response.Uptime)
+	assert.NotEmpty(t, response.Components)
+}
+
+func TestHandleSelfCheck_NotReady(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	svc.ready.Store(false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/self-check", nil)
+	rec := httptest.NewRecorder()
+
+	svc.handleSelfCheck(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response SelfCheckResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	// Should be degraded when not ready
+	assert.Equal(t, "degraded", response.Overall)
+}
+
+func TestObservationTypesAndConcepts(t *testing.T) {
+	// Verify observation types
+	assert.Contains(t, ObservationTypes, "bugfix")
+	assert.Contains(t, ObservationTypes, "feature")
+	assert.Contains(t, ObservationTypes, "refactor")
+	assert.Contains(t, ObservationTypes, "discovery")
+	assert.Contains(t, ObservationTypes, "decision")
+	assert.Contains(t, ObservationTypes, "change")
+
+	// Verify concept types
+	assert.Contains(t, ConceptTypes, "how-it-works")
+	assert.Contains(t, ConceptTypes, "security")
+	assert.Contains(t, ConceptTypes, "best-practice")
+}
+
+func TestWriteJSON(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	data := map[string]string{"test": "value"}
+	writeJSON(rec, data)
+
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var result map[string]string
+	err := json.Unmarshal(rec.Body.Bytes(), &result)
+	require.NoError(t, err)
+	assert.Equal(t, "value", result["test"])
+}
+
+func TestDefaultLimitConstants(t *testing.T) {
+	assert.Equal(t, 100, DefaultObservationsLimit)
+	assert.Equal(t, 50, DefaultSummariesLimit)
+	assert.Equal(t, 100, DefaultPromptsLimit)
+	assert.Equal(t, 50, DefaultSearchLimit)
+	assert.Equal(t, 50, DefaultContextLimit)
+}
+
+func TestDuplicatePromptWindowSeconds(t *testing.T) {
+	assert.Equal(t, 10, DuplicatePromptWindowSeconds)
+}
+
+func TestHandleSessionInit_Success(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	reqBody := SessionInitRequest{
+		ClaudeSessionID:     "claude-test-123",
+		Project:             "test-project",
+		Prompt:              "Help me fix this bug",
+		MatchedObservations: 5,
+	}
+
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/init", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response SessionInitResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.Greater(t, response.SessionDBID, int64(0))
+	assert.Equal(t, 1, response.PromptNumber)
+	assert.False(t, response.Skipped)
+}
+
+func TestHandleSessionInit_InvalidJSON(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/init", bytes.NewReader([]byte("invalid json")))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleSessionInit_PrivatePrompt(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	reqBody := SessionInitRequest{
+		ClaudeSessionID: "claude-private",
+		Project:         "test-project",
+		Prompt:          "<private>This is a private prompt</private>",
+	}
+
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/init", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response SessionInitResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.True(t, response.Skipped)
+	assert.Equal(t, "private", response.Reason)
+}
+
+func TestHandleSessionInit_DuplicatePrompt(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	reqBody := SessionInitRequest{
+		ClaudeSessionID: "claude-dup-test",
+		Project:         "test-project",
+		Prompt:          "Help me fix this specific bug",
+	}
+
+	body, _ := json.Marshal(reqBody)
+
+	// First request
+	req1 := httptest.NewRequest(http.MethodPost, "/api/sessions/init", bytes.NewReader(body))
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	svc.router.ServeHTTP(rec1, req1)
+
+	assert.Equal(t, http.StatusOK, rec1.Code)
+	var resp1 SessionInitResponse
+	json.Unmarshal(rec1.Body.Bytes(), &resp1)
+
+	// Second request with same prompt (duplicate)
+	body2, _ := json.Marshal(reqBody)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/sessions/init", bytes.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	svc.router.ServeHTTP(rec2, req2)
+
+	assert.Equal(t, http.StatusOK, rec2.Code)
+	var resp2 SessionInitResponse
+	json.Unmarshal(rec2.Body.Bytes(), &resp2)
+
+	// Should return same prompt number (duplicate detected)
+	assert.Equal(t, resp1.PromptNumber, resp2.PromptNumber)
+}
+
+func TestHandleSessionStart_Success(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// First create a session
+	ctx := context.Background()
+	sessionID, _ := svc.sessionStore.CreateSDKSession(ctx, "claude-start-test", "test-project", "test prompt")
+
+	reqBody := SessionStartRequest{
+		UserPrompt:   "Help me with something",
+		PromptNumber: 1,
+	}
+
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/sessions/"+strconv.FormatInt(sessionID, 10)+"/init", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestHandleSessionStart_InvalidID(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	reqBody := SessionStartRequest{
+		UserPrompt:   "Help me",
+		PromptNumber: 1,
+	}
+
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/sessions/invalid/init", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleSessionStart_NotFound(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	reqBody := SessionStartRequest{
+		UserPrompt:   "Help me",
+		PromptNumber: 1,
+	}
+
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/sessions/999999/init", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleSessionStart_InvalidJSON(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	sessionID, _ := svc.sessionStore.CreateSDKSession(ctx, "claude-json-test", "test-project", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/sessions/"+strconv.FormatInt(sessionID, 10)+"/init", bytes.NewReader([]byte("not json")))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleObservation_SessionNotFound(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	reqBody := ObservationRequest{
+		ClaudeSessionID: "non-existent-session",
+		Project:         "test-project",
+		ToolName:        "Read",
+		ToolInput:       map[string]string{"path": "/test.go"},
+		ToolResponse:    "file content",
+		CWD:             "/test",
+	}
+
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/observations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	// Should return 200 (queues observation) or 404 (session not found)
+	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound}, rec.Code)
+}
+
+func TestHandleObservation_InvalidJSON(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/observations", bytes.NewReader([]byte("invalid")))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleObservation_WithExistingSession(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Create a session first
+	ctx := context.Background()
+	svc.sessionStore.CreateSDKSession(ctx, "claude-obs-test", "test-project", "test prompt")
+
+	reqBody := ObservationRequest{
+		ClaudeSessionID: "claude-obs-test",
+		Project:         "test-project",
+		ToolName:        "Write",
+		ToolInput:       map[string]string{"path": "/test.go"},
+		ToolResponse:    "success",
+		CWD:             "/project",
+	}
+
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/observations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestHandleGetObservations_DefaultLimit(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Create more than default limit
+	for i := 0; i < 120; i++ {
+		createTestObservation(t, svc.observationStore, "project-limit",
+			"Test "+strconv.Itoa(i),
+			"Content "+strconv.Itoa(i),
+			[]string{"test"})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/observations", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var observations []map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &observations)
+	require.NoError(t, err)
+
+	// Should return default limit (100)
+	assert.LessOrEqual(t, len(observations), DefaultObservationsLimit)
+}
+
+func TestHandleGetObservations_FilterByProject(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Create observations in different projects
+	createTestObservation(t, svc.observationStore, "alpha", "Alpha 1", "Content", []string{"test"})
+	createTestObservation(t, svc.observationStore, "alpha", "Alpha 2", "Content", []string{"test"})
+	createTestObservation(t, svc.observationStore, "beta", "Beta 1", "Content", []string{"test"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/observations?project=alpha", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var observations []map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &observations)
+	require.NoError(t, err)
+
+	assert.Len(t, observations, 2)
+}
+
+func TestHandleGetObservations_FilterByType(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Create observations - createTestObservation creates discovery type
+	createTestObservation(t, svc.observationStore, "type-test", "Test 1", "Content", []string{"test"})
+	createTestObservation(t, svc.observationStore, "type-test", "Test 2", "Content", []string{"test"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/observations?type=discovery", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestHandleGetSummaries_DefaultLimit(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	// Create more than default limit
+	for i := 0; i < 60; i++ {
+		parsed := &models.ParsedSummary{Request: "Request " + strconv.Itoa(i)}
+		svc.summaryStore.StoreSummary(ctx, "sdk-"+strconv.Itoa(i), "project-sum", parsed, i+1, 100)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summaries", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var summaries []map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &summaries)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(summaries), DefaultSummariesLimit)
+}
+
+func TestHandleGetPrompts_DefaultLimit(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	svc.sessionStore.CreateSDKSession(ctx, "claude-prompts", "project-prompts", "")
+
+	// Create more than default limit
+	for i := 0; i < 120; i++ {
+		svc.promptStore.SaveUserPromptWithMatches(ctx, "claude-prompts", i+1, "Prompt "+strconv.Itoa(i), 0)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompts", nil)
+	rec := httptest.NewRecorder()
+
+	svc.router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var prompts []map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &prompts)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(prompts), DefaultPromptsLimit)
+}
+
+func TestSessionInitRequest_Fields(t *testing.T) {
+	req := SessionInitRequest{
+		ClaudeSessionID:     "test-123",
+		Project:             "my-project",
+		Prompt:              "Help me",
+		MatchedObservations: 10,
+	}
+
+	assert.Equal(t, "test-123", req.ClaudeSessionID)
+	assert.Equal(t, "my-project", req.Project)
+	assert.Equal(t, "Help me", req.Prompt)
+	assert.Equal(t, 10, req.MatchedObservations)
+}
+
+func TestSessionInitResponse_Fields(t *testing.T) {
+	resp := SessionInitResponse{
+		SessionDBID:  123,
+		PromptNumber: 5,
+		Skipped:      true,
+		Reason:       "private",
+	}
+
+	assert.Equal(t, int64(123), resp.SessionDBID)
+	assert.Equal(t, 5, resp.PromptNumber)
+	assert.True(t, resp.Skipped)
+	assert.Equal(t, "private", resp.Reason)
+}
+
+func TestSessionStartRequest_Fields(t *testing.T) {
+	req := SessionStartRequest{
+		UserPrompt:   "Help me with code",
+		PromptNumber: 3,
+	}
+
+	assert.Equal(t, "Help me with code", req.UserPrompt)
+	assert.Equal(t, 3, req.PromptNumber)
+}
+
+func TestObservationRequest_Fields(t *testing.T) {
+	req := ObservationRequest{
+		ClaudeSessionID: "session-abc",
+		Project:         "my-project",
+		ToolName:        "Read",
+		ToolInput:       map[string]string{"path": "/file.go"},
+		ToolResponse:    "file contents",
+		CWD:             "/home/user/project",
+	}
+
+	assert.Equal(t, "session-abc", req.ClaudeSessionID)
+	assert.Equal(t, "my-project", req.Project)
+	assert.Equal(t, "Read", req.ToolName)
+	assert.Equal(t, "/home/user/project", req.CWD)
 }

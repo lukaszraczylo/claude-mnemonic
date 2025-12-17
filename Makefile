@@ -160,14 +160,15 @@ uninstall: stop-worker
 	rm -rf $(HOME)/.claude/plugins/marketplaces/claude-mnemonic
 	@echo "Uninstallation complete!"
 
-# Run tests
+# Run tests (with FTS5 support)
 test: setup-libs
-	go test -v -race ./...
+	go test $(BUILD_TAGS) -v -race ./...
 
-# Run tests with coverage
-test-coverage:
-	go test -v -race -coverprofile=coverage.out ./...
+# Run tests with coverage (with FTS5 support)
+test-coverage: setup-libs
+	go test $(BUILD_TAGS) -v -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
+	@go tool cover -func=coverage.out | tail -1
 
 # Run benchmarks
 bench:

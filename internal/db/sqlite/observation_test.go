@@ -9,7 +9,21 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 )
+
+// testObservationStoreBasic creates an ObservationStore with base tables (no FTS5).
+func testObservationStoreBasic(t *testing.T) (*ObservationStore, *Store, func()) {
+	t.Helper()
+
+	db, _, cleanup := testDB(t)
+	createBaseTables(t, db)
+
+	store := newStoreFromDB(db)
+	obsStore := NewObservationStore(store)
+
+	return obsStore, store, cleanup
+}
 
 // testObservationStore creates an ObservationStore with a test database including FTS5.
 func testObservationStore(t *testing.T) (*ObservationStore, *Store, func()) {
@@ -22,6 +36,420 @@ func testObservationStore(t *testing.T) (*ObservationStore, *Store, func()) {
 	obsStore := NewObservationStore(store)
 
 	return obsStore, store, cleanup
+}
+
+// ObservationStoreSuite is a test suite for ObservationStore operations.
+type ObservationStoreSuite struct {
+	suite.Suite
+	obsStore *ObservationStore
+	store    *Store
+	cleanup  func()
+}
+
+func (s *ObservationStoreSuite) SetupTest() {
+	s.obsStore, s.store, s.cleanup = testObservationStoreBasic(s.T())
+}
+
+func (s *ObservationStoreSuite) TearDownTest() {
+	if s.cleanup != nil {
+		s.cleanup()
+	}
+}
+
+func TestObservationStoreSuite(t *testing.T) {
+	suite.Run(t, new(ObservationStoreSuite))
+}
+
+// TestStoreObservation_TableDriven tests observation storage with various scenarios.
+func (s *ObservationStoreSuite) TestStoreObservation_TableDriven() {
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		sdkSessionID string
+		project      string
+		obs          *models.ParsedObservation
+		promptNum    int
+		tokens       int64
+		wantErr      bool
+	}{
+		{
+			name:         "basic discovery observation",
+			sdkSessionID: "session-basic",
+			project:      "project-a",
+			obs: &models.ParsedObservation{
+				Type:      models.ObsTypeDiscovery,
+				Title:     "Test Title",
+				Subtitle:  "Test Subtitle",
+				Narrative: "Test narrative content",
+				Facts:     []string{"Fact 1", "Fact 2"},
+				Concepts:  []string{"testing", "golang"},
+			},
+			promptNum: 1,
+			tokens:    100,
+			wantErr:   false,
+		},
+		{
+			name:         "bugfix observation",
+			sdkSessionID: "session-bugfix",
+			project:      "project-b",
+			obs: &models.ParsedObservation{
+				Type:          models.ObsTypeBugfix,
+				Title:         "Fixed null pointer",
+				Narrative:     "Fixed null pointer exception in handler",
+				FilesModified: []string{"handler.go"},
+			},
+			promptNum: 2,
+			tokens:    50,
+			wantErr:   false,
+		},
+		{
+			name:         "global scope observation",
+			sdkSessionID: "session-global",
+			project:      "project-c",
+			obs: &models.ParsedObservation{
+				Type:      models.ObsTypeDiscovery,
+				Title:     "Security best practice",
+				Narrative: "Always validate user input",
+				Concepts:  []string{"security", "best-practice"},
+			},
+			promptNum: 1,
+			tokens:    75,
+			wantErr:   false,
+		},
+		{
+			name:         "observation with files",
+			sdkSessionID: "session-files",
+			project:      "project-d",
+			obs: &models.ParsedObservation{
+				Type:          models.ObsTypeFeature,
+				Title:         "Added authentication",
+				Narrative:     "Implemented JWT authentication",
+				FilesRead:     []string{"config.go", "auth.go"},
+				FilesModified: []string{"handler.go", "middleware.go"},
+				FileMtimes:    map[string]int64{"handler.go": 1234567890, "middleware.go": 1234567891},
+			},
+			promptNum: 3,
+			tokens:    200,
+			wantErr:   false,
+		},
+		{
+			name:         "minimal observation",
+			sdkSessionID: "session-minimal",
+			project:      "project-e",
+			obs: &models.ParsedObservation{
+				Type: models.ObsTypeChange,
+			},
+			promptNum: 0,
+			tokens:    0,
+			wantErr:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		s.Run(tt.name, func() {
+			id, epoch, err := s.obsStore.StoreObservation(ctx, tt.sdkSessionID, tt.project, tt.obs, tt.promptNum, tt.tokens)
+			if tt.wantErr {
+				s.Error(err)
+				return
+			}
+
+			s.NoError(err)
+			s.Greater(id, int64(0))
+			s.Greater(epoch, int64(0))
+
+			// Retrieve and verify
+			retrieved, err := s.obsStore.GetObservationByID(ctx, id)
+			s.NoError(err)
+			s.NotNil(retrieved)
+			s.Equal(id, retrieved.ID)
+			s.Equal(tt.project, retrieved.Project)
+			s.Equal(tt.obs.Type, retrieved.Type)
+		})
+	}
+}
+
+// TestGetObservationByID_NotFound tests retrieval of non-existent observation.
+func (s *ObservationStoreSuite) TestGetObservationByID_NotFound() {
+	ctx := context.Background()
+
+	obs, err := s.obsStore.GetObservationByID(ctx, 99999)
+	s.NoError(err)
+	s.Nil(obs)
+}
+
+// TestGetRecentObservations_TableDriven tests recent observations retrieval.
+func (s *ObservationStoreSuite) TestGetRecentObservations_TableDriven() {
+	ctx := context.Background()
+
+	// Create 15 observations
+	for i := 0; i < 15; i++ {
+		obs := &models.ParsedObservation{
+			Type:  models.ObsTypeDiscovery,
+			Title: "Observation " + string(rune('A'+i)),
+		}
+		_, _, err := s.obsStore.StoreObservation(ctx, "session-"+string(rune('0'+i)), "project-a", obs, i, 10)
+		s.NoError(err)
+		time.Sleep(time.Millisecond) // Ensure different timestamps
+	}
+
+	tests := []struct {
+		name      string
+		project   string
+		limit     int
+		wantCount int
+	}{
+		{
+			name:      "limit 5",
+			project:   "project-a",
+			limit:     5,
+			wantCount: 5,
+		},
+		{
+			name:      "limit 10",
+			project:   "project-a",
+			limit:     10,
+			wantCount: 10,
+		},
+		{
+			name:      "limit higher than count",
+			project:   "project-a",
+			limit:     50,
+			wantCount: 15,
+		},
+		{
+			name:      "different project (no results)",
+			project:   "project-b",
+			limit:     10,
+			wantCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		s.Run(tt.name, func() {
+			observations, err := s.obsStore.GetRecentObservations(ctx, tt.project, tt.limit)
+			s.NoError(err)
+			s.Len(observations, tt.wantCount)
+		})
+	}
+}
+
+// TestDeleteObservations_TableDriven tests observation deletion.
+func (s *ObservationStoreSuite) TestDeleteObservations_TableDriven() {
+	ctx := context.Background()
+
+	// Create observations
+	var ids []int64
+	for i := 0; i < 5; i++ {
+		obs := &models.ParsedObservation{
+			Type:  models.ObsTypeDiscovery,
+			Title: "To delete " + string(rune('A'+i)),
+		}
+		id, _, err := s.obsStore.StoreObservation(ctx, "session-del", "project-del", obs, i, 10)
+		s.NoError(err)
+		ids = append(ids, id)
+	}
+
+	tests := []struct {
+		name        string
+		toDelete    []int64
+		wantDeleted int64
+		wantRemain  int
+	}{
+		{
+			name:        "delete none",
+			toDelete:    []int64{},
+			wantDeleted: 0,
+			wantRemain:  5,
+		},
+		{
+			name:        "delete one",
+			toDelete:    ids[0:1],
+			wantDeleted: 1,
+			wantRemain:  4,
+		},
+		{
+			name:        "delete remaining",
+			toDelete:    ids[1:],
+			wantDeleted: 4,
+			wantRemain:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		s.Run(tt.name, func() {
+			deleted, err := s.obsStore.DeleteObservations(ctx, tt.toDelete)
+			s.NoError(err)
+			s.Equal(tt.wantDeleted, deleted)
+
+			remaining, err := s.obsStore.GetAllRecentObservations(ctx, 100)
+			s.NoError(err)
+			s.Len(remaining, tt.wantRemain)
+		})
+	}
+}
+
+// TestGetObservationsByIDs tests retrieval by multiple IDs.
+func (s *ObservationStoreSuite) TestGetObservationsByIDs() {
+	ctx := context.Background()
+
+	// Create observations
+	var ids []int64
+	for i := 0; i < 5; i++ {
+		obs := &models.ParsedObservation{
+			Type:  models.ObsTypeDiscovery,
+			Title: "By ID " + string(rune('A'+i)),
+		}
+		id, _, err := s.obsStore.StoreObservation(ctx, "session-byid", "project-byid", obs, i, 10)
+		s.NoError(err)
+		ids = append(ids, id)
+		time.Sleep(time.Millisecond)
+	}
+
+	tests := []struct {
+		name      string
+		queryIDs  []int64
+		orderBy   string
+		limit     int
+		wantCount int
+	}{
+		{
+			name:      "empty IDs",
+			queryIDs:  []int64{},
+			orderBy:   "date_desc",
+			limit:     10,
+			wantCount: 0,
+		},
+		{
+			name:      "single ID",
+			queryIDs:  ids[0:1],
+			orderBy:   "date_desc",
+			limit:     10,
+			wantCount: 1,
+		},
+		{
+			name:      "all IDs",
+			queryIDs:  ids,
+			orderBy:   "date_desc",
+			limit:     10,
+			wantCount: 5,
+		},
+		{
+			name:      "with limit less than IDs",
+			queryIDs:  ids,
+			orderBy:   "date_desc",
+			limit:     3,
+			wantCount: 3,
+		},
+		{
+			name:      "ascending order",
+			queryIDs:  ids,
+			orderBy:   "date_asc",
+			limit:     10,
+			wantCount: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		s.Run(tt.name, func() {
+			observations, err := s.obsStore.GetObservationsByIDs(ctx, tt.queryIDs, tt.orderBy, tt.limit)
+			if tt.wantCount == 0 {
+				s.NoError(err)
+				s.Nil(observations)
+			} else {
+				s.NoError(err)
+				s.Len(observations, tt.wantCount)
+			}
+		})
+	}
+}
+
+// TestGlobalScope tests global vs project scope.
+func (s *ObservationStoreSuite) TestGlobalScope() {
+	ctx := context.Background()
+
+	// Create project-scoped observation
+	projectObs := &models.ParsedObservation{
+		Type:     models.ObsTypeDiscovery,
+		Title:    "Project specific",
+		Concepts: []string{"project-specific"},
+	}
+	_, _, err := s.obsStore.StoreObservation(ctx, "session-scope", "project-a", projectObs, 1, 10)
+	s.NoError(err)
+
+	// Create global-scoped observation (security concept triggers global)
+	globalObs := &models.ParsedObservation{
+		Type:     models.ObsTypeDiscovery,
+		Title:    "Global security",
+		Concepts: []string{"security"},
+	}
+	_, _, err = s.obsStore.StoreObservation(ctx, "session-scope", "project-a", globalObs, 2, 10)
+	s.NoError(err)
+
+	// Project-a should see both
+	resultsA, err := s.obsStore.GetRecentObservations(ctx, "project-a", 10)
+	s.NoError(err)
+	s.Len(resultsA, 2)
+
+	// Project-b should only see global
+	resultsB, err := s.obsStore.GetRecentObservations(ctx, "project-b", 10)
+	s.NoError(err)
+	s.Len(resultsB, 1)
+	s.Equal("Global security", resultsB[0].Title.String)
+	s.Equal(models.ScopeGlobal, resultsB[0].Scope)
+}
+
+// TestSetCleanupFunc tests the cleanup function callback.
+func (s *ObservationStoreSuite) TestSetCleanupFunc() {
+	ctx := context.Background()
+
+	var calledWith []int64
+	s.obsStore.SetCleanupFunc(func(ctx context.Context, deletedIDs []int64) {
+		calledWith = deletedIDs
+	})
+
+	// Store an observation
+	obs := &models.ParsedObservation{
+		Type:  models.ObsTypeDiscovery,
+		Title: "Test cleanup",
+	}
+	_, _, err := s.obsStore.StoreObservation(ctx, "session-cleanup", "project-cleanup", obs, 1, 10)
+	s.NoError(err)
+
+	// Cleanup should not have been called since nothing was deleted
+	s.Empty(calledWith)
+}
+
+// TestGetObservationCount tests observation counting.
+func (s *ObservationStoreSuite) TestGetObservationCount() {
+	ctx := context.Background()
+
+	// Create observations for project-a
+	for i := 0; i < 5; i++ {
+		obs := &models.ParsedObservation{
+			Type: models.ObsTypeDiscovery,
+		}
+		_, _, err := s.obsStore.StoreObservation(ctx, "session-count", "project-a", obs, i, 10)
+		s.NoError(err)
+	}
+
+	// Create global observation
+	globalObs := &models.ParsedObservation{
+		Type:     models.ObsTypeDiscovery,
+		Concepts: []string{"security"},
+	}
+	_, _, err := s.obsStore.StoreObservation(ctx, "session-count", "project-a", globalObs, 6, 10)
+	s.NoError(err)
+
+	// Project-a should count 6 (5 project + 1 global)
+	count, err := s.obsStore.GetObservationCount(ctx, "project-a")
+	s.NoError(err)
+	s.Equal(6, count)
+
+	// Project-b should count 1 (only global)
+	count, err = s.obsStore.GetObservationCount(ctx, "project-b")
+	s.NoError(err)
+	s.Equal(1, count)
 }
 
 func TestObservationStore_StoreAndRetrieve(t *testing.T) {
