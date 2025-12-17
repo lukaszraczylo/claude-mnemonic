@@ -800,3 +800,148 @@ func TestExtractKeywords(t *testing.T) {
 		})
 	}
 }
+
+func TestObservationStore_GetObservationsByProjectStrict(t *testing.T) {
+	obsStore, _, cleanup := testObservationStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create project-scoped observation for project-a
+	projectObs := &models.ParsedObservation{
+		Type:      models.ObsTypeDiscovery,
+		Title:     "Project A specific",
+		Narrative: "Only for project-a",
+		Concepts:  []string{"local-concept"},
+	}
+	_, _, err := obsStore.StoreObservation(ctx, "session-1", "project-a", projectObs, 1, 100)
+	require.NoError(t, err)
+
+	// Create global observation from project-a
+	globalObs := &models.ParsedObservation{
+		Type:      models.ObsTypeDiscovery,
+		Title:     "Global security practice",
+		Narrative: "Best practice for all",
+		Concepts:  []string{"security", "best-practice"},
+	}
+	_, _, err = obsStore.StoreObservation(ctx, "session-1", "project-a", globalObs, 2, 100)
+	require.NoError(t, err)
+
+	// Create observation for project-b
+	projectBObs := &models.ParsedObservation{
+		Type:      models.ObsTypeDiscovery,
+		Title:     "Project B specific",
+		Narrative: "Only for project-b",
+	}
+	_, _, err = obsStore.StoreObservation(ctx, "session-1", "project-b", projectBObs, 1, 100)
+	require.NoError(t, err)
+
+	// GetObservationsByProjectStrict for project-a should only return project-a observations
+	// This is different from GetRecentObservations which includes globals from other projects
+	results, err := obsStore.GetObservationsByProjectStrict(ctx, "project-a", 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 2) // Only observations created in project-a
+
+	// Verify both are from project-a
+	for _, obs := range results {
+		assert.Equal(t, "project-a", obs.Project)
+	}
+
+	// GetObservationsByProjectStrict for project-b should only return project-b observations
+	results, err = obsStore.GetObservationsByProjectStrict(ctx, "project-b", 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 1)
+	assert.Equal(t, "Project B specific", results[0].Title.String)
+}
+
+func TestObservationStore_SearchObservationsFTS_EmptyQuery(t *testing.T) {
+	obsStore, _, cleanup := testObservationStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create an observation
+	obs := &models.ParsedObservation{
+		Type:      models.ObsTypeDiscovery,
+		Title:     "Test observation",
+		Narrative: "Some content here",
+	}
+	_, _, err := obsStore.StoreObservation(ctx, "session-1", "project-a", obs, 1, 100)
+	require.NoError(t, err)
+
+	// Search with only stop words (should return nil)
+	results, err := obsStore.SearchObservationsFTS(ctx, "the a an is are", "project-a", 10)
+	require.NoError(t, err)
+	assert.Nil(t, results)
+
+	// Search with empty query
+	results, err = obsStore.SearchObservationsFTS(ctx, "", "project-a", 10)
+	require.NoError(t, err)
+	assert.Nil(t, results)
+}
+
+func TestObservationStore_SearchObservationsFTS_DefaultLimit(t *testing.T) {
+	obsStore, _, cleanup := testObservationStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create observations
+	for i := 0; i < 15; i++ {
+		obs := &models.ParsedObservation{
+			Type:      models.ObsTypeDiscovery,
+			Title:     "Authentication test " + string(rune('A'+i)),
+			Narrative: "Auth related content",
+		}
+		_, _, err := obsStore.StoreObservation(ctx, "session-1", "project-a", obs, i+1, 100)
+		require.NoError(t, err)
+		time.Sleep(time.Millisecond)
+	}
+
+	// Search with limit 0 (should default to 10)
+	results, err := obsStore.SearchObservationsFTS(ctx, "authentication", "project-a", 0)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(results), 10)
+
+	// Search with negative limit (should default to 10)
+	results, err = obsStore.SearchObservationsFTS(ctx, "authentication", "project-a", -5)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(results), 10)
+}
+
+func TestObservationStore_GetAllRecentObservations(t *testing.T) {
+	obsStore, _, cleanup := testObservationStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create observations across different projects
+	projects := []string{"project-a", "project-b", "project-c"}
+	for _, proj := range projects {
+		for i := 0; i < 3; i++ {
+			obs := &models.ParsedObservation{
+				Type:      models.ObsTypeDiscovery,
+				Title:     proj + " observation " + string(rune('A'+i)),
+				Narrative: "Content for " + proj,
+			}
+			_, _, err := obsStore.StoreObservation(ctx, "session-1", proj, obs, i+1, 100)
+			require.NoError(t, err)
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	// Get all recent observations
+	results, err := obsStore.GetAllRecentObservations(ctx, 100)
+	require.NoError(t, err)
+	assert.Len(t, results, 9) // 3 projects * 3 observations
+
+	// Verify they are in descending order by epoch
+	for i := 1; i < len(results); i++ {
+		assert.GreaterOrEqual(t, results[i-1].CreatedAtEpoch, results[i].CreatedAtEpoch)
+	}
+
+	// Test with limit
+	results, err = obsStore.GetAllRecentObservations(ctx, 5)
+	require.NoError(t, err)
+	assert.Len(t, results, 5)
+}
