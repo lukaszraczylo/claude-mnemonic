@@ -107,8 +107,11 @@ export async function fetchSummaries(limit: number = 50, project?: string, signa
   return fetchWithRetry<SessionSummary[]>(`${API_BASE}/summaries?${params}`, { signal })
 }
 
-export async function fetchStats(): Promise<Stats> {
-  return fetchWithRetry<Stats>(`${API_BASE}/stats`)
+export async function fetchStats(project?: string | null): Promise<Stats> {
+  const params = new URLSearchParams()
+  if (project) params.append('project', project)
+  const query = params.toString()
+  return fetchWithRetry<Stats>(`${API_BASE}/stats${query ? '?' + query : ''}`)
 }
 
 export async function fetchProjects(): Promise<string[]> {

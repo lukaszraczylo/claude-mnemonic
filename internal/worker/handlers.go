@@ -643,7 +643,8 @@ func (s *Service) handleGetTypes(w http.ResponseWriter, r *http.Request) {
 
 // handleGetStats returns worker statistics.
 func (s *Service) handleGetStats(w http.ResponseWriter, r *http.Request) {
-	retrievalStats := s.GetRetrievalStats()
+	project := r.URL.Query().Get("project")
+	retrievalStats := s.GetRetrievalStats(project)
 	sessionsToday, _ := s.sessionStore.GetSessionsToday(r.Context())
 
 	response := map[string]interface{}{
@@ -658,7 +659,7 @@ func (s *Service) handleGetStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Include project-specific observation count if project is specified
-	if project := r.URL.Query().Get("project"); project != "" {
+	if project != "" {
 		count, err := s.observationStore.GetObservationCount(r.Context(), project)
 		if err == nil {
 			response["projectObservations"] = count
@@ -671,7 +672,8 @@ func (s *Service) handleGetStats(w http.ResponseWriter, r *http.Request) {
 
 // handleGetRetrievalStats returns detailed retrieval statistics.
 func (s *Service) handleGetRetrievalStats(w http.ResponseWriter, r *http.Request) {
-	stats := s.GetRetrievalStats()
+	project := r.URL.Query().Get("project")
+	stats := s.GetRetrievalStats(project)
 	writeJSON(w, stats)
 }
 
@@ -775,7 +777,7 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 	clusteredObservations := clusterObservations(freshObservations, 0.4)
 
 	// Record retrieval stats (no verification done, so verified=0, deleted=0)
-	s.recordRetrievalStats(int64(len(clusteredObservations)), 0, 0, true)
+	s.recordRetrievalStats(project, int64(len(clusteredObservations)), 0, 0, true)
 
 	log.Info().
 		Str("project", project).
@@ -853,7 +855,7 @@ func (s *Service) handleContextInject(w http.ResponseWriter, r *http.Request) {
 	duplicatesRemoved := len(freshObservations) - len(clusteredObservations)
 
 	// Record retrieval stats (no verification done)
-	s.recordRetrievalStats(int64(len(clusteredObservations)), 0, 0, false)
+	s.recordRetrievalStats(project, int64(len(clusteredObservations)), 0, 0, false)
 
 	log.Info().
 		Str("project", project).
