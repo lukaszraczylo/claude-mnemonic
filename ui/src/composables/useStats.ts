@@ -1,4 +1,4 @@
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, type Ref } from 'vue'
 import type { Stats } from '@/types'
 import { fetchStats } from '@/utils/api'
 import { useSSE } from './useSSE'
@@ -6,7 +6,7 @@ import { useSSE } from './useSSE'
 // Fallback poll interval when SSE is disconnected
 const FALLBACK_POLL_INTERVAL = 10000 // 10 seconds
 
-export function useStats() {
+export function useStats(projectRef?: Ref<string | null>) {
   const stats = ref<Stats | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
@@ -21,7 +21,8 @@ export function useStats() {
     error.value = null
 
     try {
-      stats.value = await fetchStats()
+      const project = projectRef?.value ?? null
+      stats.value = await fetchStats(project)
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to fetch stats'
       console.error('[Stats] Error:', err)
@@ -53,6 +54,14 @@ export function useStats() {
       refresh()
     }
   })
+
+  // Watch for project filter changes
+  if (projectRef) {
+    watch(projectRef, () => {
+      console.log('[Stats] Project filter changed, refreshing stats')
+      refresh()
+    })
+  }
 
   // Switch between SSE-driven and fallback polling based on connection status
   watch(isConnected, (connected) => {
