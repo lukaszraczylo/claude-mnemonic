@@ -65,6 +65,7 @@ func testService(t *testing.T) (*Service, func()) {
 		ctx:              ctx,
 		cancel:           cancel,
 		startTime:        time.Now(),
+		retrievalStats:   make(map[string]*RetrievalStats),
 	}
 
 	svc.setupRoutes()
@@ -436,8 +437,8 @@ func TestRetrievalStats(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	// Check stats
-	stats := svc.GetRetrievalStats()
+	// Check stats for the specific project
+	stats := svc.GetRetrievalStats(project)
 	assert.Equal(t, int64(1), stats.TotalRequests)
 	assert.Equal(t, int64(1), stats.SearchRequests)
 	assert.GreaterOrEqual(t, stats.ObservationsServed, int64(1))
@@ -1516,21 +1517,22 @@ func TestGetRetrievalStats(t *testing.T) {
 	svc, cleanup := testService(t)
 	defer cleanup()
 
-	// Initially all zeros
-	stats := svc.GetRetrievalStats()
+	project := "stats-test"
+
+	// Initially all zeros for this project
+	stats := svc.GetRetrievalStats(project)
 	assert.Equal(t, int64(0), stats.TotalRequests)
 	assert.Equal(t, int64(0), stats.SearchRequests)
 
 	// Make some requests to increment stats
-	project := "stats-test"
 	createTestObservation(t, svc.observationStore, project, "Test", "Content", []string{"test"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/context/search?project="+project+"&query=test", nil)
 	rec := httptest.NewRecorder()
 	svc.router.ServeHTTP(rec, req)
 
-	// Stats should be updated
-	stats = svc.GetRetrievalStats()
+	// Stats should be updated for this project
+	stats = svc.GetRetrievalStats(project)
 	assert.GreaterOrEqual(t, stats.TotalRequests, int64(1))
 }
 
@@ -1784,6 +1786,81 @@ func TestHandleGetStats_AllProjects(t *testing.T) {
 	svc.router.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestStatuslineRetrievalStatsAreProjectSpecific verifies that the stats endpoint
+// (used by statusline hook) returns project-specific retrieval statistics.
+// This is critical for correct statusline display in multi-project environments.
+func TestStatuslineRetrievalStatsAreProjectSpecific(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	projectA := "statusline-project-a"
+	projectB := "statusline-project-b"
+
+	// Create observations in both projects
+	createTestObservation(t, svc.observationStore, projectA, "Observation A", "Content for project A", []string{"test"})
+	createTestObservation(t, svc.observationStore, projectB, "Observation B", "Content for project B", []string{"test"})
+
+	// Make search requests for projectA (simulates user activity in that project)
+	reqA := httptest.NewRequest(http.MethodGet, "/api/context/search?project="+projectA+"&query=test", nil)
+	recA := httptest.NewRecorder()
+	svc.router.ServeHTTP(recA, reqA)
+	assert.Equal(t, http.StatusOK, recA.Code)
+
+	// Make multiple search requests for projectB
+	for i := 0; i < 3; i++ {
+		reqB := httptest.NewRequest(http.MethodGet, "/api/context/search?project="+projectB+"&query=test", nil)
+		recB := httptest.NewRecorder()
+		svc.router.ServeHTTP(recB, reqB)
+		assert.Equal(t, http.StatusOK, recB.Code)
+	}
+
+	// Now verify stats endpoint returns project-specific stats (as statusline hook does)
+	// Check projectA stats
+	reqStatsA := httptest.NewRequest(http.MethodGet, "/api/stats?project="+projectA, nil)
+	recStatsA := httptest.NewRecorder()
+	svc.router.ServeHTTP(recStatsA, reqStatsA)
+
+	assert.Equal(t, http.StatusOK, recStatsA.Code)
+	var responseA map[string]interface{}
+	err := json.Unmarshal(recStatsA.Body.Bytes(), &responseA)
+	require.NoError(t, err)
+
+	// Verify projectA has 1 search request
+	retrievalA := responseA["retrieval"].(map[string]interface{})
+	assert.Equal(t, float64(1), retrievalA["SearchRequests"], "projectA should have 1 search request")
+	assert.Equal(t, float64(1), retrievalA["TotalRequests"], "projectA should have 1 total request")
+
+	// Check projectB stats
+	reqStatsB := httptest.NewRequest(http.MethodGet, "/api/stats?project="+projectB, nil)
+	recStatsB := httptest.NewRecorder()
+	svc.router.ServeHTTP(recStatsB, reqStatsB)
+
+	assert.Equal(t, http.StatusOK, recStatsB.Code)
+	var responseB map[string]interface{}
+	err = json.Unmarshal(recStatsB.Body.Bytes(), &responseB)
+	require.NoError(t, err)
+
+	// Verify projectB has 3 search requests
+	retrievalB := responseB["retrieval"].(map[string]interface{})
+	assert.Equal(t, float64(3), retrievalB["SearchRequests"], "projectB should have 3 search requests")
+	assert.Equal(t, float64(3), retrievalB["TotalRequests"], "projectB should have 3 total requests")
+
+	// Check aggregate stats (no project filter)
+	reqStatsAll := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	recStatsAll := httptest.NewRecorder()
+	svc.router.ServeHTTP(recStatsAll, reqStatsAll)
+
+	assert.Equal(t, http.StatusOK, recStatsAll.Code)
+	var responseAll map[string]interface{}
+	err = json.Unmarshal(recStatsAll.Body.Bytes(), &responseAll)
+	require.NoError(t, err)
+
+	// Verify aggregate has sum of all requests (1 + 3 = 4)
+	retrievalAll := responseAll["retrieval"].(map[string]interface{})
+	assert.Equal(t, float64(4), retrievalAll["SearchRequests"], "aggregate should have 4 search requests")
+	assert.Equal(t, float64(4), retrievalAll["TotalRequests"], "aggregate should have 4 total requests")
 }
 
 // TestHandleSubagentComplete_WithSession tests subagent completion with existing session.
@@ -2249,25 +2326,35 @@ func TestRecordRetrievalStats(t *testing.T) {
 	svc, cleanup := testService(t)
 	defer cleanup()
 
-	// Initially all zeros
-	stats := svc.GetRetrievalStats()
+	project := "test-project"
+
+	// Initially all zeros for this project
+	stats := svc.GetRetrievalStats(project)
 	assert.Equal(t, int64(0), stats.TotalRequests)
 
-	// Record a search request
-	svc.recordRetrievalStats(10, 1, 0, true)
-	stats = svc.GetRetrievalStats()
+	// Record a search request for the project
+	svc.recordRetrievalStats(project, 10, 1, 0, true)
+	stats = svc.GetRetrievalStats(project)
 	assert.Equal(t, int64(1), stats.TotalRequests)
 	assert.Equal(t, int64(10), stats.ObservationsServed)
 	assert.Equal(t, int64(1), stats.VerifiedStale)
 	assert.Equal(t, int64(1), stats.SearchRequests)
 
-	// Record a context injection
-	svc.recordRetrievalStats(5, 0, 1, false)
-	stats = svc.GetRetrievalStats()
+	// Record a context injection for the project
+	svc.recordRetrievalStats(project, 5, 0, 1, false)
+	stats = svc.GetRetrievalStats(project)
 	assert.Equal(t, int64(2), stats.TotalRequests)
 	assert.Equal(t, int64(15), stats.ObservationsServed)
 	assert.Equal(t, int64(1), stats.DeletedInvalid)
 	assert.Equal(t, int64(1), stats.ContextInjections)
+
+	// Different project should have zero stats
+	otherStats := svc.GetRetrievalStats("other-project")
+	assert.Equal(t, int64(0), otherStats.TotalRequests)
+
+	// Aggregate stats (empty project) should show all
+	aggStats := svc.GetRetrievalStats("")
+	assert.Equal(t, int64(2), aggStats.TotalRequests)
 }
 
 // TestHandleSelfCheck_WithInitError tests self-check with init error.
