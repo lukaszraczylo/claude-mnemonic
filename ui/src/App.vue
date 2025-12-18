@@ -8,9 +8,9 @@ import Sidebar from '@/components/Sidebar.vue'
 
 // Composables
 const { isConnected, isReconnecting, reconnectCountdown, isProcessing, queueDepth } = useSSE()
-const { stats } = useStats()
 const { updateInfo, updateStatus, isUpdating, applyUpdate } = useUpdate()
 const { health } = useHealth()
+// Initialize useTimeline first to get currentProject ref
 const {
   filteredItems,
   loading,
@@ -27,6 +27,8 @@ const {
   setTypeFilter,
   setConceptFilter
 } = useTimeline()
+// Pass currentProject ref to useStats for project-specific retrieval stats
+const { stats } = useStats(currentProject)
 
 // Note: Timeline refresh is handled by useTimeline's SSE watcher
 </script>

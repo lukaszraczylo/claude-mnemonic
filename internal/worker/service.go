@@ -80,8 +80,9 @@ type Service struct {
 	server    *http.Server
 	startTime time.Time
 
-	// Retrieval statistics
-	retrievalStats RetrievalStats
+	// Retrieval statistics (per-project)
+	retrievalStats   map[string]*RetrievalStats
+	retrievalStatsMu sync.RWMutex
 
 	// Lifecycle
 	ctx    context.Context
@@ -137,6 +138,7 @@ func NewService(version string) (*Service, error) {
 		cancel:         cancel,
 		startTime:      time.Now(),
 		updater:        update.New(version, installDir),
+		retrievalStats: make(map[string]*RetrievalStats),
 	}
 
 	// Setup middleware and routes (health endpoint works immediately)
@@ -673,29 +675,60 @@ func (s *Service) setupRoutes() {
 	})
 }
 
-// recordRetrievalStats atomically updates retrieval statistics.
-func (s *Service) recordRetrievalStats(served, verified, deleted int64, isSearch bool) {
-	atomic.AddInt64(&s.retrievalStats.TotalRequests, 1)
-	atomic.AddInt64(&s.retrievalStats.ObservationsServed, served)
-	atomic.AddInt64(&s.retrievalStats.VerifiedStale, verified)
-	atomic.AddInt64(&s.retrievalStats.DeletedInvalid, deleted)
+// recordRetrievalStats atomically updates retrieval statistics for a project.
+func (s *Service) recordRetrievalStats(project string, served, verified, deleted int64, isSearch bool) {
+	s.retrievalStatsMu.Lock()
+	stats := s.retrievalStats[project]
+	if stats == nil {
+		stats = &RetrievalStats{}
+		s.retrievalStats[project] = stats
+	}
+	s.retrievalStatsMu.Unlock()
+
+	atomic.AddInt64(&stats.TotalRequests, 1)
+	atomic.AddInt64(&stats.ObservationsServed, served)
+	atomic.AddInt64(&stats.VerifiedStale, verified)
+	atomic.AddInt64(&stats.DeletedInvalid, deleted)
 	if isSearch {
-		atomic.AddInt64(&s.retrievalStats.SearchRequests, 1)
+		atomic.AddInt64(&stats.SearchRequests, 1)
 	} else {
-		atomic.AddInt64(&s.retrievalStats.ContextInjections, 1)
+		atomic.AddInt64(&stats.ContextInjections, 1)
 	}
 }
 
-// GetRetrievalStats returns a copy of the retrieval stats.
-func (s *Service) GetRetrievalStats() RetrievalStats {
-	return RetrievalStats{
-		TotalRequests:      atomic.LoadInt64(&s.retrievalStats.TotalRequests),
-		ObservationsServed: atomic.LoadInt64(&s.retrievalStats.ObservationsServed),
-		VerifiedStale:      atomic.LoadInt64(&s.retrievalStats.VerifiedStale),
-		DeletedInvalid:     atomic.LoadInt64(&s.retrievalStats.DeletedInvalid),
-		SearchRequests:     atomic.LoadInt64(&s.retrievalStats.SearchRequests),
-		ContextInjections:  atomic.LoadInt64(&s.retrievalStats.ContextInjections),
+// GetRetrievalStats returns a copy of the retrieval stats for a project.
+// If project is empty, returns aggregate stats across all projects.
+func (s *Service) GetRetrievalStats(project string) RetrievalStats {
+	s.retrievalStatsMu.RLock()
+	defer s.retrievalStatsMu.RUnlock()
+
+	if project != "" {
+		// Return stats for specific project
+		stats := s.retrievalStats[project]
+		if stats == nil {
+			return RetrievalStats{}
+		}
+		return RetrievalStats{
+			TotalRequests:      atomic.LoadInt64(&stats.TotalRequests),
+			ObservationsServed: atomic.LoadInt64(&stats.ObservationsServed),
+			VerifiedStale:      atomic.LoadInt64(&stats.VerifiedStale),
+			DeletedInvalid:     atomic.LoadInt64(&stats.DeletedInvalid),
+			SearchRequests:     atomic.LoadInt64(&stats.SearchRequests),
+			ContextInjections:  atomic.LoadInt64(&stats.ContextInjections),
+		}
 	}
+
+	// Aggregate stats across all projects
+	var result RetrievalStats
+	for _, stats := range s.retrievalStats {
+		result.TotalRequests += atomic.LoadInt64(&stats.TotalRequests)
+		result.ObservationsServed += atomic.LoadInt64(&stats.ObservationsServed)
+		result.VerifiedStale += atomic.LoadInt64(&stats.VerifiedStale)
+		result.DeletedInvalid += atomic.LoadInt64(&stats.DeletedInvalid)
+		result.SearchRequests += atomic.LoadInt64(&stats.SearchRequests)
+		result.ContextInjections += atomic.LoadInt64(&stats.ContextInjections)
+	}
+	return result
 }
 
 // Start starts the worker service.
