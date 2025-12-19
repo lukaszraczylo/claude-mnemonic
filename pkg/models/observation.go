@@ -307,6 +307,21 @@ func NewObservation(sdkSessionID, project string, parsed *ParsedObservation, pro
 	}
 }
 
+// ToMap converts the observation to a map for JSON response building.
+// This allows adding extra fields like similarity scores.
+func (o *Observation) ToMap() map[string]interface{} {
+	// Marshal to JSON then unmarshal to map (uses MarshalJSON for proper conversion)
+	data, err := json.Marshal(o)
+	if err != nil {
+		return map[string]interface{}{"id": o.ID, "error": err.Error()}
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return map[string]interface{}{"id": o.ID, "error": err.Error()}
+	}
+	return result
+}
+
 // CheckStaleness checks if an observation is stale based on current file mtimes.
 // Returns true if any tracked file has been modified since the observation was created.
 func (o *Observation) CheckStaleness(currentMtimes map[string]int64) bool {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -744,6 +745,11 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 	var observations []*models.Observation
 	var err error
 	var usedVector bool
+	similarityScores := make(map[int64]float64) // Track similarity per observation
+
+	// Get threshold settings from config
+	threshold := s.config.ContextRelevanceThreshold
+	maxResults := s.config.ContextMaxPromptResults
 
 	// Try vector search first if available
 	if s.vectorClient != nil && s.vectorClient.IsConnected() {
@@ -751,8 +757,22 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 
 		vectorResults, vecErr := s.vectorClient.Query(r.Context(), query, limit*2, where)
 		if vecErr == nil && len(vectorResults) > 0 {
+			// Filter by relevance threshold before extracting IDs
+			filteredResults := sqlitevec.FilterByThreshold(vectorResults, threshold, 0)
+
+			// Build similarity map for filtered results
+			for _, vr := range filteredResults {
+				if sqliteID, ok := vr.Metadata["sqlite_id"].(float64); ok {
+					// Only keep highest score per observation (granular vectors)
+					id := int64(sqliteID)
+					if existing, exists := similarityScores[id]; !exists || vr.Similarity > existing {
+						similarityScores[id] = vr.Similarity
+					}
+				}
+			}
+
 			// Extract observation IDs with project/scope filtering using shared helper
-			obsIDs := sqlitevec.ExtractObservationIDs(vectorResults, project)
+			obsIDs := sqlitevec.ExtractObservationIDs(filteredResults, project)
 
 			if len(obsIDs) > 0 {
 				// Fetch full observations from SQLite
@@ -805,6 +825,20 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 	// Cluster similar observations to remove duplicates
 	clusteredObservations := clusterObservations(freshObservations, 0.4)
 
+	// Sort by similarity score (highest first) if we have scores
+	if len(similarityScores) > 0 && len(clusteredObservations) > 0 {
+		sort.Slice(clusteredObservations, func(i, j int) bool {
+			scoreI := similarityScores[clusteredObservations[i].ID]
+			scoreJ := similarityScores[clusteredObservations[j].ID]
+			return scoreI > scoreJ
+		})
+	}
+
+	// Apply max results cap if configured
+	if maxResults > 0 && len(clusteredObservations) > maxResults {
+		clusteredObservations = clusteredObservations[:maxResults]
+	}
+
 	// Record retrieval stats (no verification done, so verified=0, deleted=0)
 	s.recordRetrievalStats(project, int64(len(clusteredObservations)), 0, 0, true)
 
@@ -822,12 +856,25 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 		Str("query", query).
 		Int("found", len(clusteredObservations)).
 		Int("stale_excluded", staleCount).
+		Float64("threshold", threshold).
 		Msg("Prompt-based observation search")
+
+	// Build response with similarity scores
+	obsWithScores := make([]map[string]interface{}, len(clusteredObservations))
+	for i, obs := range clusteredObservations {
+		obsMap := obs.ToMap()
+		if score, ok := similarityScores[obs.ID]; ok {
+			obsMap["similarity"] = score
+		}
+		obsWithScores[i] = obsMap
+	}
 
 	writeJSON(w, map[string]interface{}{
 		"project":      project,
 		"query":        query,
-		"observations": clusteredObservations,
+		"observations": obsWithScores,
+		"threshold":    threshold,
+		"max_results":  maxResults,
 	})
 }
 

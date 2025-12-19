@@ -52,15 +52,17 @@ type Config struct {
 	EmbeddingModel string `json:"embedding_model"` // e.g., "bge-v1.5"
 
 	// Context injection settings
-	ContextObservations    int      `json:"context_observations"`
-	ContextFullCount       int      `json:"context_full_count"`
-	ContextSessionCount    int      `json:"context_session_count"`
-	ContextShowReadTokens  bool     `json:"context_show_read_tokens"`
-	ContextShowWorkTokens  bool     `json:"context_show_work_tokens"`
-	ContextFullField       string   `json:"context_full_field"`
-	ContextShowLastSummary bool     `json:"context_show_last_summary"`
-	ContextObsTypes        []string `json:"context_obs_types"`
-	ContextObsConcepts     []string `json:"context_obs_concepts"`
+	ContextObservations       int      `json:"context_observations"`
+	ContextFullCount          int      `json:"context_full_count"`
+	ContextSessionCount       int      `json:"context_session_count"`
+	ContextShowReadTokens     bool     `json:"context_show_read_tokens"`
+	ContextShowWorkTokens     bool     `json:"context_show_work_tokens"`
+	ContextFullField          string   `json:"context_full_field"`
+	ContextShowLastSummary    bool     `json:"context_show_last_summary"`
+	ContextObsTypes           []string `json:"context_obs_types"`
+	ContextObsConcepts        []string `json:"context_obs_concepts"`
+	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"` // 0.0-1.0, minimum similarity for inclusion
+	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`  // Max results per prompt (0 = threshold only)
 }
 
 var (
@@ -128,20 +130,22 @@ const DefaultEmbeddingModel = "bge-v1.5"
 // Default returns a Config with default values.
 func Default() *Config {
 	return &Config{
-		WorkerPort:             DefaultWorkerPort,
-		DBPath:                 DBPath(),
-		MaxConns:               4,
-		Model:                  DefaultModel,
-		EmbeddingModel:         DefaultEmbeddingModel,
-		ContextObservations:    100,
-		ContextFullCount:       25,
-		ContextSessionCount:    10,
-		ContextShowReadTokens:  true,
-		ContextShowWorkTokens:  true,
-		ContextFullField:       "narrative",
-		ContextShowLastSummary: true,
-		ContextObsTypes:        DefaultObservationTypes,
-		ContextObsConcepts:     DefaultObservationConcepts,
+		WorkerPort:                DefaultWorkerPort,
+		DBPath:                    DBPath(),
+		MaxConns:                  4,
+		Model:                     DefaultModel,
+		EmbeddingModel:            DefaultEmbeddingModel,
+		ContextObservations:       100,
+		ContextFullCount:          25,
+		ContextSessionCount:       10,
+		ContextShowReadTokens:     true,
+		ContextShowWorkTokens:     true,
+		ContextFullField:          "narrative",
+		ContextShowLastSummary:    true,
+		ContextObsTypes:           DefaultObservationTypes,
+		ContextObsConcepts:        DefaultObservationConcepts,
+		ContextRelevanceThreshold: 0.3, // Minimum 30% similarity to include
+		ContextMaxPromptResults:   10,  // Cap at 10 results max (0 = no cap, threshold only)
 	}
 }
 
@@ -190,6 +194,12 @@ func Load() (*Config, error) {
 	}
 	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_OBS_CONCEPTS"].(string); ok && v != "" {
 		cfg.ContextObsConcepts = splitTrim(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_RELEVANCE_THRESHOLD"].(float64); ok && v >= 0 && v <= 1 {
+		cfg.ContextRelevanceThreshold = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_MAX_PROMPT_RESULTS"].(float64); ok && v >= 0 {
+		cfg.ContextMaxPromptResults = int(v)
 	}
 
 	return cfg, nil

@@ -216,6 +216,7 @@ func (c *Client) Query(ctx context.Context, query string, limit int, where map[s
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 
+		r.Similarity = DistanceToSimilarity(r.Distance)
 		r.Metadata = map[string]any{
 			"sqlite_id":  float64(sqliteID), // Keep as float64 for compatibility
 			"doc_type":   docType.String,

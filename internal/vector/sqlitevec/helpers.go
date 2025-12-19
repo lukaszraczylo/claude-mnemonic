@@ -19,9 +19,32 @@ type Document struct {
 
 // QueryResult represents a search result from vector search.
 type QueryResult struct {
-	ID       string
-	Distance float64
-	Metadata map[string]any
+	ID         string
+	Distance   float64
+	Similarity float64 // 1.0 = identical, 0.0 = opposite (derived from distance)
+	Metadata   map[string]any
+}
+
+// DistanceToSimilarity converts sqlite-vec cosine distance to similarity score.
+// Cosine distance: 0 = identical, 2 = opposite
+// Similarity: 1.0 = identical, 0.0 = opposite
+func DistanceToSimilarity(distance float64) float64 {
+	return 1.0 - (distance / 2.0)
+}
+
+// FilterByThreshold filters results to only include those above the similarity threshold.
+// If maxResults > 0, also caps the number of results.
+func FilterByThreshold(results []QueryResult, threshold float64, maxResults int) []QueryResult {
+	var filtered []QueryResult
+	for _, r := range results {
+		if r.Similarity >= threshold {
+			filtered = append(filtered, r)
+			if maxResults > 0 && len(filtered) >= maxResults {
+				break
+			}
+		}
+	}
+	return filtered
 }
 
 // ExtractedIDs contains SQLite IDs extracted from query results, grouped by document type.

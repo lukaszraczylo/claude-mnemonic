@@ -61,12 +61,8 @@ func main() {
 
 	searchResult, _ := hooks.GET(port, searchURL)
 	if observations, ok := searchResult["observations"].([]interface{}); ok && len(observations) > 0 {
-		// Limit to top 5 most relevant observations
-		maxObs := 5
-		if len(observations) < maxObs {
-			maxObs = len(observations)
-		}
-		observations = observations[:maxObs]
+		// Results are already filtered by relevance threshold and capped by max_results
+		// from the server-side config (ContextRelevanceThreshold, ContextMaxPromptResults)
 		observationCount = len(observations)
 
 		// Build context from search results
