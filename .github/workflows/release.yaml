@@ -1,120 +1,121 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-  workflow_dispatch:
+    push:
+        branches:
+            - main
+        paths-ignore:
+            - "**.md"
+            - "docs/**"
+    workflow_dispatch:
 
 permissions:
-  id-token: write
-  contents: write
-  packages: write
+    id-token: write
+    contents: write
+    packages: write
 
 jobs:
-  release:
-    uses: lukaszraczylo/shared-actions/.github/workflows/go-release-cgo.yaml@main
-    with:
-      go-version: ">=1.24"
-      node-enabled: true
-      node-version: "20"
-      node-build-script: "cd ui && npm ci && npm run build"
-      node-cache-dependency-path: "ui/package-lock.json"
-      node-output-path: "ui/dist"
-      node-embed-path: "internal/worker/static"
-    secrets: inherit
-
-  commit-marketplace:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    release:
+        uses: lukaszraczylo/shared-actions/.github/workflows/go-release-cgo.yaml@main
         with:
-          ref: main
+            go-version: ">=1.24"
+            node-enabled: true
+            node-version: "20"
+            node-build-script: "cd ui && npm ci && npm run build"
+            node-cache-dependency-path: "ui/package-lock.json"
+            node-output-path: "ui/dist"
+            node-embed-path: "internal/worker/static"
+            lfs: true
+        secrets: inherit
 
-      - name: Download checksums
-        run: |
-          VERSION="${{ needs.release.outputs.version_tag }}"
-          curl -sSL -o checksums.txt \
-            "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/${VERSION}/checksums.txt"
+    commit-marketplace:
+        needs: release
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: main
 
-      - name: Generate marketplace.json with checksums
-        run: |
-          VERSION="${{ needs.release.outputs.version }}"
-          VERSION_TAG="${{ needs.release.outputs.version_tag }}"
-          TODAY=$(date -u +%Y-%m-%d)
+            - name: Download checksums
+              run: |
+                  VERSION="${{ needs.release.outputs.version_tag }}"
+                  curl -sSL -o checksums.txt \
+                    "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/${VERSION}/checksums.txt"
 
-          # Extract checksums from checksums.txt
-          SHA_DARWIN_ARM64=$(grep "darwin_arm64" checksums.txt | awk '{print $1}')
-          SHA_LINUX_AMD64=$(grep "linux_amd64" checksums.txt | awk '{print $1}')
-          SHA_WINDOWS_AMD64=$(grep "windows_amd64" checksums.txt | awk '{print $1}')
+            - name: Generate marketplace.json with checksums
+              run: |
+                  VERSION="${{ needs.release.outputs.version }}"
+                  VERSION_TAG="${{ needs.release.outputs.version_tag }}"
+                  TODAY=$(date -u +%Y-%m-%d)
 
-          # Generate marketplace.json
-          cat > marketplace.json << EOF
-          {
-            "\$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-            "name": "claude-mnemonic",
-            "version": "1.0.0",
-            "description": "Persistent memory system for Claude Code - stores observations, session summaries, and user prompts with semantic search",
-            "owner": {
-              "name": "lukaszraczylo",
-              "email": "lukaszraczylo@users.noreply.github.com",
-              "url": "https://github.com/lukaszraczylo"
-            },
-            "repository": "https://github.com/lukaszraczylo/claude-mnemonic",
-            "plugins": [
-              {
-                "name": "claude-mnemonic",
-                "description": "Persistent memory system for Claude Code - Go implementation with SQLite and ChromaDB vector search",
-                "version": "${VERSION}",
-                "author": {
-                  "name": "lukaszraczylo",
-                  "url": "https://github.com/lukaszraczylo"
-                },
-                "category": "productivity",
-                "tags": ["memory", "persistence", "search", "context"],
-                "license": "MIT",
-                "homepage": "https://github.com/lukaszraczylo/claude-mnemonic",
-                "releases": {
-                  "latest": "${VERSION}",
-                  "versions": {
-                    "${VERSION}": {
-                      "releaseDate": "${TODAY}",
-                      "downloads": {
-                        "darwin-arm64": {
-                          "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/${VERSION_TAG}/claude-mnemonic_${VERSION}_darwin_arm64.tar.gz",
-                          "format": "tar.gz",
-                          "sha256": "${SHA_DARWIN_ARM64}"
+                  # Extract checksums from checksums.txt
+                  SHA_DARWIN_ARM64=$(grep "darwin_arm64" checksums.txt | awk '{print $1}')
+                  SHA_LINUX_AMD64=$(grep "linux_amd64" checksums.txt | awk '{print $1}')
+                  SHA_WINDOWS_AMD64=$(grep "windows_amd64" checksums.txt | awk '{print $1}')
+
+                  # Generate marketplace.json
+                  cat > marketplace.json << EOF
+                  {
+                    "\$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+                    "name": "claude-mnemonic",
+                    "version": "1.0.0",
+                    "description": "Persistent memory system for Claude Code - stores observations, session summaries, and user prompts with semantic search",
+                    "owner": {
+                      "name": "lukaszraczylo",
+                      "email": "lukaszraczylo@users.noreply.github.com",
+                      "url": "https://github.com/lukaszraczylo"
+                    },
+                    "repository": "https://github.com/lukaszraczylo/claude-mnemonic",
+                    "plugins": [
+                      {
+                        "name": "claude-mnemonic",
+                        "description": "Persistent memory system for Claude Code - Go implementation with SQLite and ChromaDB vector search",
+                        "version": "${VERSION}",
+                        "author": {
+                          "name": "lukaszraczylo",
+                          "url": "https://github.com/lukaszraczylo"
                         },
-                        "linux-amd64": {
-                          "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/${VERSION_TAG}/claude-mnemonic_${VERSION}_linux_amd64.tar.gz",
-                          "format": "tar.gz",
-                          "sha256": "${SHA_LINUX_AMD64}"
-                        },
-                        "windows-amd64": {
-                          "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/${VERSION_TAG}/claude-mnemonic_${VERSION}_windows_amd64.zip",
-                          "format": "zip",
-                          "sha256": "${SHA_WINDOWS_AMD64}"
+                        "category": "productivity",
+                        "tags": ["memory", "persistence", "search", "context"],
+                        "license": "MIT",
+                        "homepage": "https://github.com/lukaszraczylo/claude-mnemonic",
+                        "releases": {
+                          "latest": "${VERSION}",
+                          "versions": {
+                            "${VERSION}": {
+                              "releaseDate": "${TODAY}",
+                              "downloads": {
+                                "darwin-arm64": {
+                                  "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/${VERSION_TAG}/claude-mnemonic_${VERSION}_darwin_arm64.tar.gz",
+                                  "format": "tar.gz",
+                                  "sha256": "${SHA_DARWIN_ARM64}"
+                                },
+                                "linux-amd64": {
+                                  "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/${VERSION_TAG}/claude-mnemonic_${VERSION}_linux_amd64.tar.gz",
+                                  "format": "tar.gz",
+                                  "sha256": "${SHA_LINUX_AMD64}"
+                                },
+                                "windows-amd64": {
+                                  "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/${VERSION_TAG}/claude-mnemonic_${VERSION}_windows_amd64.zip",
+                                  "format": "zip",
+                                  "sha256": "${SHA_WINDOWS_AMD64}"
+                                }
+                              }
+                            }
+                          }
                         }
                       }
-                    }
+                    ]
                   }
-                }
-              }
-            ]
-          }
-          EOF
+                  EOF
 
-          echo "Generated marketplace.json:"
-          cat marketplace.json
+                  echo "Generated marketplace.json:"
+                  cat marketplace.json
 
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add marketplace.json
-          git diff --staged --quiet || git commit -m "chore: update marketplace for ${{ needs.release.outputs.version_tag }}"
-          git push
+            - name: Commit and push
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git add marketplace.json
+                  git diff --staged --quiet || git commit -m "chore: update marketplace for ${{ needs.release.outputs.version_tag }}"
+                  git push
