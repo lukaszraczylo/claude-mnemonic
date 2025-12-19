@@ -17,4 +17,5 @@ jobs:
     with:
       go-version: ">=1.24"
       release-workflow: "release.yaml"
+      lfs: true
     secrets: inherit
