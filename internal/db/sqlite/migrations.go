@@ -304,6 +304,60 @@ var Migrations = []Migration{
 			);
 		`,
 	},
+	{
+		Version: 20,
+		Name:    "importance_scoring",
+		SQL: `
+			-- Importance scoring system for observations
+			-- Implements multi-factor scoring: type weight, recency decay, user feedback, concept weights, retrieval boost
+
+			-- Cached importance score (recalculated periodically)
+			ALTER TABLE observations ADD COLUMN importance_score REAL DEFAULT 1.0;
+
+			-- User feedback: -1 = thumbs down, 0 = neutral, 1 = thumbs up
+			ALTER TABLE observations ADD COLUMN user_feedback INTEGER DEFAULT 0;
+
+			-- Retrieval tracking: how many times this observation was returned in searches
+			ALTER TABLE observations ADD COLUMN retrieval_count INTEGER DEFAULT 0;
+
+			-- Last time this observation was retrieved (for analytics)
+			ALTER TABLE observations ADD COLUMN last_retrieved_at_epoch INTEGER;
+
+			-- Timestamp of last score recalculation
+			ALTER TABLE observations ADD COLUMN score_updated_at_epoch INTEGER;
+
+			-- Index for importance-based sorting (primary ordering strategy)
+			CREATE INDEX IF NOT EXISTS idx_observations_importance
+			ON observations(importance_score DESC, created_at_epoch DESC);
+
+			-- Index for finding observations needing score recalculation
+			CREATE INDEX IF NOT EXISTS idx_observations_score_updated
+			ON observations(score_updated_at_epoch);
+
+			-- Configurable concept weights table
+			-- Allows runtime tuning of how much each concept contributes to importance
+			CREATE TABLE IF NOT EXISTS concept_weights (
+				concept TEXT PRIMARY KEY,
+				weight REAL NOT NULL DEFAULT 0.1,
+				updated_at TEXT NOT NULL
+			);
+
+			-- Seed default concept weights (security highest, tooling lowest)
+			INSERT OR IGNORE INTO concept_weights (concept, weight, updated_at) VALUES
+				('security', 0.30, datetime('now')),
+				('gotcha', 0.25, datetime('now')),
+				('best-practice', 0.20, datetime('now')),
+				('anti-pattern', 0.20, datetime('now')),
+				('architecture', 0.15, datetime('now')),
+				('performance', 0.15, datetime('now')),
+				('error-handling', 0.15, datetime('now')),
+				('pattern', 0.10, datetime('now')),
+				('testing', 0.10, datetime('now')),
+				('debugging', 0.10, datetime('now')),
+				('workflow', 0.05, datetime('now')),
+				('tooling', 0.05, datetime('now'));
+		`,
+	},
 }
 
 // MigrationManager handles database schema migrations.

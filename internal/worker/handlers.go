@@ -808,6 +808,15 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 	// Record retrieval stats (no verification done, so verified=0, deleted=0)
 	s.recordRetrievalStats(project, int64(len(clusteredObservations)), 0, 0, true)
 
+	// Increment retrieval counts for scoring (async, non-blocking)
+	if len(clusteredObservations) > 0 {
+		ids := make([]int64, len(clusteredObservations))
+		for i, obs := range clusteredObservations {
+			ids[i] = obs.ID
+		}
+		s.incrementRetrievalCounts(ids)
+	}
+
 	log.Info().
 		Str("project", project).
 		Str("query", query).
@@ -885,6 +894,15 @@ func (s *Service) handleContextInject(w http.ResponseWriter, r *http.Request) {
 
 	// Record retrieval stats (no verification done)
 	s.recordRetrievalStats(project, int64(len(clusteredObservations)), 0, 0, false)
+
+	// Increment retrieval counts for scoring (async, non-blocking)
+	if len(clusteredObservations) > 0 {
+		ids := make([]int64, len(clusteredObservations))
+		for i, obs := range clusteredObservations {
+			ids[i] = obs.ID
+		}
+		s.incrementRetrievalCounts(ids)
+	}
 
 	log.Info().
 		Str("project", project).

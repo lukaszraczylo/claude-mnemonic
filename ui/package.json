@@ -1,6 +1,6 @@
 {
   "name": "claude-mnemonic-dashboard",
-  "version": "v0.6.38-1-g2e57cb9-dirty",
+  "version": "f032937-dirty",
   "private": true,
   "type": "module",
   "scripts": {

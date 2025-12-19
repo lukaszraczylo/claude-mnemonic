@@ -30,6 +30,12 @@ export interface Observation {
   created_at: string
   created_at_epoch: number
   is_stale?: boolean
+  // Importance scoring fields
+  importance_score: number
+  user_feedback: number  // -1 (thumbs down), 0 (neutral), 1 (thumbs up)
+  retrieval_count: number
+  last_retrieved_at_epoch?: number
+  score_updated_at_epoch?: number
 }
 
 export const OBSERVATION_TYPES: ObservationType[] = ['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change']

@@ -31,6 +31,7 @@ defineProps<{
           v-if="item.itemType === 'observation'"
           :observation="item"
           :highlight="index === 0"
+          :show-feedback="true"
         />
         <PromptCard
           v-else-if="item.itemType === 'prompt'"

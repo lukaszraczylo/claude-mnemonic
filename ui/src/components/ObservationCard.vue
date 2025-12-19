@@ -5,12 +5,54 @@ import { formatRelativeTime } from '@/utils/formatters'
 import Card from './Card.vue'
 import IconBox from './IconBox.vue'
 import Badge from './Badge.vue'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 const props = defineProps<{
   observation: ObservationFeedItem
   highlight?: boolean
+  showFeedback?: boolean
 }>()
+
+// Local feedback and score state (optimistic updates)
+const localFeedback = ref<number | null>(null)
+const localScore = ref<number | null>(null)
+const isSubmitting = ref(false)
+
+const currentFeedback = computed(() =>
+  localFeedback.value !== null ? localFeedback.value : (props.observation.user_feedback || 0)
+)
+
+const currentScore = computed(() =>
+  localScore.value !== null ? localScore.value : (props.observation.importance_score || 1)
+)
+
+const submitFeedback = async (value: number) => {
+  if (isSubmitting.value) return
+
+  // Toggle off if clicking same button
+  const newValue = currentFeedback.value === value ? 0 : value
+
+  localFeedback.value = newValue
+  isSubmitting.value = true
+
+  try {
+    const response = await fetch(`/api/observations/${props.observation.id}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feedback: newValue })
+    })
+    if (response.ok) {
+      const data = await response.json()
+      if (data.score !== undefined) {
+        localScore.value = data.score
+      }
+    }
+  } catch (error) {
+    console.error('Error submitting feedback:', error)
+  } finally {
+    isSubmitting.value = false
+  }
+}
 
 const config = computed(() => TYPE_CONFIG[props.observation.type] || TYPE_CONFIG.change)
 
@@ -140,6 +182,46 @@ const splitPath = (path: string, components = 3) => {
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- Feedback buttons (right side) -->
+      <div v-if="showFeedback" class="flex flex-col items-center gap-1 ml-2 flex-shrink-0">
+        <button
+          @click="submitFeedback(1)"
+          :disabled="isSubmitting"
+          :class="[
+            'p-1.5 rounded-lg transition-all duration-200',
+            currentFeedback === 1
+              ? 'bg-green-500/30 text-green-300 shadow-green-500/20 shadow-sm'
+              : 'text-slate-500 hover:text-green-400 hover:bg-green-500/10'
+          ]"
+          title="Helpful"
+        >
+          <i class="fas fa-thumbs-up text-sm" />
+        </button>
+
+        <span
+          class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800/50 text-slate-400 flex items-center gap-1 transition-all duration-300"
+          :class="{ 'text-green-400': localScore !== null && localScore > (observation.importance_score || 1), 'text-red-400': localScore !== null && localScore < (observation.importance_score || 1) }"
+          :title="`Importance Score: ${currentScore.toFixed(3)}\nRetrieval Count: ${observation.retrieval_count || 0}`"
+        >
+          <i class="fas fa-scale-balanced text-amber-500/60" />
+          {{ currentScore.toFixed(2) }}
+        </span>
+
+        <button
+          @click="submitFeedback(-1)"
+          :disabled="isSubmitting"
+          :class="[
+            'p-1.5 rounded-lg transition-all duration-200',
+            currentFeedback === -1
+              ? 'bg-red-500/30 text-red-300 shadow-red-500/20 shadow-sm'
+              : 'text-slate-500 hover:text-red-400 hover:bg-red-500/10'
+          ]"
+          title="Not helpful"
+        >
+          <i class="fas fa-thumbs-down text-sm" />
+        </button>
       </div>
     </div>
   </Card>

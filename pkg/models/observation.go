@@ -139,6 +139,13 @@ type Observation struct {
 	CreatedAt       string           `db:"created_at" json:"created_at"`
 	CreatedAtEpoch  int64            `db:"created_at_epoch" json:"created_at_epoch"`
 	IsStale         bool             `db:"-" json:"is_stale,omitempty"`
+
+	// Importance scoring fields
+	ImportanceScore float64       `db:"importance_score" json:"importance_score"`
+	UserFeedback    int           `db:"user_feedback" json:"user_feedback"`
+	RetrievalCount  int           `db:"retrieval_count" json:"retrieval_count"`
+	LastRetrievedAt sql.NullInt64 `db:"last_retrieved_at_epoch" json:"last_retrieved_at_epoch,omitempty"`
+	ScoreUpdatedAt  sql.NullInt64 `db:"score_updated_at_epoch" json:"score_updated_at_epoch,omitempty"`
 }
 
 // ParsedObservation represents an observation parsed from SDK response XML.
@@ -205,6 +212,13 @@ type ObservationJSON struct {
 	CreatedAt       string           `json:"created_at"`
 	CreatedAtEpoch  int64            `json:"created_at_epoch"`
 	IsStale         bool             `json:"is_stale,omitempty"`
+
+	// Importance scoring fields
+	ImportanceScore float64 `json:"importance_score"`
+	UserFeedback    int     `json:"user_feedback"`
+	RetrievalCount  int     `json:"retrieval_count"`
+	LastRetrievedAt int64   `json:"last_retrieved_at_epoch,omitempty"`
+	ScoreUpdatedAt  int64   `json:"score_updated_at_epoch,omitempty"`
 }
 
 // MarshalJSON implements json.Marshaler for Observation.
@@ -225,6 +239,10 @@ func (o *Observation) MarshalJSON() ([]byte, error) {
 		CreatedAt:       o.CreatedAt,
 		CreatedAtEpoch:  o.CreatedAtEpoch,
 		IsStale:         o.IsStale,
+		// Importance scoring fields
+		ImportanceScore: o.ImportanceScore,
+		UserFeedback:    o.UserFeedback,
+		RetrievalCount:  o.RetrievalCount,
 	}
 	if o.Title.Valid {
 		j.Title = o.Title.String
@@ -237,6 +255,12 @@ func (o *Observation) MarshalJSON() ([]byte, error) {
 	}
 	if o.PromptNumber.Valid {
 		j.PromptNumber = o.PromptNumber.Int64
+	}
+	if o.LastRetrievedAt.Valid {
+		j.LastRetrievedAt = o.LastRetrievedAt.Int64
+	}
+	if o.ScoreUpdatedAt.Valid {
+		j.ScoreUpdatedAt = o.ScoreUpdatedAt.Int64
 	}
 	return json.Marshal(j)
 }
@@ -268,6 +292,10 @@ func NewObservation(sdkSessionID, project string, parsed *ParsedObservation, pro
 		DiscoveryTokens: discoveryTokens,
 		CreatedAt:       now.Format(time.RFC3339),
 		CreatedAtEpoch:  now.UnixMilli(),
+		// Importance scoring: new observations start with score 1.0
+		ImportanceScore: 1.0,
+		UserFeedback:    0,
+		RetrievalCount:  0,
 	}
 }
 

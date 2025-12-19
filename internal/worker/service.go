@@ -15,6 +15,7 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/scoring"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/update"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/watcher"
@@ -74,6 +75,10 @@ type Service struct {
 	embedSvc     *embedding.Service
 	vectorClient *sqlitevec.Client
 	vectorSync   *sqlitevec.Sync
+
+	// Importance scoring
+	scoreCalculator *scoring.Calculator
+	recalculator    *scoring.Recalculator
 
 	// HTTP server
 	router    *chi.Mux
@@ -283,6 +288,31 @@ func (s *Service) initializeAsync() {
 			"id":     id,
 		})
 	})
+
+	// Initialize importance scoring system
+	scoringConfig := models.DefaultScoringConfig()
+
+	// Load concept weights from database if available
+	if weights, err := observationStore.GetConceptWeights(s.ctx); err == nil && len(weights) > 0 {
+		scoringConfig.ConceptWeights = weights
+		log.Info().Int("count", len(weights)).Msg("Loaded concept weights from database")
+	}
+
+	scoreCalculator := scoring.NewCalculator(scoringConfig)
+	recalculator := scoring.NewRecalculator(observationStore, scoreCalculator, log.Logger)
+
+	s.initMu.Lock()
+	s.scoreCalculator = scoreCalculator
+	s.recalculator = recalculator
+	s.initMu.Unlock()
+
+	// Start background recalculator
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		recalculator.Start(s.ctx)
+	}()
+	log.Info().Msg("Importance scoring system initialized")
 
 	// Mark as ready
 	s.ready.Store(true)
@@ -896,6 +926,18 @@ func (s *Service) setupRoutes() {
 		r.Get("/api/types", s.handleGetTypes)
 		r.Get("/api/models", s.handleGetModels)
 
+		// Observation scoring and feedback routes
+		r.Post("/api/observations/{id}/feedback", s.handleObservationFeedback)
+		r.Get("/api/observations/{id}/score", s.handleExplainScore)
+		r.Get("/api/observations/top", s.handleGetTopObservations)
+		r.Get("/api/observations/most-retrieved", s.handleGetMostRetrieved)
+
+		// Scoring configuration routes
+		r.Get("/api/scoring/stats", s.handleGetScoringStats)
+		r.Get("/api/scoring/concepts", s.handleGetConceptWeights)
+		r.Put("/api/scoring/concepts/{concept}", s.handleUpdateConceptWeight)
+		r.Post("/api/scoring/recalculate", s.handleTriggerRecalculation)
+
 		// Context injection
 		r.Get("/api/context/count", s.handleContextCount)
 		r.Get("/api/context/inject", s.handleContextInject)
@@ -1120,6 +1162,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	if s.configWatcher != nil {
 		_ = s.configWatcher.Stop()
+	}
+
+	// Stop background recalculator
+	if s.recalculator != nil {
+		s.recalculator.Stop()
 	}
 
 	// Shutdown all sessions

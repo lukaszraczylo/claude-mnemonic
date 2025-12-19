@@ -103,6 +103,11 @@ func createBaseTables(t *testing.T, db *sql.DB) {
 			discovery_tokens INTEGER DEFAULT 0,
 			created_at TEXT NOT NULL,
 			created_at_epoch INTEGER NOT NULL,
+			importance_score REAL DEFAULT 1.0,
+			user_feedback INTEGER DEFAULT 0,
+			retrieval_count INTEGER DEFAULT 0,
+			last_retrieved_at_epoch INTEGER,
+			score_updated_at_epoch INTEGER,
 			FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id) ON DELETE CASCADE
 		)
 	`)
