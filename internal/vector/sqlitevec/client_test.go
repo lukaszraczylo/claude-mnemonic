@@ -38,7 +38,8 @@ func testDB(t *testing.T) (*sql.DB, func()) {
 			doc_type TEXT,
 			field_type TEXT,
 			project TEXT,
-			scope TEXT
+			scope TEXT,
+			model_version TEXT
 		)
 	`)
 	require.NoError(t, err)

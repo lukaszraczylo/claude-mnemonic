@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/privacy"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sdk"
@@ -641,6 +642,18 @@ func (s *Service) handleGetTypes(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleGetModels returns available embedding models.
+func (s *Service) handleGetModels(w http.ResponseWriter, _ *http.Request) {
+	models := embedding.ListModels()
+	defaultModel := embedding.GetDefaultModel()
+
+	writeJSON(w, map[string]interface{}{
+		"models":  models,
+		"default": defaultModel,
+		"current": s.embedSvc.Version(),
+	})
+}
+
 // handleGetStats returns worker statistics.
 func (s *Service) handleGetStats(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
@@ -656,6 +669,22 @@ func (s *Service) handleGetStats(w http.ResponseWriter, r *http.Request) {
 		"sessionsToday":    sessionsToday,
 		"retrieval":        retrievalStats,
 		"ready":            s.ready.Load(),
+	}
+
+	// Add embedding model info
+	if s.embedSvc != nil {
+		response["embeddingModel"] = map[string]interface{}{
+			"name":       s.embedSvc.Name(),
+			"version":    s.embedSvc.Version(),
+			"dimensions": s.embedSvc.Dimensions(),
+		}
+	}
+
+	// Add vector count
+	if s.vectorClient != nil {
+		if count, err := s.vectorClient.Count(r.Context()); err == nil {
+			response["vectorCount"] = count
+		}
 	}
 
 	// Include project-specific observation count if project is specified

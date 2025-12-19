@@ -283,6 +283,27 @@ var Migrations = []Migration{
 			ON user_prompts(claude_session_id, prompt_number);
 		`,
 	},
+	{
+		Version: 19,
+		Name:    "vectors_with_model_version",
+		SQL: `
+			-- Drop old vectors table (virtual tables cannot be altered)
+			DROP TABLE IF EXISTS vectors;
+
+			-- Recreate vectors table with model_version column
+			-- Uses bge-small-en-v1.5 embeddings (384 dimensions)
+			CREATE VIRTUAL TABLE IF NOT EXISTS vectors USING vec0(
+				doc_id TEXT PRIMARY KEY,
+				embedding float[384],
+				sqlite_id INTEGER,
+				doc_type TEXT,
+				field_type TEXT,
+				project TEXT,
+				scope TEXT,
+				model_version TEXT
+			);
+		`,
+	},
 }
 
 // MigrationManager handles database schema migrations.

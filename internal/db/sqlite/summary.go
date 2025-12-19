@@ -116,3 +116,21 @@ func (s *SummaryStore) GetAllRecentSummaries(ctx context.Context, limit int) ([]
 
 	return scanSummaryRows(rows)
 }
+
+// GetAllSummaries retrieves all summaries (for vector rebuild).
+func (s *SummaryStore) GetAllSummaries(ctx context.Context) ([]*models.SessionSummary, error) {
+	const query = `
+		SELECT id, sdk_session_id, project, request, investigated, learned, completed,
+		       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch
+		FROM session_summaries
+		ORDER BY id
+	`
+
+	rows, err := s.store.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanSummaryRows(rows)
+}

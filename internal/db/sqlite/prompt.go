@@ -199,6 +199,28 @@ func (s *PromptStore) GetAllRecentUserPrompts(ctx context.Context, limit int) ([
 	return scanPromptWithSessionRows(rows)
 }
 
+// GetAllPrompts retrieves all user prompts (for vector rebuild).
+func (s *PromptStore) GetAllPrompts(ctx context.Context) ([]*models.UserPromptWithSession, error) {
+	const query = `
+		SELECT up.id, up.claude_session_id, up.prompt_number, up.prompt_text,
+		       COALESCE(up.matched_observations, 0) as matched_observations,
+		       up.created_at, up.created_at_epoch,
+		       COALESCE(s.project, '') as project,
+		       COALESCE(s.sdk_session_id, '') as sdk_session_id
+		FROM user_prompts up
+		LEFT JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+		ORDER BY up.id
+	`
+
+	rows, err := s.store.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanPromptWithSessionRows(rows)
+}
+
 // FindRecentPromptByText finds a prompt with the same text for a session within the last few seconds.
 // This is used to detect duplicate hook invocations.
 // Returns (promptID, promptNumber, found).
