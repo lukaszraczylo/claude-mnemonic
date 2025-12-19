@@ -408,6 +408,10 @@ func setupTestStore(t *testing.T) *sqlite.Store {
 		WALMode:  true,
 	})
 	if err != nil {
+		// Check if this is an FTS5 related error
+		if containsString(err.Error(), "fts5") || containsString(err.Error(), "no such module") {
+			t.Skip("FTS5 not available in this SQLite build")
+		}
 		t.Fatalf("Failed to create store: %v", err)
 	}
 

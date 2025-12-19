@@ -16,6 +16,7 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/pattern"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/reranking"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/scoring"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/update"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
@@ -81,6 +82,9 @@ type Service struct {
 	embedSvc     *embedding.Service
 	vectorClient *sqlitevec.Client
 	vectorSync   *sqlitevec.Sync
+
+	// Cross-encoder reranking (for improved search relevance)
+	reranker *reranking.Service
 
 	// Importance scoring
 	scoreCalculator *scoring.Calculator
@@ -202,6 +206,8 @@ func (s *Service) initializeAsync() {
 	var vectorClient *sqlitevec.Client
 	var vectorSync *sqlitevec.Sync
 
+	var reranker *reranking.Service
+
 	emb, err := embedding.NewService()
 	if err != nil {
 		log.Warn().Err(err).Msg("Embedding service creation failed - vector search disabled")
@@ -219,6 +225,24 @@ func (s *Service) initializeAsync() {
 			log.Info().
 				Str("model", embedSvc.Version()).
 				Msg("sqlite-vec vector search enabled")
+		}
+
+		// Create cross-encoder reranking service if enabled
+		if s.config.RerankingEnabled {
+			rerankCfg := reranking.DefaultConfig()
+			if s.config.RerankingAlpha > 0 && s.config.RerankingAlpha <= 1 {
+				rerankCfg.Alpha = s.config.RerankingAlpha
+			}
+
+			ranker, err := reranking.NewService(rerankCfg)
+			if err != nil {
+				log.Warn().Err(err).Msg("Cross-encoder reranking service creation failed - reranking disabled")
+			} else {
+				reranker = ranker
+				log.Info().
+					Float64("alpha", rerankCfg.Alpha).
+					Msg("Cross-encoder reranking enabled")
+			}
 		}
 	}
 
@@ -250,6 +274,7 @@ func (s *Service) initializeAsync() {
 	s.embedSvc = embedSvc
 	s.vectorClient = vectorClient
 	s.vectorSync = vectorSync
+	s.reranker = reranker
 	s.initMu.Unlock()
 
 	// Initialize pattern detector
@@ -509,6 +534,8 @@ func (s *Service) reinitializeDatabase() {
 	var vectorClient *sqlitevec.Client
 	var vectorSync *sqlitevec.Sync
 
+	var reranker *reranking.Service
+
 	emb, err := embedding.NewService()
 	if err != nil {
 		log.Warn().Err(err).Msg("Embedding service creation failed after reinit")
@@ -524,6 +551,30 @@ func (s *Service) reinitializeDatabase() {
 			vectorSync = sqlitevec.NewSync(client)
 			log.Info().Msg("sqlite-vec reconnected after reinit")
 		}
+
+		// Recreate cross-encoder reranking service if enabled
+		if s.config.RerankingEnabled {
+			rerankCfg := reranking.DefaultConfig()
+			if s.config.RerankingAlpha > 0 && s.config.RerankingAlpha <= 1 {
+				rerankCfg.Alpha = s.config.RerankingAlpha
+			}
+
+			ranker, err := reranking.NewService(rerankCfg)
+			if err != nil {
+				log.Warn().Err(err).Msg("Cross-encoder reranking service creation failed after reinit")
+			} else {
+				reranker = ranker
+				log.Info().Msg("Cross-encoder reranking reconnected after reinit")
+			}
+		}
+	}
+
+	// Close old reranker if exists
+	s.initMu.RLock()
+	oldReranker := s.reranker
+	s.initMu.RUnlock()
+	if oldReranker != nil {
+		_ = oldReranker.Close()
 	}
 
 	// Recreate SDK processor with new stores
@@ -577,6 +628,7 @@ func (s *Service) reinitializeDatabase() {
 	s.embedSvc = embedSvc
 	s.vectorClient = vectorClient
 	s.vectorSync = vectorSync
+	s.reranker = reranker
 	s.initError = nil
 	s.initMu.Unlock()
 
@@ -1301,6 +1353,13 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if s.server != nil {
 		if err := s.server.Shutdown(ctx); err != nil {
 			log.Error().Err(err).Msg("HTTP server shutdown error")
+		}
+	}
+
+	// Close reranking service
+	if s.reranker != nil {
+		if err := s.reranker.Close(); err != nil {
+			log.Error().Err(err).Msg("Reranking service close error")
 		}
 	}
 

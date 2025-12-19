@@ -51,6 +51,14 @@ type Config struct {
 	// Embedding settings
 	EmbeddingModel string `json:"embedding_model"` // e.g., "bge-v1.5"
 
+	// Reranking settings (cross-encoder)
+	RerankingEnabled        bool    `json:"reranking_enabled"`         // Enable cross-encoder reranking
+	RerankingCandidates     int     `json:"reranking_candidates"`      // Number of candidates to retrieve before reranking (default 100)
+	RerankingResults        int     `json:"reranking_results"`         // Number of results to return after reranking (default 10)
+	RerankingAlpha          float64 `json:"reranking_alpha"`           // Weight for combining scores: alpha*rerank + (1-alpha)*original (default 0.7)
+	RerankingMinImprovement float64 `json:"reranking_min_improvement"` // Minimum rank improvement to trigger reranking (default 0, always rerank)
+	RerankingPureMode       bool    `json:"reranking_pure_mode"`       // Use pure cross-encoder scores without combining with bi-encoder (default false)
+
 	// Context injection settings
 	ContextObservations       int      `json:"context_observations"`
 	ContextFullCount          int      `json:"context_full_count"`
@@ -135,6 +143,11 @@ func Default() *Config {
 		MaxConns:                  4,
 		Model:                     DefaultModel,
 		EmbeddingModel:            DefaultEmbeddingModel,
+		RerankingEnabled:          true, // Enable by default for improved relevance
+		RerankingCandidates:       100,  // Retrieve top 100 candidates
+		RerankingResults:          10,   // Return top 10 after reranking
+		RerankingAlpha:            0.7,  // Favor cross-encoder score
+		RerankingMinImprovement:   0,    // Always apply reranking
 		ContextObservations:       100,
 		ContextFullCount:          25,
 		ContextSessionCount:       10,
@@ -179,6 +192,25 @@ func Load() (*Config, error) {
 	}
 	if v, ok := settings["CLAUDE_MNEMONIC_EMBEDDING_MODEL"].(string); ok && v != "" {
 		cfg.EmbeddingModel = v
+	}
+	// Reranking settings
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_ENABLED"].(bool); ok {
+		cfg.RerankingEnabled = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_CANDIDATES"].(float64); ok && v > 0 {
+		cfg.RerankingCandidates = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_RESULTS"].(float64); ok && v > 0 {
+		cfg.RerankingResults = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_ALPHA"].(float64); ok && v >= 0 && v <= 1 {
+		cfg.RerankingAlpha = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_MIN_IMPROVEMENT"].(float64); ok && v >= 0 {
+		cfg.RerankingMinImprovement = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_PURE_MODE"].(bool); ok {
+		cfg.RerankingPureMode = v
 	}
 	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_OBSERVATIONS"].(float64); ok {
 		cfg.ContextObservations = int(v)

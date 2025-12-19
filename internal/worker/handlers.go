@@ -4,6 +4,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/privacy"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/reranking"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sdk"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/session"
@@ -822,11 +824,70 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 		freshObservations = append(freshObservations, obs)
 	}
 
+	// Apply cross-encoder reranking if available
+	var reranked bool
+	if s.reranker != nil && len(freshObservations) > 0 && usedVector {
+		// Build candidates from observations with their bi-encoder scores
+		candidates := make([]reranking.Candidate, len(freshObservations))
+		for i, obs := range freshObservations {
+			content := obs.Title.String
+			if obs.Narrative.Valid && obs.Narrative.String != "" {
+				content = content + " " + obs.Narrative.String
+			}
+			candidates[i] = reranking.Candidate{
+				ID:       fmt.Sprintf("%d", obs.ID),
+				Content:  content,
+				Score:    similarityScores[obs.ID],
+				Metadata: map[string]any{"obs_idx": i},
+			}
+		}
+
+		// Rerank using cross-encoder - use pure mode or combined scores
+		var rerankResults []reranking.RerankResult
+		var rerankErr error
+		if s.config.RerankingPureMode {
+			rerankResults, rerankErr = s.reranker.RerankByScore(query, candidates, s.config.RerankingResults)
+		} else {
+			rerankResults, rerankErr = s.reranker.Rerank(query, candidates, s.config.RerankingResults)
+		}
+		if rerankErr != nil {
+			log.Warn().Err(rerankErr).Msg("Cross-encoder reranking failed, using original order")
+		} else if len(rerankResults) > 0 {
+			// Update similarity scores with reranked scores
+			for _, rr := range rerankResults {
+				if id, err := strconv.ParseInt(rr.ID, 10, 64); err == nil {
+					similarityScores[id] = rr.CombinedScore
+				}
+			}
+
+			// Reorder observations based on rerank results
+			reorderedObs := make([]*models.Observation, 0, len(rerankResults))
+			obsMap := make(map[int64]*models.Observation)
+			for _, obs := range freshObservations {
+				obsMap[obs.ID] = obs
+			}
+			for _, rr := range rerankResults {
+				if id, err := strconv.ParseInt(rr.ID, 10, 64); err == nil {
+					if obs, ok := obsMap[id]; ok {
+						reorderedObs = append(reorderedObs, obs)
+					}
+				}
+			}
+			freshObservations = reorderedObs
+			reranked = true
+
+			log.Debug().
+				Int("candidates", len(candidates)).
+				Int("returned", len(rerankResults)).
+				Msg("Cross-encoder reranking complete")
+		}
+	}
+
 	// Cluster similar observations to remove duplicates
 	clusteredObservations := clusterObservations(freshObservations, 0.4)
 
-	// Sort by similarity score (highest first) if we have scores
-	if len(similarityScores) > 0 && len(clusteredObservations) > 0 {
+	// Sort by similarity score (highest first) if we have scores and didn't rerank
+	if len(similarityScores) > 0 && len(clusteredObservations) > 0 && !reranked {
 		sort.Slice(clusteredObservations, func(i, j int) bool {
 			scoreI := similarityScores[clusteredObservations[i].ID]
 			scoreJ := similarityScores[clusteredObservations[j].ID]
@@ -1108,6 +1169,35 @@ func (s *Service) handleSelfCheck(w http.ResponseWriter, r *http.Request) {
 		overall = "unhealthy"
 	}
 	components = append(components, sseStatus)
+
+	// Check Cross-Encoder Reranker
+	rerankerStatus := ComponentHealth{Name: "Cross-Encoder Reranker", Status: "healthy"}
+	if !s.config.RerankingEnabled {
+		rerankerStatus.Status = "degraded"
+		rerankerStatus.Message = "Disabled in config"
+		if overall == "healthy" {
+			overall = "degraded"
+		}
+	} else if s.reranker == nil {
+		rerankerStatus.Status = "degraded"
+		rerankerStatus.Message = "Not initialized"
+		if overall == "healthy" {
+			overall = "degraded"
+		}
+	} else {
+		// Verify reranker is functional using Score
+		_, normalizedScore, err := s.reranker.Score("test query", "test document")
+		if err != nil {
+			rerankerStatus.Status = "unhealthy"
+			rerankerStatus.Message = fmt.Sprintf("Score check failed: %v", err)
+			if overall == "healthy" {
+				overall = "degraded"
+			}
+		} else {
+			rerankerStatus.Message = fmt.Sprintf("Score check passed (%.4f)", normalizedScore)
+		}
+	}
+	components = append(components, rerankerStatus)
 
 	// Calculate uptime
 	uptime := time.Since(s.startTime).Round(time.Second).String()
