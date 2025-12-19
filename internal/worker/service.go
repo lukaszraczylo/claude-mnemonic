@@ -18,6 +18,7 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/internal/pattern"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/reranking"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/scoring"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/search/expansion"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/update"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/watcher"
@@ -85,6 +86,9 @@ type Service struct {
 
 	// Cross-encoder reranking (for improved search relevance)
 	reranker *reranking.Service
+
+	// Query expansion (for improved search recall)
+	queryExpander *expansion.Expander
 
 	// Importance scoring
 	scoreCalculator *scoring.Calculator
@@ -244,6 +248,10 @@ func (s *Service) initializeAsync() {
 					Msg("Cross-encoder reranking enabled")
 			}
 		}
+
+		// Create query expander for improved search recall
+		s.queryExpander = expansion.NewExpander(embedSvc)
+		log.Info().Msg("Query expansion enabled")
 	}
 
 	// Create SDK processor (optional - will be nil if Claude CLI not available)
@@ -567,6 +575,10 @@ func (s *Service) reinitializeDatabase() {
 				log.Info().Msg("Cross-encoder reranking reconnected after reinit")
 			}
 		}
+
+		// Recreate query expander
+		s.queryExpander = expansion.NewExpander(embedSvc)
+		log.Info().Msg("Query expansion reconnected after reinit")
 	}
 
 	// Close old reranker if exists

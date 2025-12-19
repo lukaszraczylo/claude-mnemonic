@@ -15,6 +15,7 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/privacy"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/reranking"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/search/expansion"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sdk"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/session"
@@ -753,20 +754,55 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 	threshold := s.config.ContextRelevanceThreshold
 	maxResults := s.config.ContextMaxPromptResults
 
+	// Generate expanded queries if query expander is available
+	var expandedQueries []expansion.ExpandedQuery
+	var detectedIntent string
+	if s.queryExpander != nil {
+		cfg := expansion.DefaultConfig()
+		cfg.EnableVocabularyExpansion = false // Vocabulary expansion is optional
+		expandedQueries = s.queryExpander.Expand(r.Context(), query, cfg)
+		if len(expandedQueries) > 0 {
+			detectedIntent = string(expandedQueries[0].Intent)
+		}
+	}
+	if len(expandedQueries) == 0 {
+		// Fallback to just the original query
+		expandedQueries = []expansion.ExpandedQuery{
+			{Query: query, Weight: 1.0, Source: "original"},
+		}
+	}
+
 	// Try vector search first if available
 	if s.vectorClient != nil && s.vectorClient.IsConnected() {
 		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeObservation, "")
 
-		vectorResults, vecErr := s.vectorClient.Query(r.Context(), query, limit*2, where)
-		if vecErr == nil && len(vectorResults) > 0 {
-			// Filter by relevance threshold before extracting IDs
-			filteredResults := sqlitevec.FilterByThreshold(vectorResults, threshold, 0)
+		// Search with each expanded query and merge results
+		allVectorResults := make([]sqlitevec.QueryResult, 0)
+		queryWeights := make(map[string]float64) // Track weights for score merging
 
-			// Build similarity map for filtered results
+		for _, eq := range expandedQueries {
+			vectorResults, vecErr := s.vectorClient.Query(r.Context(), eq.Query, limit*2, where)
+			if vecErr == nil && len(vectorResults) > 0 {
+				// Apply weight to similarity scores before merging
+				for i := range vectorResults {
+					vectorResults[i].Similarity *= eq.Weight
+				}
+				allVectorResults = append(allVectorResults, vectorResults...)
+				queryWeights[eq.Query] = eq.Weight
+			}
+		}
+
+		if len(allVectorResults) > 0 {
+			// Filter by relevance threshold before extracting IDs
+			// Use a slightly lower threshold for expanded queries
+			effectiveThreshold := threshold * 0.9 // Allow slightly lower scores for expanded queries
+			filteredResults := sqlitevec.FilterByThreshold(allVectorResults, effectiveThreshold, 0)
+
+			// Build similarity map for filtered results (keeping highest weighted score per observation)
 			for _, vr := range filteredResults {
 				if sqliteID, ok := vr.Metadata["sqlite_id"].(float64); ok {
-					// Only keep highest score per observation (granular vectors)
 					id := int64(sqliteID)
+					// Keep the highest score for each observation
 					if existing, exists := similarityScores[id]; !exists || vr.Similarity > existing {
 						similarityScores[id] = vr.Similarity
 					}
@@ -915,6 +951,8 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 	log.Info().
 		Str("project", project).
 		Str("query", query).
+		Str("intent", detectedIntent).
+		Int("expansions", len(expandedQueries)).
 		Int("found", len(clusteredObservations)).
 		Int("stale_excluded", staleCount).
 		Float64("threshold", threshold).
@@ -930,9 +968,21 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 		obsWithScores[i] = obsMap
 	}
 
+	// Build expansion info for response
+	expansionInfo := make([]map[string]interface{}, len(expandedQueries))
+	for i, eq := range expandedQueries {
+		expansionInfo[i] = map[string]interface{}{
+			"query":  eq.Query,
+			"weight": eq.Weight,
+			"source": eq.Source,
+		}
+	}
+
 	writeJSON(w, map[string]interface{}{
 		"project":      project,
 		"query":        query,
+		"intent":       detectedIntent,
+		"expansions":   expansionInfo,
 		"observations": obsWithScores,
 		"threshold":    threshold,
 		"max_results":  maxResults,
