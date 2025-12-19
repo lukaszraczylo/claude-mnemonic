@@ -200,7 +200,9 @@ func (s *Service) initializeAsync() {
 		} else {
 			vectorClient = client
 			vectorSync = sqlitevec.NewSync(client)
-			log.Info().Msg("sqlite-vec vector search enabled")
+			log.Info().
+				Str("model", embedSvc.Version()).
+				Msg("sqlite-vec vector search enabled")
 		}
 	}
 
@@ -294,6 +296,27 @@ func (s *Service) initializeAsync() {
 
 	// Start file watchers for auto-recreation on deletion
 	s.startWatchers()
+
+	// Check if vectors need rebuilding (empty or model version mismatch) and trigger background rebuild
+	if vectorClient != nil && vectorSync != nil {
+		needsRebuild, reason := vectorClient.NeedsRebuild(s.ctx)
+		if needsRebuild {
+			log.Info().
+				Str("reason", reason).
+				Str("model", vectorClient.ModelVersion()).
+				Msg("Vector rebuild required")
+
+			if reason == "empty" {
+				// Full rebuild - vectors table is empty
+				s.wg.Add(1)
+				go s.rebuildAllVectors(observationStore, summaryStore, promptStore, vectorSync)
+			} else {
+				// Granular rebuild - only rebuild vectors with mismatched model versions
+				s.wg.Add(1)
+				go s.rebuildStaleVectors(observationStore, summaryStore, promptStore, vectorClient, vectorSync)
+			}
+		}
+	}
 }
 
 // startWatchers initializes and starts file watchers for database and config.
@@ -565,6 +588,210 @@ func (s *Service) processStaleQueue() {
 	}
 }
 
+// rebuildAllVectors rebuilds all vectors from observations, summaries, and prompts.
+// Called when the vectors table is empty (e.g., after migration 20 drops all vectors).
+func (s *Service) rebuildAllVectors(
+	observationStore *sqlite.ObservationStore,
+	summaryStore *sqlite.SummaryStore,
+	promptStore *sqlite.PromptStore,
+	vectorSync *sqlitevec.Sync,
+) {
+	defer s.wg.Done()
+
+	log.Info().Msg("Starting full vector rebuild...")
+	start := time.Now()
+
+	var totalSynced int
+	var syncErrors int
+
+	// Rebuild observations
+	observations, err := observationStore.GetAllObservations(s.ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch observations for vector rebuild")
+	} else {
+		for _, obs := range observations {
+			if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
+				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation during rebuild")
+				syncErrors++
+			} else {
+				totalSynced++
+			}
+		}
+		log.Info().Int("count", len(observations)).Msg("Rebuilt observation vectors")
+	}
+
+	// Rebuild summaries
+	summaries, err := summaryStore.GetAllSummaries(s.ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch summaries for vector rebuild")
+	} else {
+		for _, summary := range summaries {
+			if err := vectorSync.SyncSummary(s.ctx, summary); err != nil {
+				log.Warn().Err(err).Int64("id", summary.ID).Msg("Failed to sync summary during rebuild")
+				syncErrors++
+			} else {
+				totalSynced++
+			}
+		}
+		log.Info().Int("count", len(summaries)).Msg("Rebuilt summary vectors")
+	}
+
+	// Rebuild user prompts
+	prompts, err := promptStore.GetAllPrompts(s.ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch prompts for vector rebuild")
+	} else {
+		for _, prompt := range prompts {
+			if err := vectorSync.SyncUserPrompt(s.ctx, prompt); err != nil {
+				log.Warn().Err(err).Int64("id", prompt.ID).Msg("Failed to sync prompt during rebuild")
+				syncErrors++
+			} else {
+				totalSynced++
+			}
+		}
+		log.Info().Int("count", len(prompts)).Msg("Rebuilt prompt vectors")
+	}
+
+	elapsed := time.Since(start)
+	log.Info().
+		Int("total_synced", totalSynced).
+		Int("errors", syncErrors).
+		Dur("elapsed", elapsed).
+		Msg("Full vector rebuild complete")
+}
+
+// rebuildStaleVectors rebuilds only vectors with mismatched or unknown model versions.
+// This is more efficient than rebuilding all vectors when only some need updating.
+func (s *Service) rebuildStaleVectors(
+	observationStore *sqlite.ObservationStore,
+	summaryStore *sqlite.SummaryStore,
+	promptStore *sqlite.PromptStore,
+	vectorClient *sqlitevec.Client,
+	vectorSync *sqlitevec.Sync,
+) {
+	defer s.wg.Done()
+
+	log.Info().Msg("Starting granular vector rebuild for stale vectors...")
+	start := time.Now()
+
+	// Get all stale vectors
+	staleVectors, err := vectorClient.GetStaleVectors(s.ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get stale vectors")
+		return
+	}
+
+	if len(staleVectors) == 0 {
+		log.Info().Msg("No stale vectors found")
+		return
+	}
+
+	log.Info().Int("stale_count", len(staleVectors)).Msg("Found stale vectors to rebuild")
+
+	// Group stale vectors by doc_type and sqlite_id for efficient lookup
+	staleObsIDs := make(map[int64]bool)
+	staleSummaryIDs := make(map[int64]bool)
+	stalePromptIDs := make(map[int64]bool)
+	staleDocIDs := make([]string, 0, len(staleVectors))
+
+	for _, sv := range staleVectors {
+		staleDocIDs = append(staleDocIDs, sv.DocID)
+		switch sv.DocType {
+		case "observation":
+			staleObsIDs[sv.SQLiteID] = true
+		case "summary":
+			staleSummaryIDs[sv.SQLiteID] = true
+		case "prompt":
+			stalePromptIDs[sv.SQLiteID] = true
+		}
+	}
+
+	// Delete stale vectors before re-syncing
+	if err := vectorClient.DeleteVectorsByDocIDs(s.ctx, staleDocIDs); err != nil {
+		log.Error().Err(err).Msg("Failed to delete stale vectors")
+		return
+	}
+
+	var totalSynced int
+	var syncErrors int
+
+	// Rebuild stale observations
+	if len(staleObsIDs) > 0 {
+		ids := make([]int64, 0, len(staleObsIDs))
+		for id := range staleObsIDs {
+			ids = append(ids, id)
+		}
+
+		observations, err := observationStore.GetObservationsByIDs(s.ctx, ids, "date_desc", 0)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to fetch observations for rebuild")
+		} else {
+			for _, obs := range observations {
+				if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
+					log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation during rebuild")
+					syncErrors++
+				} else {
+					totalSynced++
+				}
+			}
+			log.Info().Int("count", len(observations)).Msg("Rebuilt stale observation vectors")
+		}
+	}
+
+	// Rebuild stale summaries
+	if len(staleSummaryIDs) > 0 {
+		ids := make([]int64, 0, len(staleSummaryIDs))
+		for id := range staleSummaryIDs {
+			ids = append(ids, id)
+		}
+
+		summaries, err := summaryStore.GetSummariesByIDs(s.ctx, ids, "date_desc", 0)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to fetch summaries for rebuild")
+		} else {
+			for _, summary := range summaries {
+				if err := vectorSync.SyncSummary(s.ctx, summary); err != nil {
+					log.Warn().Err(err).Int64("id", summary.ID).Msg("Failed to sync summary during rebuild")
+					syncErrors++
+				} else {
+					totalSynced++
+				}
+			}
+			log.Info().Int("count", len(summaries)).Msg("Rebuilt stale summary vectors")
+		}
+	}
+
+	// Rebuild stale prompts
+	if len(stalePromptIDs) > 0 {
+		ids := make([]int64, 0, len(stalePromptIDs))
+		for id := range stalePromptIDs {
+			ids = append(ids, id)
+		}
+
+		prompts, err := promptStore.GetPromptsByIDs(s.ctx, ids, "date_desc", 0)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to fetch prompts for rebuild")
+		} else {
+			for _, prompt := range prompts {
+				if err := vectorSync.SyncUserPrompt(s.ctx, prompt); err != nil {
+					log.Warn().Err(err).Int64("id", prompt.ID).Msg("Failed to sync prompt during rebuild")
+					syncErrors++
+				} else {
+					totalSynced++
+				}
+			}
+			log.Info().Int("count", len(prompts)).Msg("Rebuilt stale prompt vectors")
+		}
+	}
+
+	elapsed := time.Since(start)
+	log.Info().
+		Int("total_synced", totalSynced).
+		Int("errors", syncErrors).
+		Dur("elapsed", elapsed).
+		Msg("Granular vector rebuild complete")
+}
+
 // verifyStaleObservation verifies a single stale observation in the background.
 func (s *Service) verifyStaleObservation(req staleVerifyRequest) {
 	// Wait for service to be ready
@@ -667,6 +894,7 @@ func (s *Service) setupRoutes() {
 		r.Get("/api/stats", s.handleGetStats)
 		r.Get("/api/stats/retrieval", s.handleGetRetrievalStats)
 		r.Get("/api/types", s.handleGetTypes)
+		r.Get("/api/models", s.handleGetModels)
 
 		// Context injection
 		r.Get("/api/context/count", s.handleContextCount)
