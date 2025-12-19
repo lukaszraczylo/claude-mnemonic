@@ -10,6 +10,8 @@
     "type-check": "vue-tsc --noEmit"
   },
   "dependencies": {
+    "vis-data": "^7.1.9",
+    "vis-network": "^9.1.9",
     "vue": "^3.5.13"
   },
   "devDependencies": {

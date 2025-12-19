@@ -1,4 +1,4 @@
-import type { Observation, UserPrompt, SessionSummary, Stats, FeedItem, ObservationFeedItem, PromptFeedItem, SummaryFeedItem } from '@/types'
+import type { Observation, UserPrompt, SessionSummary, Stats, FeedItem, ObservationFeedItem, PromptFeedItem, SummaryFeedItem, RelationWithDetails, RelationGraph, RelationStats } from '@/types'
 
 const API_BASE = '/api'
 const DEFAULT_TIMEOUT = 10000 // 10 seconds
@@ -146,4 +146,21 @@ export function combineTimeline(
 
   return [...obsItems, ...promptItems, ...summaryItems]
     .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+}
+
+// Relation API functions
+export async function fetchObservationRelations(observationId: number, signal?: AbortSignal): Promise<RelationWithDetails[]> {
+  return fetchWithRetry<RelationWithDetails[]>(`${API_BASE}/observations/${observationId}/relations`, { signal })
+}
+
+export async function fetchObservationGraph(observationId: number, depth: number = 2, signal?: AbortSignal): Promise<RelationGraph> {
+  return fetchWithRetry<RelationGraph>(`${API_BASE}/observations/${observationId}/graph?depth=${depth}`, { signal })
+}
+
+export async function fetchRelatedObservations(observationId: number, minConfidence: number = 0.4, signal?: AbortSignal): Promise<Observation[]> {
+  return fetchWithRetry<Observation[]>(`${API_BASE}/observations/${observationId}/related?min_confidence=${minConfidence}`, { signal })
+}
+
+export async function fetchRelationStats(signal?: AbortSignal): Promise<RelationStats> {
+  return fetchWithRetry<RelationStats>(`${API_BASE}/relations/stats`, { signal })
 }
