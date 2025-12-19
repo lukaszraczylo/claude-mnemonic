@@ -103,11 +103,38 @@ func createBaseTables(t *testing.T, db *sql.DB) {
 			discovery_tokens INTEGER DEFAULT 0,
 			created_at TEXT NOT NULL,
 			created_at_epoch INTEGER NOT NULL,
+			importance_score REAL DEFAULT 1.0,
+			user_feedback INTEGER DEFAULT 0,
+			retrieval_count INTEGER DEFAULT 0,
+			last_retrieved_at_epoch INTEGER,
+			score_updated_at_epoch INTEGER,
+			is_superseded INTEGER DEFAULT 0,
 			FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id) ON DELETE CASCADE
 		)
 	`)
 	if err != nil {
 		t.Fatalf("create observations: %v", err)
+	}
+
+	// Create observation_conflicts table for conflict detection
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS observation_conflicts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			newer_obs_id INTEGER NOT NULL,
+			older_obs_id INTEGER NOT NULL,
+			conflict_type TEXT NOT NULL CHECK(conflict_type IN ('superseded', 'contradicts', 'outdated_pattern')),
+			resolution TEXT NOT NULL CHECK(resolution IN ('prefer_newer', 'prefer_older', 'manual')),
+			reason TEXT,
+			detected_at TEXT NOT NULL,
+			detected_at_epoch INTEGER NOT NULL,
+			resolved INTEGER DEFAULT 0,
+			resolved_at TEXT,
+			FOREIGN KEY(newer_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
+			FOREIGN KEY(older_obs_id) REFERENCES observations(id) ON DELETE CASCADE
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create observation_conflicts: %v", err)
 	}
 
 	_, err = db.Exec(`
@@ -148,6 +175,31 @@ func createBaseTables(t *testing.T, db *sql.DB) {
 	`)
 	if err != nil {
 		t.Fatalf("create user_prompts: %v", err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS patterns (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL CHECK(type IN ('bug', 'refactor', 'architecture', 'anti-pattern', 'best-practice')),
+			description TEXT,
+			signature TEXT,
+			recommendation TEXT,
+			frequency INTEGER DEFAULT 1,
+			projects TEXT,
+			observation_ids TEXT,
+			status TEXT DEFAULT 'active' CHECK(status IN ('active', 'deprecated', 'merged')),
+			merged_into_id INTEGER,
+			confidence REAL DEFAULT 0.5,
+			last_seen_at TEXT NOT NULL,
+			last_seen_at_epoch INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			created_at_epoch INTEGER NOT NULL,
+			FOREIGN KEY(merged_into_id) REFERENCES patterns(id) ON DELETE SET NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create patterns: %v", err)
 	}
 
 	indexes := []string{

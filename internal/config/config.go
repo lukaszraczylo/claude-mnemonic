@@ -48,16 +48,29 @@ type Config struct {
 	Model          string `json:"model"`
 	ClaudeCodePath string `json:"claude_code_path"`
 
+	// Embedding settings
+	EmbeddingModel string `json:"embedding_model"` // e.g., "bge-v1.5"
+
+	// Reranking settings (cross-encoder)
+	RerankingEnabled        bool    `json:"reranking_enabled"`         // Enable cross-encoder reranking
+	RerankingCandidates     int     `json:"reranking_candidates"`      // Number of candidates to retrieve before reranking (default 100)
+	RerankingResults        int     `json:"reranking_results"`         // Number of results to return after reranking (default 10)
+	RerankingAlpha          float64 `json:"reranking_alpha"`           // Weight for combining scores: alpha*rerank + (1-alpha)*original (default 0.7)
+	RerankingMinImprovement float64 `json:"reranking_min_improvement"` // Minimum rank improvement to trigger reranking (default 0, always rerank)
+	RerankingPureMode       bool    `json:"reranking_pure_mode"`       // Use pure cross-encoder scores without combining with bi-encoder (default false)
+
 	// Context injection settings
-	ContextObservations    int      `json:"context_observations"`
-	ContextFullCount       int      `json:"context_full_count"`
-	ContextSessionCount    int      `json:"context_session_count"`
-	ContextShowReadTokens  bool     `json:"context_show_read_tokens"`
-	ContextShowWorkTokens  bool     `json:"context_show_work_tokens"`
-	ContextFullField       string   `json:"context_full_field"`
-	ContextShowLastSummary bool     `json:"context_show_last_summary"`
-	ContextObsTypes        []string `json:"context_obs_types"`
-	ContextObsConcepts     []string `json:"context_obs_concepts"`
+	ContextObservations       int      `json:"context_observations"`
+	ContextFullCount          int      `json:"context_full_count"`
+	ContextSessionCount       int      `json:"context_session_count"`
+	ContextShowReadTokens     bool     `json:"context_show_read_tokens"`
+	ContextShowWorkTokens     bool     `json:"context_show_work_tokens"`
+	ContextFullField          string   `json:"context_full_field"`
+	ContextShowLastSummary    bool     `json:"context_show_last_summary"`
+	ContextObsTypes           []string `json:"context_obs_types"`
+	ContextObsConcepts        []string `json:"context_obs_concepts"`
+	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"` // 0.0-1.0, minimum similarity for inclusion
+	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`  // Max results per prompt (0 = threshold only)
 }
 
 var (
@@ -119,22 +132,33 @@ func EnsureAll() error {
 	return nil
 }
 
+// DefaultEmbeddingModel is the default embedding model to use.
+const DefaultEmbeddingModel = "bge-v1.5"
+
 // Default returns a Config with default values.
 func Default() *Config {
 	return &Config{
-		WorkerPort:             DefaultWorkerPort,
-		DBPath:                 DBPath(),
-		MaxConns:               4,
-		Model:                  DefaultModel,
-		ContextObservations:    100,
-		ContextFullCount:       25,
-		ContextSessionCount:    10,
-		ContextShowReadTokens:  true,
-		ContextShowWorkTokens:  true,
-		ContextFullField:       "narrative",
-		ContextShowLastSummary: true,
-		ContextObsTypes:        DefaultObservationTypes,
-		ContextObsConcepts:     DefaultObservationConcepts,
+		WorkerPort:                DefaultWorkerPort,
+		DBPath:                    DBPath(),
+		MaxConns:                  4,
+		Model:                     DefaultModel,
+		EmbeddingModel:            DefaultEmbeddingModel,
+		RerankingEnabled:          true, // Enable by default for improved relevance
+		RerankingCandidates:       100,  // Retrieve top 100 candidates
+		RerankingResults:          10,   // Return top 10 after reranking
+		RerankingAlpha:            0.7,  // Favor cross-encoder score
+		RerankingMinImprovement:   0,    // Always apply reranking
+		ContextObservations:       100,
+		ContextFullCount:          25,
+		ContextSessionCount:       10,
+		ContextShowReadTokens:     true,
+		ContextShowWorkTokens:     true,
+		ContextFullField:          "narrative",
+		ContextShowLastSummary:    true,
+		ContextObsTypes:           DefaultObservationTypes,
+		ContextObsConcepts:        DefaultObservationConcepts,
+		ContextRelevanceThreshold: 0.3, // Minimum 30% similarity to include
+		ContextMaxPromptResults:   10,  // Cap at 10 results max (0 = no cap, threshold only)
 	}
 }
 
@@ -166,6 +190,28 @@ func Load() (*Config, error) {
 	if v, ok := settings["CLAUDE_CODE_PATH"].(string); ok {
 		cfg.ClaudeCodePath = v
 	}
+	if v, ok := settings["CLAUDE_MNEMONIC_EMBEDDING_MODEL"].(string); ok && v != "" {
+		cfg.EmbeddingModel = v
+	}
+	// Reranking settings
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_ENABLED"].(bool); ok {
+		cfg.RerankingEnabled = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_CANDIDATES"].(float64); ok && v > 0 {
+		cfg.RerankingCandidates = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_RESULTS"].(float64); ok && v > 0 {
+		cfg.RerankingResults = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_ALPHA"].(float64); ok && v >= 0 && v <= 1 {
+		cfg.RerankingAlpha = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_MIN_IMPROVEMENT"].(float64); ok && v >= 0 {
+		cfg.RerankingMinImprovement = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_RERANKING_PURE_MODE"].(bool); ok {
+		cfg.RerankingPureMode = v
+	}
 	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_OBSERVATIONS"].(float64); ok {
 		cfg.ContextObservations = int(v)
 	}
@@ -180,6 +226,12 @@ func Load() (*Config, error) {
 	}
 	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_OBS_CONCEPTS"].(string); ok && v != "" {
 		cfg.ContextObsConcepts = splitTrim(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_RELEVANCE_THRESHOLD"].(float64); ok && v >= 0 && v <= 1 {
+		cfg.ContextRelevanceThreshold = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_MAX_PROMPT_RESULTS"].(float64); ok && v >= 0 {
+		cfg.ContextMaxPromptResults = int(v)
 	}
 
 	return cfg, nil

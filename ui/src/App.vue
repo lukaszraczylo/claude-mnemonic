@@ -30,7 +30,7 @@ const {
 // Pass currentProject ref to useStats for project-specific retrieval stats
 const { stats } = useStats(currentProject)
 
-// Note: Timeline refresh is handled by useTimeline's SSE watcher
+// Note: Feedback is handled directly in ObservationCard component
 </script>
 
 <template>

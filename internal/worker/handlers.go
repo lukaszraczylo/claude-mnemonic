@@ -4,13 +4,18 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/privacy"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/reranking"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/search/expansion"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sdk"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/session"
@@ -641,6 +646,18 @@ func (s *Service) handleGetTypes(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleGetModels returns available embedding models.
+func (s *Service) handleGetModels(w http.ResponseWriter, _ *http.Request) {
+	models := embedding.ListModels()
+	defaultModel := embedding.GetDefaultModel()
+
+	writeJSON(w, map[string]interface{}{
+		"models":  models,
+		"default": defaultModel,
+		"current": s.embedSvc.Version(),
+	})
+}
+
 // handleGetStats returns worker statistics.
 func (s *Service) handleGetStats(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
@@ -656,6 +673,22 @@ func (s *Service) handleGetStats(w http.ResponseWriter, r *http.Request) {
 		"sessionsToday":    sessionsToday,
 		"retrieval":        retrievalStats,
 		"ready":            s.ready.Load(),
+	}
+
+	// Add embedding model info
+	if s.embedSvc != nil {
+		response["embeddingModel"] = map[string]interface{}{
+			"name":       s.embedSvc.Name(),
+			"version":    s.embedSvc.Version(),
+			"dimensions": s.embedSvc.Dimensions(),
+		}
+	}
+
+	// Add vector count
+	if s.vectorClient != nil {
+		if count, err := s.vectorClient.Count(r.Context()); err == nil {
+			response["vectorCount"] = count
+		}
 	}
 
 	// Include project-specific observation count if project is specified
@@ -715,15 +748,69 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 	var observations []*models.Observation
 	var err error
 	var usedVector bool
+	similarityScores := make(map[int64]float64) // Track similarity per observation
+
+	// Get threshold settings from config
+	threshold := s.config.ContextRelevanceThreshold
+	maxResults := s.config.ContextMaxPromptResults
+
+	// Generate expanded queries if query expander is available
+	var expandedQueries []expansion.ExpandedQuery
+	var detectedIntent string
+	if s.queryExpander != nil {
+		cfg := expansion.DefaultConfig()
+		cfg.EnableVocabularyExpansion = false // Vocabulary expansion is optional
+		expandedQueries = s.queryExpander.Expand(r.Context(), query, cfg)
+		if len(expandedQueries) > 0 {
+			detectedIntent = string(expandedQueries[0].Intent)
+		}
+	}
+	if len(expandedQueries) == 0 {
+		// Fallback to just the original query
+		expandedQueries = []expansion.ExpandedQuery{
+			{Query: query, Weight: 1.0, Source: "original"},
+		}
+	}
 
 	// Try vector search first if available
 	if s.vectorClient != nil && s.vectorClient.IsConnected() {
 		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeObservation, "")
 
-		vectorResults, vecErr := s.vectorClient.Query(r.Context(), query, limit*2, where)
-		if vecErr == nil && len(vectorResults) > 0 {
+		// Search with each expanded query and merge results
+		allVectorResults := make([]sqlitevec.QueryResult, 0)
+		queryWeights := make(map[string]float64) // Track weights for score merging
+
+		for _, eq := range expandedQueries {
+			vectorResults, vecErr := s.vectorClient.Query(r.Context(), eq.Query, limit*2, where)
+			if vecErr == nil && len(vectorResults) > 0 {
+				// Apply weight to similarity scores before merging
+				for i := range vectorResults {
+					vectorResults[i].Similarity *= eq.Weight
+				}
+				allVectorResults = append(allVectorResults, vectorResults...)
+				queryWeights[eq.Query] = eq.Weight
+			}
+		}
+
+		if len(allVectorResults) > 0 {
+			// Filter by relevance threshold before extracting IDs
+			// Use a slightly lower threshold for expanded queries
+			effectiveThreshold := threshold * 0.9 // Allow slightly lower scores for expanded queries
+			filteredResults := sqlitevec.FilterByThreshold(allVectorResults, effectiveThreshold, 0)
+
+			// Build similarity map for filtered results (keeping highest weighted score per observation)
+			for _, vr := range filteredResults {
+				if sqliteID, ok := vr.Metadata["sqlite_id"].(float64); ok {
+					id := int64(sqliteID)
+					// Keep the highest score for each observation
+					if existing, exists := similarityScores[id]; !exists || vr.Similarity > existing {
+						similarityScores[id] = vr.Similarity
+					}
+				}
+			}
+
 			// Extract observation IDs with project/scope filtering using shared helper
-			obsIDs := sqlitevec.ExtractObservationIDs(vectorResults, project)
+			obsIDs := sqlitevec.ExtractObservationIDs(filteredResults, project)
 
 			if len(obsIDs) > 0 {
 				// Fetch full observations from SQLite
@@ -773,23 +860,132 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 		freshObservations = append(freshObservations, obs)
 	}
 
+	// Apply cross-encoder reranking if available
+	var reranked bool
+	if s.reranker != nil && len(freshObservations) > 0 && usedVector {
+		// Build candidates from observations with their bi-encoder scores
+		candidates := make([]reranking.Candidate, len(freshObservations))
+		for i, obs := range freshObservations {
+			content := obs.Title.String
+			if obs.Narrative.Valid && obs.Narrative.String != "" {
+				content = content + " " + obs.Narrative.String
+			}
+			candidates[i] = reranking.Candidate{
+				ID:       fmt.Sprintf("%d", obs.ID),
+				Content:  content,
+				Score:    similarityScores[obs.ID],
+				Metadata: map[string]any{"obs_idx": i},
+			}
+		}
+
+		// Rerank using cross-encoder - use pure mode or combined scores
+		var rerankResults []reranking.RerankResult
+		var rerankErr error
+		if s.config.RerankingPureMode {
+			rerankResults, rerankErr = s.reranker.RerankByScore(query, candidates, s.config.RerankingResults)
+		} else {
+			rerankResults, rerankErr = s.reranker.Rerank(query, candidates, s.config.RerankingResults)
+		}
+		if rerankErr != nil {
+			log.Warn().Err(rerankErr).Msg("Cross-encoder reranking failed, using original order")
+		} else if len(rerankResults) > 0 {
+			// Update similarity scores with reranked scores
+			for _, rr := range rerankResults {
+				if id, err := strconv.ParseInt(rr.ID, 10, 64); err == nil {
+					similarityScores[id] = rr.CombinedScore
+				}
+			}
+
+			// Reorder observations based on rerank results
+			reorderedObs := make([]*models.Observation, 0, len(rerankResults))
+			obsMap := make(map[int64]*models.Observation)
+			for _, obs := range freshObservations {
+				obsMap[obs.ID] = obs
+			}
+			for _, rr := range rerankResults {
+				if id, err := strconv.ParseInt(rr.ID, 10, 64); err == nil {
+					if obs, ok := obsMap[id]; ok {
+						reorderedObs = append(reorderedObs, obs)
+					}
+				}
+			}
+			freshObservations = reorderedObs
+			reranked = true
+
+			log.Debug().
+				Int("candidates", len(candidates)).
+				Int("returned", len(rerankResults)).
+				Msg("Cross-encoder reranking complete")
+		}
+	}
+
 	// Cluster similar observations to remove duplicates
 	clusteredObservations := clusterObservations(freshObservations, 0.4)
+
+	// Sort by similarity score (highest first) if we have scores and didn't rerank
+	if len(similarityScores) > 0 && len(clusteredObservations) > 0 && !reranked {
+		sort.Slice(clusteredObservations, func(i, j int) bool {
+			scoreI := similarityScores[clusteredObservations[i].ID]
+			scoreJ := similarityScores[clusteredObservations[j].ID]
+			return scoreI > scoreJ
+		})
+	}
+
+	// Apply max results cap if configured
+	if maxResults > 0 && len(clusteredObservations) > maxResults {
+		clusteredObservations = clusteredObservations[:maxResults]
+	}
 
 	// Record retrieval stats (no verification done, so verified=0, deleted=0)
 	s.recordRetrievalStats(project, int64(len(clusteredObservations)), 0, 0, true)
 
+	// Increment retrieval counts for scoring (async, non-blocking)
+	if len(clusteredObservations) > 0 {
+		ids := make([]int64, len(clusteredObservations))
+		for i, obs := range clusteredObservations {
+			ids[i] = obs.ID
+		}
+		s.incrementRetrievalCounts(ids)
+	}
+
 	log.Info().
 		Str("project", project).
 		Str("query", query).
+		Str("intent", detectedIntent).
+		Int("expansions", len(expandedQueries)).
 		Int("found", len(clusteredObservations)).
 		Int("stale_excluded", staleCount).
+		Float64("threshold", threshold).
 		Msg("Prompt-based observation search")
+
+	// Build response with similarity scores
+	obsWithScores := make([]map[string]interface{}, len(clusteredObservations))
+	for i, obs := range clusteredObservations {
+		obsMap := obs.ToMap()
+		if score, ok := similarityScores[obs.ID]; ok {
+			obsMap["similarity"] = score
+		}
+		obsWithScores[i] = obsMap
+	}
+
+	// Build expansion info for response
+	expansionInfo := make([]map[string]interface{}, len(expandedQueries))
+	for i, eq := range expandedQueries {
+		expansionInfo[i] = map[string]interface{}{
+			"query":  eq.Query,
+			"weight": eq.Weight,
+			"source": eq.Source,
+		}
+	}
 
 	writeJSON(w, map[string]interface{}{
 		"project":      project,
 		"query":        query,
-		"observations": clusteredObservations,
+		"intent":       detectedIntent,
+		"expansions":   expansionInfo,
+		"observations": obsWithScores,
+		"threshold":    threshold,
+		"max_results":  maxResults,
 	})
 }
 
@@ -856,6 +1052,15 @@ func (s *Service) handleContextInject(w http.ResponseWriter, r *http.Request) {
 
 	// Record retrieval stats (no verification done)
 	s.recordRetrievalStats(project, int64(len(clusteredObservations)), 0, 0, false)
+
+	// Increment retrieval counts for scoring (async, non-blocking)
+	if len(clusteredObservations) > 0 {
+		ids := make([]int64, len(clusteredObservations))
+		for i, obs := range clusteredObservations {
+			ids[i] = obs.ID
+		}
+		s.incrementRetrievalCounts(ids)
+	}
 
 	log.Info().
 		Str("project", project).
@@ -1014,6 +1219,35 @@ func (s *Service) handleSelfCheck(w http.ResponseWriter, r *http.Request) {
 		overall = "unhealthy"
 	}
 	components = append(components, sseStatus)
+
+	// Check Cross-Encoder Reranker
+	rerankerStatus := ComponentHealth{Name: "Cross-Encoder Reranker", Status: "healthy"}
+	if !s.config.RerankingEnabled {
+		rerankerStatus.Status = "degraded"
+		rerankerStatus.Message = "Disabled in config"
+		if overall == "healthy" {
+			overall = "degraded"
+		}
+	} else if s.reranker == nil {
+		rerankerStatus.Status = "degraded"
+		rerankerStatus.Message = "Not initialized"
+		if overall == "healthy" {
+			overall = "degraded"
+		}
+	} else {
+		// Verify reranker is functional using Score
+		_, normalizedScore, err := s.reranker.Score("test query", "test document")
+		if err != nil {
+			rerankerStatus.Status = "unhealthy"
+			rerankerStatus.Message = fmt.Sprintf("Score check failed: %v", err)
+			if overall == "healthy" {
+				overall = "degraded"
+			}
+		} else {
+			rerankerStatus.Message = fmt.Sprintf("Score check passed (%.4f)", normalizedScore)
+		}
+	}
+	components = append(components, rerankerStatus)
 
 	// Calculate uptime
 	uptime := time.Since(s.startTime).Round(time.Second).String()

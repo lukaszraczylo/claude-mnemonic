@@ -12,7 +12,21 @@ Claude Code forgets everything when your session ends. Claude Mnemonic fixes tha
 
 It captures what Claude learns during your coding sessions - bug fixes, architecture decisions, patterns that work - and brings that knowledge back in future conversations. No more re-explaining your codebase.
 
-## What's New in v0.6
+![Claude Mnemonic Dashboard](docs/public/claude-mnemonic.jpg)
+
+## What's New in v0.7
+
+- **Two-Stage Retrieval** - Cross-encoder reranking for dramatically improved search relevance
+- **Knowledge Graph** - Automatic relationship detection between observations with visual graph in dashboard
+  ![Knowledge Graph](docs/public/observation-relation-graph.jpg)
+- **Pattern Detection** - Identifies recurring patterns across sessions and projects
+- **Importance Scoring** - Time decay and voting system to surface the most valuable memories
+- **Query Expansion** - Reformulates searches to find semantically related content
+- **Conflict Detection** - Identifies and resolves contradictory observations
+- **Observation Lifecycle** - Memories can be superseded when better information arrives
+
+<details>
+<summary>Previous: v0.6</summary>
 
 - **Auto-Updates** - Automatically stays up-to-date with the latest version
 - **Slash Command: `/restart`** - Restart the worker directly from Claude Code
@@ -20,6 +34,7 @@ It captures what Claude learns during your coding sessions - bug fixes, architec
 - **Async Queue Processing** - Non-blocking observation capture for faster sessions
 - **Smarter Storage** - Filters out system/agent summaries to keep knowledge relevant
 - **Improved Reliability** - Better handling of connectivity issues and dead connections
+</details>
 
 ## Requirements
 
@@ -110,16 +125,39 @@ Config file: `~/.claude-mnemonic/settings.json`
 {
   "CLAUDE_MNEMONIC_WORKER_PORT": 37777,
   "CLAUDE_MNEMONIC_CONTEXT_OBSERVATIONS": 100,
-  "CLAUDE_MNEMONIC_CONTEXT_FULL_COUNT": 25
+  "CLAUDE_MNEMONIC_CONTEXT_FULL_COUNT": 25,
+  "CLAUDE_MNEMONIC_RERANKING_ENABLED": true
 }
 ```
+
+### Core Settings
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
 | `WORKER_PORT` | `37777` | Dashboard & API port |
 | `CONTEXT_OBSERVATIONS` | `100` | Max memories per session |
-| `CONTEXT_FULL_COUNT` | `25` | Full detail memories (rest are condensed to title only) |
+| `CONTEXT_FULL_COUNT` | `25` | Full detail memories (rest are condensed) |
 | `CONTEXT_SESSION_COUNT` | `10` | Recent sessions to reference |
+| `CONTEXT_RELEVANCE_THRESHOLD` | `0.3` | Minimum similarity score (0.0-1.0) for inclusion |
+| `CONTEXT_MAX_PROMPT_RESULTS` | `10` | Max results per prompt search |
+
+### Reranking Settings (Two-Stage Retrieval)
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `RERANKING_ENABLED` | `true` | Enable cross-encoder reranking |
+| `RERANKING_CANDIDATES` | `100` | Candidates to retrieve before reranking |
+| `RERANKING_RESULTS` | `10` | Final results after reranking |
+| `RERANKING_ALPHA` | `0.7` | Score blend: alpha×rerank + (1-alpha)×original |
+| `RERANKING_PURE_MODE` | `false` | Use pure cross-encoder scores only |
+
+### Embedding Settings
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `EMBEDDING_MODEL` | `bge-v1.5` | Embedding model for semantic search |
+
+All variables are prefixed with `CLAUDE_MNEMONIC_` in the config file.
 
 ## Project vs Global scope
 
@@ -202,10 +240,11 @@ curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/s
 
 - **SQLite + FTS5** - Full-text search for exact matches
 - **sqlite-vec** - Vector database embedded in SQLite
-- **all-MiniLM-L6-v2** - Local embedding model (384 dimensions) via ONNX Runtime
+- **Two-Stage Retrieval** - Bi-encoder (embedding) + cross-encoder (reranking) for high accuracy
+- **Local Models** - all-MiniLM-L6-v2 for embeddings, BGE reranker for relevance scoring
 - **Go** - Single binary, no external dependencies
 
-Everything runs locally. No Python. No external vector database. No API calls for embeddings.
+Everything runs locally. No Python. No external vector database. No API calls.
 
 ## Platform support
 

@@ -283,6 +283,213 @@ var Migrations = []Migration{
 			ON user_prompts(claude_session_id, prompt_number);
 		`,
 	},
+	{
+		Version: 19,
+		Name:    "vectors_with_model_version",
+		SQL: `
+			-- Drop old vectors table (virtual tables cannot be altered)
+			DROP TABLE IF EXISTS vectors;
+
+			-- Recreate vectors table with model_version column
+			-- Uses bge-small-en-v1.5 embeddings (384 dimensions)
+			CREATE VIRTUAL TABLE IF NOT EXISTS vectors USING vec0(
+				doc_id TEXT PRIMARY KEY,
+				embedding float[384],
+				sqlite_id INTEGER,
+				doc_type TEXT,
+				field_type TEXT,
+				project TEXT,
+				scope TEXT,
+				model_version TEXT
+			);
+		`,
+	},
+	{
+		Version: 20,
+		Name:    "importance_scoring",
+		SQL: `
+			-- Importance scoring system for observations
+			-- Implements multi-factor scoring: type weight, recency decay, user feedback, concept weights, retrieval boost
+
+			-- Cached importance score (recalculated periodically)
+			ALTER TABLE observations ADD COLUMN importance_score REAL DEFAULT 1.0;
+
+			-- User feedback: -1 = thumbs down, 0 = neutral, 1 = thumbs up
+			ALTER TABLE observations ADD COLUMN user_feedback INTEGER DEFAULT 0;
+
+			-- Retrieval tracking: how many times this observation was returned in searches
+			ALTER TABLE observations ADD COLUMN retrieval_count INTEGER DEFAULT 0;
+
+			-- Last time this observation was retrieved (for analytics)
+			ALTER TABLE observations ADD COLUMN last_retrieved_at_epoch INTEGER;
+
+			-- Timestamp of last score recalculation
+			ALTER TABLE observations ADD COLUMN score_updated_at_epoch INTEGER;
+
+			-- Index for importance-based sorting (primary ordering strategy)
+			CREATE INDEX IF NOT EXISTS idx_observations_importance
+			ON observations(importance_score DESC, created_at_epoch DESC);
+
+			-- Index for finding observations needing score recalculation
+			CREATE INDEX IF NOT EXISTS idx_observations_score_updated
+			ON observations(score_updated_at_epoch);
+
+			-- Configurable concept weights table
+			-- Allows runtime tuning of how much each concept contributes to importance
+			CREATE TABLE IF NOT EXISTS concept_weights (
+				concept TEXT PRIMARY KEY,
+				weight REAL NOT NULL DEFAULT 0.1,
+				updated_at TEXT NOT NULL
+			);
+
+			-- Seed default concept weights (security highest, tooling lowest)
+			INSERT OR IGNORE INTO concept_weights (concept, weight, updated_at) VALUES
+				('security', 0.30, datetime('now')),
+				('gotcha', 0.25, datetime('now')),
+				('best-practice', 0.20, datetime('now')),
+				('anti-pattern', 0.20, datetime('now')),
+				('architecture', 0.15, datetime('now')),
+				('performance', 0.15, datetime('now')),
+				('error-handling', 0.15, datetime('now')),
+				('pattern', 0.10, datetime('now')),
+				('testing', 0.10, datetime('now')),
+				('debugging', 0.10, datetime('now')),
+				('workflow', 0.05, datetime('now')),
+				('tooling', 0.05, datetime('now'));
+		`,
+	},
+	{
+		Version: 21,
+		Name:    "observation_conflicts",
+		SQL: `
+			-- Observation conflicts table for tracking contradictions and superseded observations
+			-- Implements Issue #5: Contradiction & Obsolescence Detection
+			CREATE TABLE IF NOT EXISTS observation_conflicts (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				newer_obs_id INTEGER NOT NULL,
+				older_obs_id INTEGER NOT NULL,
+				conflict_type TEXT NOT NULL CHECK(conflict_type IN ('superseded', 'contradicts', 'outdated_pattern')),
+				resolution TEXT NOT NULL CHECK(resolution IN ('prefer_newer', 'prefer_older', 'manual')),
+				reason TEXT,
+				detected_at TEXT NOT NULL,
+				detected_at_epoch INTEGER NOT NULL,
+				resolved INTEGER DEFAULT 0,
+				resolved_at TEXT,
+				FOREIGN KEY(newer_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
+				FOREIGN KEY(older_obs_id) REFERENCES observations(id) ON DELETE CASCADE
+			);
+
+			-- Index for looking up conflicts by observation ID
+			CREATE INDEX IF NOT EXISTS idx_conflicts_newer ON observation_conflicts(newer_obs_id);
+			CREATE INDEX IF NOT EXISTS idx_conflicts_older ON observation_conflicts(older_obs_id);
+			CREATE INDEX IF NOT EXISTS idx_conflicts_unresolved ON observation_conflicts(resolved, detected_at_epoch DESC);
+
+			-- Add is_superseded column to observations for quick filtering
+			-- Set to 1 when this observation has been superseded by a newer one
+			ALTER TABLE observations ADD COLUMN is_superseded INTEGER DEFAULT 0;
+
+			-- Index for filtering out superseded observations in queries
+			CREATE INDEX IF NOT EXISTS idx_observations_superseded ON observations(is_superseded, importance_score DESC);
+		`,
+	},
+	{
+		Version: 22,
+		Name:    "patterns_table",
+		SQL: `
+			-- Pattern Recognition Engine (Issue #7)
+			-- Tracks recurring patterns detected across observations
+			-- Enables Claude to reference historical insights: "I've encountered this pattern 12 times."
+			CREATE TABLE IF NOT EXISTS patterns (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				name TEXT NOT NULL,
+				type TEXT NOT NULL CHECK(type IN ('bug', 'refactor', 'architecture', 'anti-pattern', 'best-practice')),
+				description TEXT,
+				signature TEXT,  -- JSON array of keywords/concepts for detection
+				recommendation TEXT,  -- What works for this pattern
+				frequency INTEGER DEFAULT 1,  -- How many times encountered
+				projects TEXT,  -- JSON array of projects where seen
+				observation_ids TEXT,  -- JSON array of source observation IDs
+				status TEXT DEFAULT 'active' CHECK(status IN ('active', 'deprecated', 'merged')),
+				merged_into_id INTEGER,  -- If status is 'merged', which pattern it merged into
+				confidence REAL DEFAULT 0.5,  -- Detection confidence (0.0-1.0)
+				last_seen_at TEXT NOT NULL,
+				last_seen_at_epoch INTEGER NOT NULL,
+				created_at TEXT NOT NULL,
+				created_at_epoch INTEGER NOT NULL,
+				FOREIGN KEY(merged_into_id) REFERENCES patterns(id) ON DELETE SET NULL
+			);
+
+			-- Indexes for efficient pattern queries
+			CREATE INDEX IF NOT EXISTS idx_patterns_type ON patterns(type);
+			CREATE INDEX IF NOT EXISTS idx_patterns_status ON patterns(status);
+			CREATE INDEX IF NOT EXISTS idx_patterns_frequency ON patterns(frequency DESC);
+			CREATE INDEX IF NOT EXISTS idx_patterns_confidence ON patterns(confidence DESC);
+			CREATE INDEX IF NOT EXISTS idx_patterns_last_seen ON patterns(last_seen_at_epoch DESC);
+
+			-- FTS5 virtual table for pattern search
+			CREATE VIRTUAL TABLE IF NOT EXISTS patterns_fts USING fts5(
+				name, description, recommendation,
+				content='patterns',
+				content_rowid='id'
+			);
+
+			-- Triggers for FTS5 sync
+			CREATE TRIGGER IF NOT EXISTS patterns_ai AFTER INSERT ON patterns BEGIN
+				INSERT INTO patterns_fts(rowid, name, description, recommendation)
+				VALUES (new.id, new.name, new.description, new.recommendation);
+			END;
+
+			CREATE TRIGGER IF NOT EXISTS patterns_ad AFTER DELETE ON patterns BEGIN
+				INSERT INTO patterns_fts(patterns_fts, rowid, name, description, recommendation)
+				VALUES('delete', old.id, old.name, old.description, old.recommendation);
+			END;
+
+			CREATE TRIGGER IF NOT EXISTS patterns_au AFTER UPDATE ON patterns BEGIN
+				INSERT INTO patterns_fts(patterns_fts, rowid, name, description, recommendation)
+				VALUES('delete', old.id, old.name, old.description, old.recommendation);
+				INSERT INTO patterns_fts(rowid, name, description, recommendation)
+				VALUES (new.id, new.name, new.description, new.recommendation);
+			END;
+		`,
+	},
+	{
+		Version: 23,
+		Name:    "observation_relations",
+		SQL: `
+			-- Knowledge Graph: Observation Relations (Issue #4)
+			-- Tracks explicit relationships between observations for knowledge graph navigation.
+			-- Enables queries like "What caused this bug?" or "What depends on this decision?"
+			CREATE TABLE IF NOT EXISTS observation_relations (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				source_id INTEGER NOT NULL,
+				target_id INTEGER NOT NULL,
+				relation_type TEXT NOT NULL CHECK(relation_type IN ('causes', 'fixes', 'supersedes', 'depends_on', 'relates_to', 'evolves_from')),
+				confidence REAL NOT NULL DEFAULT 0.5,
+				detection_source TEXT NOT NULL CHECK(detection_source IN ('file_overlap', 'embedding_similarity', 'temporal_proximity', 'narrative_mention', 'concept_overlap', 'type_progression')),
+				reason TEXT,
+				created_at TEXT NOT NULL,
+				created_at_epoch INTEGER NOT NULL,
+				FOREIGN KEY(source_id) REFERENCES observations(id) ON DELETE CASCADE,
+				FOREIGN KEY(target_id) REFERENCES observations(id) ON DELETE CASCADE,
+				UNIQUE(source_id, target_id, relation_type)
+			);
+
+			-- Index for finding relations by source observation
+			CREATE INDEX IF NOT EXISTS idx_relations_source ON observation_relations(source_id);
+
+			-- Index for finding relations by target observation
+			CREATE INDEX IF NOT EXISTS idx_relations_target ON observation_relations(target_id);
+
+			-- Index for relation type queries
+			CREATE INDEX IF NOT EXISTS idx_relations_type ON observation_relations(relation_type);
+
+			-- Index for confidence-based filtering
+			CREATE INDEX IF NOT EXISTS idx_relations_confidence ON observation_relations(confidence DESC);
+
+			-- Index for finding all relations involving an observation (either direction)
+			CREATE INDEX IF NOT EXISTS idx_relations_both ON observation_relations(source_id, target_id);
+		`,
+	},
 }
 
 // MigrationManager handles database schema migrations.

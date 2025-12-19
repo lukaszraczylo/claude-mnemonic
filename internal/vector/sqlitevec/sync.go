@@ -240,3 +240,101 @@ func (s *Sync) DeleteUserPrompts(ctx context.Context, promptIDs []int64) error {
 
 	return nil
 }
+
+// SyncPattern syncs a single pattern to the vector store.
+func (s *Sync) SyncPattern(ctx context.Context, pattern *models.Pattern) error {
+	docs := s.formatPatternDocs(pattern)
+	if len(docs) == 0 {
+		return nil
+	}
+
+	if err := s.client.AddDocuments(ctx, docs); err != nil {
+		return fmt.Errorf("add pattern docs: %w", err)
+	}
+
+	log.Debug().
+		Int64("patternId", pattern.ID).
+		Int("docCount", len(docs)).
+		Msg("Synced pattern to sqlite-vec")
+
+	return nil
+}
+
+// formatPatternDocs formats a pattern into vector documents.
+func (s *Sync) formatPatternDocs(pattern *models.Pattern) []Document {
+	docs := make([]Document, 0, 3)
+
+	baseMetadata := map[string]any{
+		"sqlite_id":        pattern.ID,
+		"doc_type":         "pattern",
+		"pattern_type":     string(pattern.Type),
+		"status":           string(pattern.Status),
+		"scope":            "global", // Patterns are always global
+		"frequency":        pattern.Frequency,
+		"confidence":       pattern.Confidence,
+		"created_at_epoch": pattern.CreatedAtEpoch,
+	}
+
+	if len(pattern.Signature) > 0 {
+		baseMetadata["signature"] = joinStrings(pattern.Signature, ",")
+	}
+	if len(pattern.Projects) > 0 {
+		baseMetadata["projects"] = joinStrings(pattern.Projects, ",")
+	}
+
+	// Pattern name as document
+	if pattern.Name != "" {
+		docs = append(docs, Document{
+			ID:       fmt.Sprintf("pattern_%d_name", pattern.ID),
+			Content:  pattern.Name,
+			Metadata: copyMetadata(baseMetadata, "field_type", "name"),
+		})
+	}
+
+	// Pattern description as document
+	if pattern.Description.Valid && pattern.Description.String != "" {
+		docs = append(docs, Document{
+			ID:       fmt.Sprintf("pattern_%d_description", pattern.ID),
+			Content:  pattern.Description.String,
+			Metadata: copyMetadata(baseMetadata, "field_type", "description"),
+		})
+	}
+
+	// Pattern recommendation as document
+	if pattern.Recommendation.Valid && pattern.Recommendation.String != "" {
+		docs = append(docs, Document{
+			ID:       fmt.Sprintf("pattern_%d_recommendation", pattern.ID),
+			Content:  pattern.Recommendation.String,
+			Metadata: copyMetadata(baseMetadata, "field_type", "recommendation"),
+		})
+	}
+
+	return docs
+}
+
+// DeletePatterns removes pattern documents from the vector store.
+func (s *Sync) DeletePatterns(ctx context.Context, patternIDs []int64) error {
+	if len(patternIDs) == 0 {
+		return nil
+	}
+
+	// Generate all possible document IDs for these patterns
+	// Pattern: pattern_{id}_name, pattern_{id}_description, pattern_{id}_recommendation
+	ids := make([]string, 0, len(patternIDs)*3)
+
+	for _, patternID := range patternIDs {
+		ids = append(ids, fmt.Sprintf("pattern_%d_name", patternID))
+		ids = append(ids, fmt.Sprintf("pattern_%d_description", patternID))
+		ids = append(ids, fmt.Sprintf("pattern_%d_recommendation", patternID))
+	}
+
+	if err := s.client.DeleteDocuments(ctx, ids); err != nil {
+		return fmt.Errorf("delete pattern docs: %w", err)
+	}
+
+	log.Debug().
+		Int("patternCount", len(patternIDs)).
+		Msg("Deleted patterns from sqlite-vec")
+
+	return nil
+}

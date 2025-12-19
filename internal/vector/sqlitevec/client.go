@@ -60,11 +60,14 @@ func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
 		return fmt.Errorf("generate embeddings: %w", err)
 	}
 
-	// Insert into vectors table
+	// Insert into vectors table with model version tracking
 	const insertQuery = `
-		INSERT OR REPLACE INTO vectors (doc_id, embedding, sqlite_id, doc_type, field_type, project, scope)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT OR REPLACE INTO vectors (doc_id, embedding, sqlite_id, doc_type, field_type, project, scope, model_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`
+
+	// Get current model version for tracking
+	modelVersion := c.embedSvc.Version()
 
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -104,6 +107,7 @@ func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
 			fieldType,
 			project,
 			scope,
+			modelVersion,
 		)
 		if err != nil {
 			return fmt.Errorf("insert document %s: %w", doc.ID, err)
@@ -114,7 +118,7 @@ func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 
-	log.Debug().Int("count", len(docs)).Msg("Added documents to sqlite-vec")
+	log.Debug().Int("count", len(docs)).Str("model", modelVersion).Msg("Added documents to sqlite-vec")
 	return nil
 }
 
@@ -212,6 +216,7 @@ func (c *Client) Query(ctx context.Context, query string, limit int, where map[s
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 
+		r.Similarity = DistanceToSimilarity(r.Distance)
 		r.Metadata = map[string]any{
 			"sqlite_id":  float64(sqliteID), // Keep as float64 for compatibility
 			"doc_type":   docType.String,
@@ -251,4 +256,149 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// Count returns the total number of vectors in the store.
+func (c *Client) Count(ctx context.Context) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var count int64
+	err := c.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM vectors").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count vectors: %w", err)
+	}
+	return count, nil
+}
+
+// ModelVersion returns the current embedding model version.
+func (c *Client) ModelVersion() string {
+	return c.embedSvc.Version()
+}
+
+// NeedsRebuild checks if vectors need to be rebuilt due to model version change.
+// Returns true if:
+// - The vectors table is empty
+// - Any vectors have a different model_version than the current model
+func (c *Client) NeedsRebuild(ctx context.Context) (bool, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	currentModel := c.embedSvc.Version()
+
+	// Check total count
+	var totalCount int64
+	err := c.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM vectors").Scan(&totalCount)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to count vectors for rebuild check")
+		return false, ""
+	}
+
+	if totalCount == 0 {
+		return true, "empty"
+	}
+
+	// Check for vectors with different model version
+	var staleCount int64
+	err = c.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM vectors WHERE model_version != ? OR model_version IS NULL",
+		currentModel,
+	).Scan(&staleCount)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to count stale vectors")
+		return false, ""
+	}
+
+	if staleCount > 0 {
+		return true, fmt.Sprintf("model_mismatch:%d", staleCount)
+	}
+
+	return false, ""
+}
+
+// StaleVectorInfo contains information about a vector that needs rebuilding.
+type StaleVectorInfo struct {
+	DocID     string
+	SQLiteID  int64
+	DocType   string
+	FieldType string
+	Project   string
+	Scope     string
+}
+
+// GetStaleVectors returns doc_ids of vectors with mismatched or null model versions.
+// This enables granular rebuild - only re-embedding documents that need updating.
+func (c *Client) GetStaleVectors(ctx context.Context) ([]StaleVectorInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	currentModel := c.embedSvc.Version()
+
+	query := `
+		SELECT doc_id, sqlite_id, doc_type, field_type, project, scope
+		FROM vectors
+		WHERE model_version != ? OR model_version IS NULL
+	`
+
+	rows, err := c.db.QueryContext(ctx, query, currentModel)
+	if err != nil {
+		return nil, fmt.Errorf("query stale vectors: %w", err)
+	}
+	defer rows.Close()
+
+	var results []StaleVectorInfo
+	for rows.Next() {
+		var info StaleVectorInfo
+		var sqliteID sql.NullInt64
+		var docType, fieldType, project, scope sql.NullString
+
+		if err := rows.Scan(&info.DocID, &sqliteID, &docType, &fieldType, &project, &scope); err != nil {
+			return nil, fmt.Errorf("scan row: %w", err)
+		}
+
+		info.SQLiteID = sqliteID.Int64
+		info.DocType = docType.String
+		info.FieldType = fieldType.String
+		info.Project = project.String
+		info.Scope = scope.String
+
+		results = append(results, info)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
+
+	return results, nil
+}
+
+// DeleteVectorsByDocIDs removes vectors by their doc_ids.
+// Used for granular rebuild - delete stale vectors before re-adding.
+func (c *Client) DeleteVectorsByDocIDs(ctx context.Context, docIDs []string) error {
+	if len(docIDs) == 0 {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Build placeholder string
+	placeholders := make([]string, len(docIDs))
+	args := make([]interface{}, len(docIDs))
+	for i, id := range docIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	// #nosec G201 -- Placeholders are "?" strings, actual values are parameterized via args
+	query := fmt.Sprintf("DELETE FROM vectors WHERE doc_id IN (%s)",
+		strings.Join(placeholders, ","))
+
+	_, err := c.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete vectors by doc_ids: %w", err)
+	}
+
+	log.Debug().Int("count", len(docIDs)).Msg("Deleted stale vectors by doc_id")
+	return nil
 }

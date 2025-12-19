@@ -1,16 +1,65 @@
 <script setup lang="ts">
-import type { ObservationFeedItem } from '@/types'
+import type { ObservationFeedItem, RelationWithDetails } from '@/types'
 import { TYPE_CONFIG, CONCEPT_CONFIG } from '@/types/observation'
+import { RELATION_TYPE_CONFIG, DETECTION_SOURCE_CONFIG } from '@/types/relation'
 import { formatRelativeTime } from '@/utils/formatters'
+import { fetchObservationRelations } from '@/utils/api'
 import Card from './Card.vue'
 import IconBox from './IconBox.vue'
 import Badge from './Badge.vue'
-import { computed } from 'vue'
+import RelationGraph from './RelationGraph.vue'
+import { computed, ref, onMounted } from 'vue'
 
 const props = defineProps<{
   observation: ObservationFeedItem
   highlight?: boolean
+  showFeedback?: boolean
 }>()
+
+const emit = defineEmits<{
+  navigateToObservation: [id: number]
+}>()
+
+// Local feedback and score state (optimistic updates)
+const localFeedback = ref<number | null>(null)
+const localScore = ref<number | null>(null)
+const isSubmitting = ref(false)
+
+const currentFeedback = computed(() =>
+  localFeedback.value !== null ? localFeedback.value : (props.observation.user_feedback || 0)
+)
+
+const currentScore = computed(() =>
+  localScore.value !== null ? localScore.value : (props.observation.importance_score || 1)
+)
+
+const submitFeedback = async (value: number) => {
+  if (isSubmitting.value) return
+
+  // Toggle off if clicking same button
+  const newValue = currentFeedback.value === value ? 0 : value
+
+  localFeedback.value = newValue
+  isSubmitting.value = true
+
+  try {
+    const response = await fetch(`/api/observations/${props.observation.id}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feedback: newValue })
+    })
+    if (response.ok) {
+      const data = await response.json()
+      if (data.score !== undefined) {
+        localScore.value = data.score
+      }
+    }
+  } catch (error) {
+    console.error('Error submitting feedback:', error)
+  } finally {
+    isSubmitting.value = false
+  }
+}
 
 const config = computed(() => TYPE_CONFIG[props.observation.type] || TYPE_CONFIG.change)
 
@@ -39,6 +88,60 @@ const filesModified = computed(() => {
 })
 
 const hasFiles = computed(() => filesRead.value.length > 0 || filesModified.value.length > 0)
+
+// Relations state
+const relations = ref<RelationWithDetails[]>([])
+const relationsLoading = ref(false)
+const relationsExpanded = ref(false)
+const showGraph = ref(false)
+
+const hasRelations = computed(() => relations.value.length > 0)
+const relationCount = computed(() => relations.value.length)
+
+// Load relations on mount
+const loadRelations = async () => {
+  relationsLoading.value = true
+  try {
+    relations.value = await fetchObservationRelations(props.observation.id)
+  } catch (err) {
+    console.error('Failed to load relations:', err)
+  } finally {
+    relationsLoading.value = false
+  }
+}
+
+onMounted(() => {
+  loadRelations()
+})
+
+// Toggle relations expansion
+const toggleRelations = () => {
+  relationsExpanded.value = !relationsExpanded.value
+}
+
+// Open graph modal
+const openGraph = (e: Event) => {
+  e.stopPropagation()
+  showGraph.value = true
+}
+
+// Handle navigation from graph
+const handleNavigateTo = (id: number) => {
+  showGraph.value = false
+  emit('navigateToObservation', id)
+}
+
+// Get relation display info (whether we're source or target)
+const getRelationDisplay = (rel: RelationWithDetails) => {
+  const isSource = rel.relation.source_id === props.observation.id
+  return {
+    type: rel.relation.relation_type,
+    otherTitle: isSource ? rel.target_title : rel.source_title,
+    otherId: isSource ? rel.relation.target_id : rel.relation.source_id,
+    direction: isSource ? 'outgoing' : 'incoming',
+    confidence: rel.relation.confidence
+  }
+}
 
 // Split path into project root and relative path for styling
 // e.g., /Users/foo/project/src/file.go → { root: 'project', path: 'src/file.go' }
@@ -140,7 +243,145 @@ const splitPath = (path: string, components = 3) => {
             </div>
           </div>
         </div>
+
+        <!-- Relations -->
+        <div v-if="hasRelations || relationsLoading" class="mt-3 pt-3 border-t border-slate-700/50">
+          <!-- Header with count and graph button -->
+          <div class="flex items-center justify-between">
+            <button
+              @click="toggleRelations"
+              class="flex items-center gap-2 text-xs text-slate-400 hover:text-slate-300 transition-colors"
+              :disabled="relationsLoading"
+            >
+              <i class="fas fa-diagram-project text-cyan-500/70" />
+              <span v-if="relationsLoading" class="text-slate-500">
+                <i class="fas fa-circle-notch fa-spin mr-1" />
+                Loading relations...
+              </span>
+              <span v-else>
+                {{ relationCount }} related observation{{ relationCount !== 1 ? 's' : '' }}
+              </span>
+              <i
+                v-if="!relationsLoading && hasRelations"
+                class="fas text-[10px] transition-transform"
+                :class="relationsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'"
+              />
+            </button>
+
+            <!-- View Graph button -->
+            <button
+              v-if="hasRelations"
+              @click="openGraph"
+              class="flex items-center gap-1.5 px-2 py-1 text-xs text-cyan-400 hover:text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 rounded transition-colors"
+              title="View knowledge graph"
+            >
+              <i class="fas fa-project-diagram" />
+              <span>View Graph</span>
+            </button>
+          </div>
+
+          <!-- Expanded relations list -->
+          <div
+            v-if="relationsExpanded && hasRelations"
+            class="mt-2 space-y-1.5"
+          >
+            <div
+              v-for="rel in relations"
+              :key="rel.relation.id"
+              class="flex items-center gap-2 text-xs p-1.5 rounded bg-slate-800/30 hover:bg-slate-800/50 transition-colors group"
+            >
+              <!-- Relation type icon -->
+              <i
+                class="fas w-4 text-center"
+                :class="[
+                  RELATION_TYPE_CONFIG[getRelationDisplay(rel).type]?.icon || 'fa-link',
+                  RELATION_TYPE_CONFIG[getRelationDisplay(rel).type]?.colorClass || 'text-slate-400'
+                ]"
+                :title="RELATION_TYPE_CONFIG[getRelationDisplay(rel).type]?.label"
+              />
+
+              <!-- Direction arrow -->
+              <i
+                class="fas text-[10px] text-slate-600"
+                :class="getRelationDisplay(rel).direction === 'outgoing' ? 'fa-arrow-right' : 'fa-arrow-left'"
+              />
+
+              <!-- Related observation title -->
+              <span
+                class="flex-1 truncate text-slate-300 cursor-pointer hover:text-amber-300 transition-colors"
+                :title="getRelationDisplay(rel).otherTitle"
+                @click="emit('navigateToObservation', getRelationDisplay(rel).otherId)"
+              >
+                {{ getRelationDisplay(rel).otherTitle || 'Untitled' }}
+              </span>
+
+              <!-- Confidence -->
+              <span
+                class="text-[10px] text-slate-500 font-mono"
+                :title="`${Math.round(getRelationDisplay(rel).confidence * 100)}% confidence`"
+              >
+                {{ Math.round(getRelationDisplay(rel).confidence * 100) }}%
+              </span>
+
+              <!-- Detection source icon -->
+              <i
+                class="fas text-[10px] text-slate-600"
+                :class="DETECTION_SOURCE_CONFIG[rel.relation.detection_source]?.icon || 'fa-question'"
+                :title="DETECTION_SOURCE_CONFIG[rel.relation.detection_source]?.label"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Feedback buttons (right side) -->
+      <div v-if="showFeedback" class="flex flex-col items-center gap-1 ml-2 flex-shrink-0">
+        <button
+          @click="submitFeedback(1)"
+          :disabled="isSubmitting"
+          :class="[
+            'p-1.5 rounded-lg transition-all duration-200',
+            currentFeedback === 1
+              ? 'bg-green-500/30 text-green-300 shadow-green-500/20 shadow-sm'
+              : 'text-slate-500 hover:text-green-400 hover:bg-green-500/10'
+          ]"
+          title="Helpful"
+        >
+          <i class="fas fa-thumbs-up text-sm" />
+        </button>
+
+        <span
+          class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800/50 text-slate-400 flex items-center gap-1 transition-all duration-300"
+          :class="{ 'text-green-400': localScore !== null && localScore > (observation.importance_score || 1), 'text-red-400': localScore !== null && localScore < (observation.importance_score || 1) }"
+          :title="`Importance Score: ${currentScore.toFixed(3)}\nRetrieval Count: ${observation.retrieval_count || 0}`"
+        >
+          <i class="fas fa-scale-balanced text-amber-500/60" />
+          {{ currentScore.toFixed(2) }}
+        </span>
+
+        <button
+          @click="submitFeedback(-1)"
+          :disabled="isSubmitting"
+          :class="[
+            'p-1.5 rounded-lg transition-all duration-200',
+            currentFeedback === -1
+              ? 'bg-red-500/30 text-red-300 shadow-red-500/20 shadow-sm'
+              : 'text-slate-500 hover:text-red-400 hover:bg-red-500/10'
+          ]"
+          title="Not helpful"
+        >
+          <i class="fas fa-thumbs-down text-sm" />
+        </button>
       </div>
     </div>
+
+    <!-- Relation Graph Modal -->
+    <RelationGraph
+      :observation-id="observation.id"
+      :observation-title="observation.title || 'Untitled'"
+      :show="showGraph"
+      @close="showGraph = false"
+      @navigate-to="handleNavigateTo"
+    />
   </Card>
 </template>

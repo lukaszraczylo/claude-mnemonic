@@ -15,6 +15,10 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/pattern"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/reranking"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/scoring"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/search/expansion"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/update"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/watcher"
@@ -64,6 +68,12 @@ type Service struct {
 	observationStore *sqlite.ObservationStore
 	summaryStore     *sqlite.SummaryStore
 	promptStore      *sqlite.PromptStore
+	conflictStore    *sqlite.ConflictStore
+	patternStore     *sqlite.PatternStore
+	relationStore    *sqlite.RelationStore
+
+	// Pattern detection
+	patternDetector *pattern.Detector
 
 	// Domain services
 	sessionManager *session.Manager
@@ -74,6 +84,16 @@ type Service struct {
 	embedSvc     *embedding.Service
 	vectorClient *sqlitevec.Client
 	vectorSync   *sqlitevec.Sync
+
+	// Cross-encoder reranking (for improved search relevance)
+	reranker *reranking.Service
+
+	// Query expansion (for improved search recall)
+	queryExpander *expansion.Expander
+
+	// Importance scoring
+	scoreCalculator *scoring.Calculator
+	recalculator    *scoring.Recalculator
 
 	// HTTP server
 	router    *chi.Mux
@@ -177,6 +197,15 @@ func (s *Service) initializeAsync() {
 	observationStore := sqlite.NewObservationStore(store)
 	summaryStore := sqlite.NewSummaryStore(store)
 	promptStore := sqlite.NewPromptStore(store)
+	conflictStore := sqlite.NewConflictStore(store)
+	patternStore := sqlite.NewPatternStore(store)
+	relationStore := sqlite.NewRelationStore(store)
+
+	// Enable conflict detection by linking stores
+	observationStore.SetConflictStore(conflictStore)
+
+	// Enable relation detection by linking stores
+	observationStore.SetRelationStore(relationStore)
 
 	// Create session manager
 	sessionManager := session.NewManager(sessionStore)
@@ -185,6 +214,8 @@ func (s *Service) initializeAsync() {
 	var embedSvc *embedding.Service
 	var vectorClient *sqlitevec.Client
 	var vectorSync *sqlitevec.Sync
+
+	var reranker *reranking.Service
 
 	emb, err := embedding.NewService()
 	if err != nil {
@@ -200,8 +231,32 @@ func (s *Service) initializeAsync() {
 		} else {
 			vectorClient = client
 			vectorSync = sqlitevec.NewSync(client)
-			log.Info().Msg("sqlite-vec vector search enabled")
+			log.Info().
+				Str("model", embedSvc.Version()).
+				Msg("sqlite-vec vector search enabled")
 		}
+
+		// Create cross-encoder reranking service if enabled
+		if s.config.RerankingEnabled {
+			rerankCfg := reranking.DefaultConfig()
+			if s.config.RerankingAlpha > 0 && s.config.RerankingAlpha <= 1 {
+				rerankCfg.Alpha = s.config.RerankingAlpha
+			}
+
+			ranker, err := reranking.NewService(rerankCfg)
+			if err != nil {
+				log.Warn().Err(err).Msg("Cross-encoder reranking service creation failed - reranking disabled")
+			} else {
+				reranker = ranker
+				log.Info().
+					Float64("alpha", rerankCfg.Alpha).
+					Msg("Cross-encoder reranking enabled")
+			}
+		}
+
+		// Create query expander for improved search recall
+		s.queryExpander = expansion.NewExpander(embedSvc)
+		log.Info().Msg("Query expansion enabled")
 	}
 
 	// Create SDK processor (optional - will be nil if Claude CLI not available)
@@ -225,11 +280,38 @@ func (s *Service) initializeAsync() {
 	s.observationStore = observationStore
 	s.summaryStore = summaryStore
 	s.promptStore = promptStore
+	s.conflictStore = conflictStore
+	s.patternStore = patternStore
+	s.relationStore = relationStore
 	s.sessionManager = sessionManager
 	s.processor = processor
 	s.embedSvc = embedSvc
 	s.vectorClient = vectorClient
 	s.vectorSync = vectorSync
+	s.reranker = reranker
+	s.initMu.Unlock()
+
+	// Initialize pattern detector
+	patternDetector := pattern.NewDetector(patternStore, observationStore, pattern.DefaultConfig())
+
+	// Set pattern sync callback if vector sync is available
+	if vectorSync != nil {
+		patternDetector.SetSyncFunc(func(p *models.Pattern) {
+			if err := vectorSync.SyncPattern(s.ctx, p); err != nil {
+				log.Warn().Err(err).Int64("id", p.ID).Msg("Failed to sync pattern to sqlite-vec")
+			}
+		})
+
+		// Set cleanup callback for pattern deletions
+		patternStore.SetCleanupFunc(func(ctx context.Context, deletedIDs []int64) {
+			if err := vectorSync.DeletePatterns(ctx, deletedIDs); err != nil {
+				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete patterns from sqlite-vec")
+			}
+		})
+	}
+
+	s.initMu.Lock()
+	s.patternDetector = patternDetector
 	s.initMu.Unlock()
 
 	// Set vector sync callbacks on processor if both are available
@@ -237,6 +319,22 @@ func (s *Service) initializeAsync() {
 		processor.SetSyncObservationFunc(func(obs *models.Observation) {
 			if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
 				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation to sqlite-vec")
+			}
+			// Trigger pattern detection for the new observation
+			if patternDetector != nil {
+				go func(observation *models.Observation) {
+					detectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if result, err := patternDetector.AnalyzeObservation(detectCtx, observation); err != nil {
+						log.Warn().Err(err).Int64("obs_id", observation.ID).Msg("Pattern detection failed")
+					} else if result.MatchedPattern != nil {
+						log.Debug().
+							Int64("pattern_id", result.MatchedPattern.ID).
+							Str("pattern_name", result.MatchedPattern.Name).
+							Bool("is_new", result.IsNewPattern).
+							Msg("Pattern matched for observation")
+					}
+				}(obs)
 			}
 		})
 		processor.SetSyncSummaryFunc(func(summary *models.SessionSummary) {
@@ -282,6 +380,37 @@ func (s *Service) initializeAsync() {
 		})
 	})
 
+	// Initialize importance scoring system
+	scoringConfig := models.DefaultScoringConfig()
+
+	// Load concept weights from database if available
+	if weights, err := observationStore.GetConceptWeights(s.ctx); err == nil && len(weights) > 0 {
+		scoringConfig.ConceptWeights = weights
+		log.Info().Int("count", len(weights)).Msg("Loaded concept weights from database")
+	}
+
+	scoreCalculator := scoring.NewCalculator(scoringConfig)
+	recalculator := scoring.NewRecalculator(observationStore, scoreCalculator, log.Logger)
+
+	s.initMu.Lock()
+	s.scoreCalculator = scoreCalculator
+	s.recalculator = recalculator
+	s.initMu.Unlock()
+
+	// Start background recalculator
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		recalculator.Start(s.ctx)
+	}()
+	log.Info().Msg("Importance scoring system initialized")
+
+	// Start pattern detector background analysis
+	if patternDetector != nil {
+		patternDetector.Start()
+		log.Info().Msg("Pattern recognition engine started")
+	}
+
 	// Mark as ready
 	s.ready.Store(true)
 	log.Info().Msg("Async initialization complete - service ready")
@@ -294,6 +423,27 @@ func (s *Service) initializeAsync() {
 
 	// Start file watchers for auto-recreation on deletion
 	s.startWatchers()
+
+	// Check if vectors need rebuilding (empty or model version mismatch) and trigger background rebuild
+	if vectorClient != nil && vectorSync != nil {
+		needsRebuild, reason := vectorClient.NeedsRebuild(s.ctx)
+		if needsRebuild {
+			log.Info().
+				Str("reason", reason).
+				Str("model", vectorClient.ModelVersion()).
+				Msg("Vector rebuild required")
+
+			if reason == "empty" {
+				// Full rebuild - vectors table is empty
+				s.wg.Add(1)
+				go s.rebuildAllVectors(observationStore, summaryStore, promptStore, vectorSync)
+			} else {
+				// Granular rebuild - only rebuild vectors with mismatched model versions
+				s.wg.Add(1)
+				go s.rebuildStaleVectors(observationStore, summaryStore, promptStore, vectorClient, vectorSync)
+			}
+		}
+	}
 }
 
 // startWatchers initializes and starts file watchers for database and config.
@@ -384,6 +534,15 @@ func (s *Service) reinitializeDatabase() {
 	observationStore := sqlite.NewObservationStore(store)
 	summaryStore := sqlite.NewSummaryStore(store)
 	promptStore := sqlite.NewPromptStore(store)
+	conflictStore := sqlite.NewConflictStore(store)
+	patternStore := sqlite.NewPatternStore(store)
+	relationStore := sqlite.NewRelationStore(store)
+
+	// Enable conflict detection by linking stores
+	observationStore.SetConflictStore(conflictStore)
+
+	// Enable relation detection by linking stores
+	observationStore.SetRelationStore(relationStore)
 
 	// Create new session manager
 	sessionManager := session.NewManager(sessionStore)
@@ -392,6 +551,8 @@ func (s *Service) reinitializeDatabase() {
 	var embedSvc *embedding.Service
 	var vectorClient *sqlitevec.Client
 	var vectorSync *sqlitevec.Sync
+
+	var reranker *reranking.Service
 
 	emb, err := embedding.NewService()
 	if err != nil {
@@ -408,6 +569,34 @@ func (s *Service) reinitializeDatabase() {
 			vectorSync = sqlitevec.NewSync(client)
 			log.Info().Msg("sqlite-vec reconnected after reinit")
 		}
+
+		// Recreate cross-encoder reranking service if enabled
+		if s.config.RerankingEnabled {
+			rerankCfg := reranking.DefaultConfig()
+			if s.config.RerankingAlpha > 0 && s.config.RerankingAlpha <= 1 {
+				rerankCfg.Alpha = s.config.RerankingAlpha
+			}
+
+			ranker, err := reranking.NewService(rerankCfg)
+			if err != nil {
+				log.Warn().Err(err).Msg("Cross-encoder reranking service creation failed after reinit")
+			} else {
+				reranker = ranker
+				log.Info().Msg("Cross-encoder reranking reconnected after reinit")
+			}
+		}
+
+		// Recreate query expander
+		s.queryExpander = expansion.NewExpander(embedSvc)
+		log.Info().Msg("Query expansion reconnected after reinit")
+	}
+
+	// Close old reranker if exists
+	s.initMu.RLock()
+	oldReranker := s.reranker
+	s.initMu.RUnlock()
+	if oldReranker != nil {
+		_ = oldReranker.Close()
 	}
 
 	// Recreate SDK processor with new stores
@@ -422,6 +611,30 @@ func (s *Service) reinitializeDatabase() {
 		})
 	}
 
+	// Stop old pattern detector if it exists
+	if s.patternDetector != nil {
+		s.patternDetector.Stop()
+	}
+
+	// Create new pattern detector
+	patternDetector := pattern.NewDetector(patternStore, observationStore, pattern.DefaultConfig())
+
+	// Set pattern sync callback if vector sync is available
+	if vectorSync != nil {
+		patternDetector.SetSyncFunc(func(p *models.Pattern) {
+			if err := vectorSync.SyncPattern(s.ctx, p); err != nil {
+				log.Warn().Err(err).Int64("id", p.ID).Msg("Failed to sync pattern to sqlite-vec")
+			}
+		})
+
+		// Set cleanup callback for pattern deletions
+		patternStore.SetCleanupFunc(func(ctx context.Context, deletedIDs []int64) {
+			if err := vectorSync.DeletePatterns(ctx, deletedIDs); err != nil {
+				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete patterns from sqlite-vec")
+			}
+		})
+	}
+
 	// Atomically swap all components
 	s.initMu.Lock()
 	s.store = store
@@ -429,19 +642,43 @@ func (s *Service) reinitializeDatabase() {
 	s.observationStore = observationStore
 	s.summaryStore = summaryStore
 	s.promptStore = promptStore
+	s.conflictStore = conflictStore
+	s.patternStore = patternStore
+	s.relationStore = relationStore
+	s.patternDetector = patternDetector
 	s.sessionManager = sessionManager
 	s.processor = processor
 	s.embedSvc = embedSvc
 	s.vectorClient = vectorClient
 	s.vectorSync = vectorSync
+	s.reranker = reranker
 	s.initError = nil
 	s.initMu.Unlock()
+
+	// Start pattern detector
+	patternDetector.Start()
 
 	// Set vector sync callbacks on processor if both are available
 	if processor != nil && vectorSync != nil {
 		processor.SetSyncObservationFunc(func(obs *models.Observation) {
 			if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
 				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation to sqlite-vec")
+			}
+			// Trigger pattern detection for the new observation
+			if patternDetector != nil {
+				go func(observation *models.Observation) {
+					detectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if result, err := patternDetector.AnalyzeObservation(detectCtx, observation); err != nil {
+						log.Warn().Err(err).Int64("obs_id", observation.ID).Msg("Pattern detection failed")
+					} else if result.MatchedPattern != nil {
+						log.Debug().
+							Int64("pattern_id", result.MatchedPattern.ID).
+							Str("pattern_name", result.MatchedPattern.Name).
+							Bool("is_new", result.IsNewPattern).
+							Msg("Pattern matched for observation")
+					}
+				}(obs)
 			}
 		})
 		processor.SetSyncSummaryFunc(func(summary *models.SessionSummary) {
@@ -565,6 +802,210 @@ func (s *Service) processStaleQueue() {
 	}
 }
 
+// rebuildAllVectors rebuilds all vectors from observations, summaries, and prompts.
+// Called when the vectors table is empty (e.g., after migration 20 drops all vectors).
+func (s *Service) rebuildAllVectors(
+	observationStore *sqlite.ObservationStore,
+	summaryStore *sqlite.SummaryStore,
+	promptStore *sqlite.PromptStore,
+	vectorSync *sqlitevec.Sync,
+) {
+	defer s.wg.Done()
+
+	log.Info().Msg("Starting full vector rebuild...")
+	start := time.Now()
+
+	var totalSynced int
+	var syncErrors int
+
+	// Rebuild observations
+	observations, err := observationStore.GetAllObservations(s.ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch observations for vector rebuild")
+	} else {
+		for _, obs := range observations {
+			if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
+				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation during rebuild")
+				syncErrors++
+			} else {
+				totalSynced++
+			}
+		}
+		log.Info().Int("count", len(observations)).Msg("Rebuilt observation vectors")
+	}
+
+	// Rebuild summaries
+	summaries, err := summaryStore.GetAllSummaries(s.ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch summaries for vector rebuild")
+	} else {
+		for _, summary := range summaries {
+			if err := vectorSync.SyncSummary(s.ctx, summary); err != nil {
+				log.Warn().Err(err).Int64("id", summary.ID).Msg("Failed to sync summary during rebuild")
+				syncErrors++
+			} else {
+				totalSynced++
+			}
+		}
+		log.Info().Int("count", len(summaries)).Msg("Rebuilt summary vectors")
+	}
+
+	// Rebuild user prompts
+	prompts, err := promptStore.GetAllPrompts(s.ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch prompts for vector rebuild")
+	} else {
+		for _, prompt := range prompts {
+			if err := vectorSync.SyncUserPrompt(s.ctx, prompt); err != nil {
+				log.Warn().Err(err).Int64("id", prompt.ID).Msg("Failed to sync prompt during rebuild")
+				syncErrors++
+			} else {
+				totalSynced++
+			}
+		}
+		log.Info().Int("count", len(prompts)).Msg("Rebuilt prompt vectors")
+	}
+
+	elapsed := time.Since(start)
+	log.Info().
+		Int("total_synced", totalSynced).
+		Int("errors", syncErrors).
+		Dur("elapsed", elapsed).
+		Msg("Full vector rebuild complete")
+}
+
+// rebuildStaleVectors rebuilds only vectors with mismatched or unknown model versions.
+// This is more efficient than rebuilding all vectors when only some need updating.
+func (s *Service) rebuildStaleVectors(
+	observationStore *sqlite.ObservationStore,
+	summaryStore *sqlite.SummaryStore,
+	promptStore *sqlite.PromptStore,
+	vectorClient *sqlitevec.Client,
+	vectorSync *sqlitevec.Sync,
+) {
+	defer s.wg.Done()
+
+	log.Info().Msg("Starting granular vector rebuild for stale vectors...")
+	start := time.Now()
+
+	// Get all stale vectors
+	staleVectors, err := vectorClient.GetStaleVectors(s.ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get stale vectors")
+		return
+	}
+
+	if len(staleVectors) == 0 {
+		log.Info().Msg("No stale vectors found")
+		return
+	}
+
+	log.Info().Int("stale_count", len(staleVectors)).Msg("Found stale vectors to rebuild")
+
+	// Group stale vectors by doc_type and sqlite_id for efficient lookup
+	staleObsIDs := make(map[int64]bool)
+	staleSummaryIDs := make(map[int64]bool)
+	stalePromptIDs := make(map[int64]bool)
+	staleDocIDs := make([]string, 0, len(staleVectors))
+
+	for _, sv := range staleVectors {
+		staleDocIDs = append(staleDocIDs, sv.DocID)
+		switch sv.DocType {
+		case "observation":
+			staleObsIDs[sv.SQLiteID] = true
+		case "summary":
+			staleSummaryIDs[sv.SQLiteID] = true
+		case "prompt":
+			stalePromptIDs[sv.SQLiteID] = true
+		}
+	}
+
+	// Delete stale vectors before re-syncing
+	if err := vectorClient.DeleteVectorsByDocIDs(s.ctx, staleDocIDs); err != nil {
+		log.Error().Err(err).Msg("Failed to delete stale vectors")
+		return
+	}
+
+	var totalSynced int
+	var syncErrors int
+
+	// Rebuild stale observations
+	if len(staleObsIDs) > 0 {
+		ids := make([]int64, 0, len(staleObsIDs))
+		for id := range staleObsIDs {
+			ids = append(ids, id)
+		}
+
+		observations, err := observationStore.GetObservationsByIDs(s.ctx, ids, "date_desc", 0)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to fetch observations for rebuild")
+		} else {
+			for _, obs := range observations {
+				if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
+					log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation during rebuild")
+					syncErrors++
+				} else {
+					totalSynced++
+				}
+			}
+			log.Info().Int("count", len(observations)).Msg("Rebuilt stale observation vectors")
+		}
+	}
+
+	// Rebuild stale summaries
+	if len(staleSummaryIDs) > 0 {
+		ids := make([]int64, 0, len(staleSummaryIDs))
+		for id := range staleSummaryIDs {
+			ids = append(ids, id)
+		}
+
+		summaries, err := summaryStore.GetSummariesByIDs(s.ctx, ids, "date_desc", 0)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to fetch summaries for rebuild")
+		} else {
+			for _, summary := range summaries {
+				if err := vectorSync.SyncSummary(s.ctx, summary); err != nil {
+					log.Warn().Err(err).Int64("id", summary.ID).Msg("Failed to sync summary during rebuild")
+					syncErrors++
+				} else {
+					totalSynced++
+				}
+			}
+			log.Info().Int("count", len(summaries)).Msg("Rebuilt stale summary vectors")
+		}
+	}
+
+	// Rebuild stale prompts
+	if len(stalePromptIDs) > 0 {
+		ids := make([]int64, 0, len(stalePromptIDs))
+		for id := range stalePromptIDs {
+			ids = append(ids, id)
+		}
+
+		prompts, err := promptStore.GetPromptsByIDs(s.ctx, ids, "date_desc", 0)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to fetch prompts for rebuild")
+		} else {
+			for _, prompt := range prompts {
+				if err := vectorSync.SyncUserPrompt(s.ctx, prompt); err != nil {
+					log.Warn().Err(err).Int64("id", prompt.ID).Msg("Failed to sync prompt during rebuild")
+					syncErrors++
+				} else {
+					totalSynced++
+				}
+			}
+			log.Info().Int("count", len(prompts)).Msg("Rebuilt stale prompt vectors")
+		}
+	}
+
+	elapsed := time.Since(start)
+	log.Info().
+		Int("total_synced", totalSynced).
+		Int("errors", syncErrors).
+		Dur("elapsed", elapsed).
+		Msg("Granular vector rebuild complete")
+}
+
 // verifyStaleObservation verifies a single stale observation in the background.
 func (s *Service) verifyStaleObservation(req staleVerifyRequest) {
 	// Wait for service to be ready
@@ -667,11 +1108,42 @@ func (s *Service) setupRoutes() {
 		r.Get("/api/stats", s.handleGetStats)
 		r.Get("/api/stats/retrieval", s.handleGetRetrievalStats)
 		r.Get("/api/types", s.handleGetTypes)
+		r.Get("/api/models", s.handleGetModels)
+
+		// Observation scoring and feedback routes
+		r.Post("/api/observations/{id}/feedback", s.handleObservationFeedback)
+		r.Get("/api/observations/{id}/score", s.handleExplainScore)
+		r.Get("/api/observations/top", s.handleGetTopObservations)
+		r.Get("/api/observations/most-retrieved", s.handleGetMostRetrieved)
+
+		// Scoring configuration routes
+		r.Get("/api/scoring/stats", s.handleGetScoringStats)
+		r.Get("/api/scoring/concepts", s.handleGetConceptWeights)
+		r.Put("/api/scoring/concepts/{concept}", s.handleUpdateConceptWeight)
+		r.Post("/api/scoring/recalculate", s.handleTriggerRecalculation)
 
 		// Context injection
 		r.Get("/api/context/count", s.handleContextCount)
 		r.Get("/api/context/inject", s.handleContextInject)
 		r.Get("/api/context/search", s.handleSearchByPrompt)
+
+		// Pattern routes
+		r.Get("/api/patterns", s.handleGetPatterns)
+		r.Get("/api/patterns/stats", s.handleGetPatternStats)
+		r.Get("/api/patterns/search", s.handleSearchPatterns)
+		r.Get("/api/patterns/by-name", s.handleGetPatternByName)
+		r.Get("/api/patterns/{id}", s.handleGetPatternByID)
+		r.Get("/api/patterns/{id}/insight", s.handleGetPatternInsight)
+		r.Delete("/api/patterns/{id}", s.handleDeletePattern)
+		r.Post("/api/patterns/{id}/deprecate", s.handleDeprecatePattern)
+		r.Post("/api/patterns/merge", s.handleMergePatterns)
+
+		// Relation routes (knowledge graph)
+		r.Get("/api/relations/stats", s.handleGetRelationStats)
+		r.Get("/api/relations/type/{type}", s.handleGetRelationsByType)
+		r.Get("/api/observations/{id}/relations", s.handleGetRelations)
+		r.Get("/api/observations/{id}/graph", s.handleGetRelationGraph)
+		r.Get("/api/observations/{id}/related", s.handleGetRelatedObservations)
 	})
 }
 
@@ -894,6 +1366,16 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		_ = s.configWatcher.Stop()
 	}
 
+	// Stop background recalculator
+	if s.recalculator != nil {
+		s.recalculator.Stop()
+	}
+
+	// Stop pattern detector
+	if s.patternDetector != nil {
+		s.patternDetector.Stop()
+	}
+
 	// Shutdown all sessions
 	s.sessionManager.ShutdownAll(ctx)
 
@@ -901,6 +1383,13 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if s.server != nil {
 		if err := s.server.Shutdown(ctx); err != nil {
 			log.Error().Err(err).Msg("HTTP server shutdown error")
+		}
+	}
+
+	// Close reranking service
+	if s.reranker != nil {
+		if err := s.reranker.Close(); err != nil {
+			log.Error().Err(err).Msg("Reranking service close error")
 		}
 	}
 

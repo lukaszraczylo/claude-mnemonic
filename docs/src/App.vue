@@ -29,6 +29,21 @@
       subtitle="Stop re-explaining your codebase. Claude Mnemonic captures bug fixes, architecture decisions, and coding patterns - then brings them back exactly when you need them."
     />
 
+    <!-- Dashboard Preview -->
+    <section class="py-12 lg:py-16 px-4 sm:px-6 relative">
+      <div class="max-w-6xl mx-auto">
+        <div class="relative rounded-xl overflow-hidden border border-slate-700/50 shadow-2xl shadow-amber-500/5">
+          <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent pointer-events-none z-10"></div>
+          <img
+            src="/claude-mnemonic.jpg"
+            alt="Claude Mnemonic Dashboard"
+            class="w-full h-auto"
+          />
+        </div>
+        <p class="text-center text-slate-500 text-sm mt-4">The dashboard at localhost:37777 - browse, search, and manage your memories</p>
+      </div>
+    </section>
+
     <!-- Problem Section -->
     <section class="py-20 lg:py-28 px-4 sm:px-6 relative">
       <div class="max-w-6xl mx-auto grid lg:grid-cols-2 gap-8 lg:gap-16 items-center">
@@ -82,6 +97,21 @@
             :description="feature.description"
           />
         </div>
+      </div>
+    </section>
+
+    <!-- Knowledge Graph Preview -->
+    <section class="py-16 lg:py-20 px-4 sm:px-6 relative">
+      <div class="max-w-5xl mx-auto">
+        <SectionHeader title="See how knowledge connects" subtitle="The knowledge graph reveals relationships between your memories automatically" />
+        <div class="relative rounded-xl overflow-hidden border border-slate-700/50 shadow-2xl shadow-purple-500/5">
+          <img
+            src="/observation-relation-graph.jpg"
+            alt="Knowledge Graph Visualization"
+            class="w-full h-auto"
+          />
+        </div>
+        <p class="text-center text-slate-500 text-sm mt-4">Click any observation to explore its relationships - see what causes what, what fixes what, and how concepts evolve</p>
       </div>
     </section>
 
@@ -288,8 +318,8 @@
             <p class="text-slate-400 text-xs sm:text-sm">Embedded vector database. No external services required.</p>
           </div>
           <div class="glass rounded-2xl p-6 sm:p-8 hover:border-amber-500/30 transition-colors">
-            <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">MiniLM</div>
-            <p class="text-slate-400 text-xs sm:text-sm">Local embeddings via ONNX. "Fix auth" finds "JWT issue" automatically.</p>
+            <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">BGE</div>
+            <p class="text-slate-400 text-xs sm:text-sm">Two-stage retrieval: bi-encoder embeddings + cross-encoder reranking for high accuracy.</p>
           </div>
         </div>
       </div>
@@ -386,10 +416,10 @@ const activeTab = ref('macos')
 
 const features = [
   { icon: 'fas fa-brain', title: 'Learns as you work', description: 'Every bug fix, every architecture decision, every "aha moment" - captured automatically without breaking your flow.' },
+  { icon: 'fas fa-search', title: 'Two-stage retrieval', description: 'Cross-encoder reranking delivers highly relevant results. Finds what you need even with vague queries like "that auth thing".' },
+  { icon: 'fas fa-project-diagram', title: 'Knowledge graph', description: 'Automatically discovers relationships between memories. See how concepts connect in the visual graph dashboard.' },
   { icon: 'fas fa-folder-tree', title: 'Project-aware context', description: 'Your React knowledge stays in React projects. Your Go patterns stay in Go projects. No context pollution.' },
-  { icon: 'fas fa-globe', title: 'Shared best practices', description: 'Security patterns, performance tips, and universal learnings automatically available across all your projects.' },
-  { icon: 'fas fa-search', title: 'Finds what matters', description: 'Semantic search finds relevant memories even when you don\'t remember the exact words. "That auth thing" just works.' },
-  { icon: 'fas fa-chart-line', title: 'Live statusline', description: 'Real-time metrics right in Claude Code: memories served, searches performed, and project memory count at a glance.' },
+  { icon: 'fas fa-chart-line', title: 'Smart scoring', description: 'Importance decay, pattern detection, and conflict resolution ensure the most valuable memories surface first.' },
   { icon: 'fas fa-lock', title: '100% private', description: 'Your code context never leaves your machine. No telemetry. No cloud sync. Your memories are yours.' },
 ]
 
@@ -415,8 +445,8 @@ const installCommands = {
 const configOptions = [
   { name: 'CLAUDE_MNEMONIC_WORKER_PORT', description: 'HTTP port for the worker service (default: 37777)', icon: 'fas fa-network-wired' },
   { name: 'CLAUDE_MNEMONIC_CONTEXT_OBSERVATIONS', description: 'Maximum observations injected per session (default: 100)', icon: 'fas fa-layer-group' },
-  { name: 'CLAUDE_MNEMONIC_CONTEXT_FULL_COUNT', description: 'Observations with full narrative detail, rest are condensed (default: 25)', icon: 'fas fa-expand' },
-  { name: 'CLAUDE_MNEMONIC_MODEL', description: 'Model for processing observations (default: haiku)', icon: 'fas fa-microchip' },
+  { name: 'CLAUDE_MNEMONIC_RERANKING_ENABLED', description: 'Enable cross-encoder reranking for improved search relevance (default: true)', icon: 'fas fa-sort-amount-down' },
+  { name: 'CLAUDE_MNEMONIC_CONTEXT_RELEVANCE_THRESHOLD', description: 'Minimum similarity score for inclusion, 0.0-1.0 (default: 0.3)', icon: 'fas fa-filter' },
 ]
 
 const requiredDeps = [

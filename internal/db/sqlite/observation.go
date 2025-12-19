@@ -11,14 +11,27 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 )
 
+// observationColumns is the standard list of columns to select for observations.
+// This ensures consistency across all observation queries and includes importance scoring fields.
+const observationColumns = `id, sdk_session_id, project, COALESCE(scope, 'project') as scope, type,
+       title, subtitle, facts, narrative, concepts, files_read, files_modified, file_mtimes,
+       prompt_number, discovery_tokens, created_at, created_at_epoch,
+       COALESCE(importance_score, 1.0) as importance_score,
+       COALESCE(user_feedback, 0) as user_feedback,
+       COALESCE(retrieval_count, 0) as retrieval_count,
+       last_retrieved_at_epoch, score_updated_at_epoch,
+       COALESCE(is_superseded, 0) as is_superseded`
+
 // CleanupFunc is a callback for when observations are cleaned up.
 // Receives the IDs of deleted observations for downstream cleanup (e.g., vector DB).
 type CleanupFunc func(ctx context.Context, deletedIDs []int64)
 
 // ObservationStore provides observation-related database operations.
 type ObservationStore struct {
-	store       *Store
-	cleanupFunc CleanupFunc
+	store         *Store
+	cleanupFunc   CleanupFunc
+	conflictStore *ConflictStore
+	relationStore *RelationStore
 }
 
 // NewObservationStore creates a new observation store.
@@ -29,6 +42,16 @@ func NewObservationStore(store *Store) *ObservationStore {
 // SetCleanupFunc sets the callback for when observations are deleted during cleanup.
 func (s *ObservationStore) SetCleanupFunc(fn CleanupFunc) {
 	s.cleanupFunc = fn
+}
+
+// SetConflictStore sets the conflict store for conflict detection.
+func (s *ObservationStore) SetConflictStore(conflictStore *ConflictStore) {
+	s.conflictStore = conflictStore
+}
+
+// SetRelationStore sets the relation store for relationship detection.
+func (s *ObservationStore) SetRelationStore(relationStore *RelationStore) {
+	s.relationStore = relationStore
 }
 
 // StoreObservation stores a new observation.
@@ -86,7 +109,110 @@ func (s *ObservationStore) StoreObservation(ctx context.Context, sdkSessionID, p
 		}(project)
 	}
 
+	// Detect conflicts with existing observations (async to not block handler)
+	if s.conflictStore != nil && project != "" {
+		go func(newObsID int64, proj string, parsedObs *models.ParsedObservation) {
+			conflictCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			s.detectAndStoreConflicts(conflictCtx, newObsID, proj, parsedObs)
+		}(id, project, obs)
+	}
+
+	// Detect relationships with existing observations (async to not block handler)
+	if s.relationStore != nil && project != "" {
+		go func(newObsID int64, proj string) {
+			relationCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			s.detectAndStoreRelations(relationCtx, newObsID, proj)
+		}(id, project)
+	}
+
 	return id, nowEpoch, nil
+}
+
+// detectAndStoreConflicts detects conflicts between a new observation and existing ones.
+func (s *ObservationStore) detectAndStoreConflicts(ctx context.Context, newObsID int64, project string, parsedObs *models.ParsedObservation) {
+	// Fetch the newly stored observation
+	newObs, err := s.GetObservationByID(ctx, newObsID)
+	if err != nil || newObs == nil {
+		return
+	}
+
+	// Fetch recent observations from the same project to check for conflicts
+	existing, err := s.GetRecentObservations(ctx, project, 50)
+	if err != nil {
+		return
+	}
+
+	// Detect conflicts
+	conflicts := models.DetectConflictsWithExisting(newObs, existing)
+
+	// Store conflicts and mark superseded observations
+	var supersededIDs []int64
+	for _, result := range conflicts {
+		for _, olderID := range result.OlderObsIDs {
+			conflict := models.NewObservationConflict(
+				newObsID, olderID,
+				result.Type, result.Resolution, result.Reason,
+			)
+			if _, err := s.conflictStore.StoreConflict(ctx, conflict); err != nil {
+				continue
+			}
+
+			// If resolution is to prefer newer, mark older as superseded
+			if result.Resolution == models.ResolutionPreferNewer {
+				supersededIDs = append(supersededIDs, olderID)
+			}
+		}
+	}
+
+	// Mark superseded observations
+	if len(supersededIDs) > 0 {
+		_ = s.conflictStore.MarkObservationsSuperseded(ctx, supersededIDs)
+	}
+
+	// Cleanup old superseded observations (older than 3 days)
+	deletedIDs, _ := s.conflictStore.CleanupSupersededObservations(ctx, project)
+	if len(deletedIDs) > 0 && s.cleanupFunc != nil {
+		s.cleanupFunc(ctx, deletedIDs)
+	}
+}
+
+// MinRelationConfidence is the minimum confidence threshold for storing relations.
+const MinRelationConfidence = 0.4
+
+// detectAndStoreRelations detects relationships between a new observation and existing ones.
+func (s *ObservationStore) detectAndStoreRelations(ctx context.Context, newObsID int64, project string) {
+	// Fetch the newly stored observation
+	newObs, err := s.GetObservationByID(ctx, newObsID)
+	if err != nil || newObs == nil {
+		return
+	}
+
+	// Fetch recent observations from the same project to check for relations
+	existing, err := s.GetRecentObservations(ctx, project, 50)
+	if err != nil {
+		return
+	}
+
+	// Detect relationships using the models package detection logic
+	results := models.DetectRelationsWithExisting(newObs, existing, MinRelationConfidence)
+	if len(results) == 0 {
+		return
+	}
+
+	// Convert detection results to relation objects
+	relations := make([]*models.ObservationRelation, len(results))
+	for i, r := range results {
+		relations[i] = models.NewObservationRelation(
+			r.SourceID, r.TargetID,
+			r.RelationType, r.Confidence,
+			r.DetectionSource, r.Reason,
+		)
+	}
+
+	// Store all relations
+	_ = s.relationStore.StoreRelations(ctx, relations)
 }
 
 // ensureSessionExists creates a session if it doesn't exist.
@@ -96,13 +222,7 @@ func (s *ObservationStore) ensureSessionExists(ctx context.Context, sdkSessionID
 
 // GetObservationByID retrieves an observation by ID.
 func (s *ObservationStore) GetObservationByID(ctx context.Context, id int64) (*models.Observation, error) {
-	const query = `
-		SELECT id, sdk_session_id, project, COALESCE(scope, 'project') as scope, type, title, subtitle, facts, narrative,
-		       concepts, files_read, files_modified, file_mtimes, prompt_number, discovery_tokens,
-		       created_at, created_at_epoch
-		FROM observations
-		WHERE id = ?
-	`
+	query := `SELECT ` + observationColumns + ` FROM observations WHERE id = ?`
 
 	obs, err := scanObservation(s.store.QueryRowContext(ctx, query, id))
 	if err == sql.ErrNoRows {
@@ -112,6 +232,7 @@ func (s *ObservationStore) GetObservationByID(ctx context.Context, id int64) (*m
 }
 
 // GetObservationsByIDs retrieves observations by a list of IDs.
+// Results are ordered by importance_score DESC by default, with created_at_epoch as secondary sort.
 func (s *ObservationStore) GetObservationsByIDs(ctx context.Context, ids []int64, orderBy string, limit int) ([]*models.Observation, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -119,18 +240,22 @@ func (s *ObservationStore) GetObservationsByIDs(ctx context.Context, ids []int64
 
 	// Build query with placeholders
 	// #nosec G202 -- query uses parameterized placeholders, not user input
-	query := `
-		SELECT id, sdk_session_id, project, COALESCE(scope, 'project') as scope, type, title, subtitle, facts, narrative,
-		       concepts, files_read, files_modified, file_mtimes, prompt_number, discovery_tokens,
-		       created_at, created_at_epoch
+	query := `SELECT ` + observationColumns + `
 		FROM observations
 		WHERE id IN (?` + repeatPlaceholders(len(ids)-1) + `)
-		ORDER BY created_at_epoch `
+		ORDER BY `
 
-	if orderBy == "date_asc" {
-		query += "ASC"
-	} else {
-		query += "DESC"
+	// Default to importance-based ordering
+	switch orderBy {
+	case "date_asc":
+		query += "created_at_epoch ASC"
+	case "date_desc":
+		query += "created_at_epoch DESC"
+	case "importance":
+		query += "importance_score DESC, created_at_epoch DESC"
+	default:
+		// Default: importance first, then recency
+		query += "COALESCE(importance_score, 1.0) DESC, created_at_epoch DESC"
 	}
 
 	if limit > 0 {
@@ -154,14 +279,56 @@ func (s *ObservationStore) GetObservationsByIDs(ctx context.Context, ids []int64
 
 // GetRecentObservations retrieves recent observations for a project.
 // This includes project-scoped observations for the specified project AND global observations.
+// Results are ordered by importance_score DESC, then created_at_epoch DESC.
 func (s *ObservationStore) GetRecentObservations(ctx context.Context, project string, limit int) ([]*models.Observation, error) {
-	const query = `
-		SELECT id, sdk_session_id, project, COALESCE(scope, 'project') as scope, type, title, subtitle, facts, narrative,
-		       concepts, files_read, files_modified, file_mtimes, prompt_number, discovery_tokens,
-		       created_at, created_at_epoch
+	query := `SELECT ` + observationColumns + `
 		FROM observations
 		WHERE (project = ? AND (scope IS NULL OR scope = 'project'))
 		   OR scope = 'global'
+		ORDER BY COALESCE(importance_score, 1.0) DESC, created_at_epoch DESC
+		LIMIT ?
+	`
+
+	rows, err := s.store.QueryContext(ctx, query, project, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanObservationRows(rows)
+}
+
+// GetActiveObservations retrieves recent non-superseded observations for a project.
+// This excludes observations that have been marked as superseded by newer ones.
+// Use this for context injection where you want to avoid outdated/contradicted advice.
+// Results are ordered by importance_score DESC, then created_at_epoch DESC.
+func (s *ObservationStore) GetActiveObservations(ctx context.Context, project string, limit int) ([]*models.Observation, error) {
+	query := `SELECT ` + observationColumns + `
+		FROM observations
+		WHERE ((project = ? AND (scope IS NULL OR scope = 'project'))
+		   OR scope = 'global')
+		  AND COALESCE(is_superseded, 0) = 0
+		ORDER BY COALESCE(importance_score, 1.0) DESC, created_at_epoch DESC
+		LIMIT ?
+	`
+
+	rows, err := s.store.QueryContext(ctx, query, project, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanObservationRows(rows)
+}
+
+// GetSupersededObservations retrieves observations that have been superseded by newer ones.
+// Use this for verification/debugging to see which observations were marked as outdated.
+// Results are ordered by created_at_epoch DESC.
+func (s *ObservationStore) GetSupersededObservations(ctx context.Context, project string, limit int) ([]*models.Observation, error) {
+	query := `SELECT ` + observationColumns + `
+		FROM observations
+		WHERE project = ?
+		  AND COALESCE(is_superseded, 0) = 1
 		ORDER BY created_at_epoch DESC
 		LIMIT ?
 	`
@@ -178,14 +345,12 @@ func (s *ObservationStore) GetRecentObservations(ctx context.Context, project st
 // GetObservationsByProjectStrict retrieves observations strictly for a specific project.
 // Unlike GetRecentObservations, this does NOT include global observations from other projects.
 // Use this for dashboard filtering where the user expects to see only that project's data.
+// Results are ordered by importance_score DESC, then created_at_epoch DESC.
 func (s *ObservationStore) GetObservationsByProjectStrict(ctx context.Context, project string, limit int) ([]*models.Observation, error) {
-	const query = `
-		SELECT id, sdk_session_id, project, COALESCE(scope, 'project') as scope, type, title, subtitle, facts, narrative,
-		       concepts, files_read, files_modified, file_mtimes, prompt_number, discovery_tokens,
-		       created_at, created_at_epoch
+	query := `SELECT ` + observationColumns + `
 		FROM observations
 		WHERE project = ?
-		ORDER BY created_at_epoch DESC
+		ORDER BY COALESCE(importance_score, 1.0) DESC, created_at_epoch DESC
 		LIMIT ?
 	`
 
@@ -210,13 +375,11 @@ func (s *ObservationStore) GetObservationCount(ctx context.Context, project stri
 }
 
 // GetAllRecentObservations retrieves recent observations across all projects.
+// Results are ordered by importance_score DESC, then created_at_epoch DESC.
 func (s *ObservationStore) GetAllRecentObservations(ctx context.Context, limit int) ([]*models.Observation, error) {
-	const query = `
-		SELECT id, sdk_session_id, project, COALESCE(scope, 'project') as scope, type, title, subtitle, facts, narrative,
-		       concepts, files_read, files_modified, file_mtimes, prompt_number, discovery_tokens,
-		       created_at, created_at_epoch
+	query := `SELECT ` + observationColumns + `
 		FROM observations
-		ORDER BY created_at_epoch DESC
+		ORDER BY COALESCE(importance_score, 1.0) DESC, created_at_epoch DESC
 		LIMIT ?
 	`
 
@@ -229,7 +392,24 @@ func (s *ObservationStore) GetAllRecentObservations(ctx context.Context, limit i
 	return scanObservationRows(rows)
 }
 
+// GetAllObservations retrieves all observations (for vector rebuild).
+func (s *ObservationStore) GetAllObservations(ctx context.Context) ([]*models.Observation, error) {
+	query := `SELECT ` + observationColumns + `
+		FROM observations
+		ORDER BY id
+	`
+
+	rows, err := s.store.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanObservationRows(rows)
+}
+
 // SearchObservationsFTS performs full-text search on observations.
+// Results are ordered by FTS rank (relevance), then by importance_score.
 func (s *ObservationStore) SearchObservationsFTS(ctx context.Context, query, project string, limit int) ([]*models.Observation, error) {
 	if limit <= 0 {
 		limit = 10
@@ -245,15 +425,21 @@ func (s *ObservationStore) SearchObservationsFTS(ctx context.Context, query, pro
 	ftsTerms := strings.Join(keywords, " OR ")
 
 	// Use FTS5 to search title, subtitle, and narrative
-	const ftsQuery = `
+	// Include importance scoring columns and order by rank then importance
+	ftsQuery := `
 		SELECT o.id, o.sdk_session_id, o.project, COALESCE(o.scope, 'project') as scope, o.type,
 		       o.title, o.subtitle, o.facts, o.narrative, o.concepts, o.files_read, o.files_modified,
-		       o.file_mtimes, o.prompt_number, o.discovery_tokens, o.created_at, o.created_at_epoch
+		       o.file_mtimes, o.prompt_number, o.discovery_tokens, o.created_at, o.created_at_epoch,
+		       COALESCE(o.importance_score, 1.0) as importance_score,
+		       COALESCE(o.user_feedback, 0) as user_feedback,
+		       COALESCE(o.retrieval_count, 0) as retrieval_count,
+		       o.last_retrieved_at_epoch, o.score_updated_at_epoch,
+		       COALESCE(o.is_superseded, 0) as is_superseded
 		FROM observations o
 		JOIN observations_fts fts ON o.id = fts.rowid
 		WHERE observations_fts MATCH ?
 		  AND (o.project = ? OR o.scope = 'global')
-		ORDER BY rank
+		ORDER BY rank, COALESCE(o.importance_score, 1.0) DESC
 		LIMIT ?
 	`
 
@@ -278,6 +464,7 @@ func (s *ObservationStore) SearchObservationsFTS(ctx context.Context, query, pro
 }
 
 // searchObservationsLike performs fallback LIKE search on observations.
+// Results are ordered by importance_score DESC, then created_at_epoch DESC.
 func (s *ObservationStore) searchObservationsLike(ctx context.Context, keywords []string, project string, limit int) ([]*models.Observation, error) {
 	if len(keywords) == 0 {
 		return nil, nil
@@ -294,14 +481,11 @@ func (s *ObservationStore) searchObservationsLike(ctx context.Context, keywords 
 	}
 
 	// #nosec G202 -- query uses parameterized placeholders, not user input
-	query := `
-		SELECT id, sdk_session_id, project, COALESCE(scope, 'project') as scope, type,
-		       title, subtitle, facts, narrative, concepts, files_read, files_modified,
-		       file_mtimes, prompt_number, discovery_tokens, created_at, created_at_epoch
+	query := `SELECT ` + observationColumns + `
 		FROM observations
 		WHERE (` + strings.Join(conditions, " OR ") + `)
 		  AND (project = ? OR scope = 'global')
-		ORDER BY created_at_epoch DESC
+		ORDER BY COALESCE(importance_score, 1.0) DESC, created_at_epoch DESC
 		LIMIT ?
 	`
 	args = append(args, project, limit)
@@ -445,6 +629,11 @@ func scanObservation(scanner interface{ Scan(...interface{}) error }) (*models.O
 		&obs.Concepts, &obs.FilesRead, &obs.FilesModified, &obs.FileMtimes,
 		&obs.PromptNumber, &obs.DiscoveryTokens,
 		&obs.CreatedAt, &obs.CreatedAtEpoch,
+		// Importance scoring fields
+		&obs.ImportanceScore, &obs.UserFeedback, &obs.RetrievalCount,
+		&obs.LastRetrievedAt, &obs.ScoreUpdatedAt,
+		// Conflict detection fields
+		&obs.IsSuperseded,
 	); err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-// Package embedding provides text embedding generation using all-MiniLM-L6-v2.
+// Package embedding provides text embedding generation with swappable models.
 package embedding
 
 import (
@@ -15,19 +15,50 @@ import (
 	ort "github.com/yalue/onnxruntime_go"
 )
 
-// EmbeddingDim is the dimension of embeddings produced by all-MiniLM-L6-v2.
+// EmbeddingDim is the dimension of embeddings produced by the current model.
+// Both all-MiniLM-L6-v2 and bge-small-en-v1.5 produce 384-dimensional embeddings.
 const EmbeddingDim = 384
 
-// Service provides thread-safe text embedding generation.
-type Service struct {
+// Model version constants
+const (
+	// BGEModelVersion is the version string for bge-small-en-v1.5
+	BGEModelVersion = "bge-v1.5"
+	// BGEModelName is the human-readable name for bge-small-en-v1.5
+	BGEModelName = "bge-small-en-v1.5"
+	// DefaultModelVersion is the default model to use
+	DefaultModelVersion = BGEModelVersion
+)
+
+// MaxSequenceLength is the maximum token sequence length for the model.
+const MaxSequenceLength = 512
+
+// bgeONNXConfig defines the ONNX configuration for BGE models.
+// BGE outputs last_hidden_state and requires mean pooling.
+var bgeONNXConfig = ONNXConfig{
+	InputNames:  []string{"input_ids", "attention_mask", "token_type_ids"},
+	OutputNames: []string{"last_hidden_state"},
+	Pooling:     PoolingMean,
+	HiddenSize:  EmbeddingDim,
+}
+
+// bgeModel is the ONNX-based embedding model implementation.
+// Currently supports bge-small-en-v1.5 (previously all-MiniLM-L6-v2).
+type bgeModel struct {
 	tk      *tokenizer.Tokenizer
 	session *ort.DynamicAdvancedSession
 	mu      sync.Mutex
-	libDir  string // temp directory containing extracted libraries
+	libDir  string     // temp directory containing extracted libraries
+	config  ONNXConfig // ONNX configuration for this model
 }
 
-// NewService creates a new embedding service using bundled ONNX runtime and model.
-func NewService() (*Service, error) {
+// Compile-time check that bgeModel implements EmbeddingModel
+var _ EmbeddingModel = (*bgeModel)(nil)
+
+// Compile-time check that bgeModel implements ONNXConfigurer
+var _ ONNXConfigurer = (*bgeModel)(nil)
+
+// newBGEModel creates a new BGE embedding model using bundled ONNX runtime and model.
+func newBGEModel() (EmbeddingModel, error) {
 	// Extract ONNX runtime library to temp directory
 	libDir, err := extractONNXLibrary()
 	if err != nil {
@@ -49,20 +80,39 @@ func NewService() (*Service, error) {
 		return nil, fmt.Errorf("load tokenizer: %w", err)
 	}
 
-	// Create ONNX session with embedded model
-	inputNames := []string{"input_ids", "attention_mask", "token_type_ids"}
-	outputNames := []string{"sentence_embedding"}
-
-	session, err := ort.NewDynamicAdvancedSessionWithONNXData(modelData, inputNames, outputNames, nil)
+	// Create ONNX session using model-specific configuration
+	config := bgeONNXConfig
+	session, err := ort.NewDynamicAdvancedSessionWithONNXData(modelData, config.InputNames, config.OutputNames, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create ONNX session: %w", err)
 	}
 
-	return &Service{
+	return &bgeModel{
 		tk:      tk,
 		session: session,
 		libDir:  libDir,
+		config:  config,
 	}, nil
+}
+
+// ONNXConfig returns the model's ONNX configuration.
+func (m *bgeModel) ONNXConfig() ONNXConfig {
+	return m.config
+}
+
+// Name returns the human-readable model name.
+func (m *bgeModel) Name() string {
+	return BGEModelName
+}
+
+// Version returns the short version string for storage.
+func (m *bgeModel) Version() string {
+	return BGEModelVersion
+}
+
+// Dimensions returns the embedding vector size.
+func (m *bgeModel) Dimensions() int {
+	return EmbeddingDim
 }
 
 // extractONNXLibrary extracts the embedded ONNX runtime library to a temp directory.
@@ -107,15 +157,15 @@ func extractONNXLibrary() (string, error) {
 
 // Embed generates an embedding for a single text.
 // Returns a 384-dimensional float32 vector.
-func (s *Service) Embed(text string) ([]float32, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (m *bgeModel) Embed(text string) ([]float32, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	if text == "" {
 		return make([]float32, EmbeddingDim), nil
 	}
 
-	results, err := s.computeBatch([]string{text})
+	results, err := m.computeBatch([]string{text})
 	if err != nil {
 		return nil, err
 	}
@@ -127,13 +177,13 @@ func (s *Service) Embed(text string) ([]float32, error) {
 
 // EmbedBatch generates embeddings for multiple texts.
 // Returns slice of 384-dimensional float32 vectors.
-func (s *Service) EmbedBatch(texts []string) ([][]float32, error) {
+func (m *bgeModel) EmbedBatch(texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	// Filter out empty texts and track indices
 	nonEmpty := make([]string, 0, len(texts))
@@ -155,7 +205,7 @@ func (s *Service) EmbedBatch(texts []string) ([][]float32, error) {
 	}
 
 	// Compute embeddings for non-empty texts
-	embeddings, err := s.computeBatch(nonEmpty)
+	embeddings, err := m.computeBatch(nonEmpty)
 	if err != nil {
 		return nil, fmt.Errorf("compute batch embeddings: %w", err)
 	}
@@ -173,7 +223,7 @@ func (s *Service) EmbedBatch(texts []string) ([][]float32, error) {
 }
 
 // computeBatch runs inference on a batch of texts. Must be called with lock held.
-func (s *Service) computeBatch(sentences []string) ([][]float32, error) {
+func (m *bgeModel) computeBatch(sentences []string) ([][]float32, error) {
 	if len(sentences) == 0 {
 		return nil, nil
 	}
@@ -184,31 +234,57 @@ func (s *Service) computeBatch(sentences []string) ([][]float32, error) {
 		inputBatch[i] = tokenizer.NewSingleEncodeInput(tokenizer.NewRawInputSequence(sent))
 	}
 
-	encodings, err := s.tk.EncodeBatch(inputBatch, true)
+	encodings, err := m.tk.EncodeBatch(inputBatch, true)
 	if err != nil {
 		return nil, fmt.Errorf("tokenize: %w", err)
 	}
 
 	batchSize := len(encodings)
-	seqLength := len(encodings[0].Ids)
-	hiddenSize := EmbeddingDim
+	hiddenSize := m.config.HiddenSize
+
+	// Find max sequence length across all encodings (tokenizer may not pad uniformly)
+	// Also enforce MaxSequenceLength to prevent model errors
+	seqLength := 0
+	for _, enc := range encodings {
+		if len(enc.Ids) > seqLength {
+			seqLength = len(enc.Ids)
+		}
+	}
+	// Truncate to max model sequence length
+	if seqLength > MaxSequenceLength {
+		seqLength = MaxSequenceLength
+	}
 
 	inputShape := ort.NewShape(int64(batchSize), int64(seqLength))
 
-	// Create input tensors
+	// Create input tensors (pre-filled with zeros for padding)
 	inputIdsData := make([]int64, batchSize*seqLength)
 	attentionMaskData := make([]int64, batchSize*seqLength)
 	tokenTypeIdsData := make([]int64, batchSize*seqLength)
 
 	for b := 0; b < batchSize; b++ {
-		for i, id := range encodings[b].Ids {
-			inputIdsData[b*seqLength+i] = int64(id)
+		// Copy actual token data (rest remains 0 as padding)
+		// Truncate to seqLength to handle long inputs
+		copyLen := len(encodings[b].Ids)
+		if copyLen > seqLength {
+			copyLen = seqLength
 		}
-		for i, mask := range encodings[b].AttentionMask {
-			attentionMaskData[b*seqLength+i] = int64(mask)
+		for i := 0; i < copyLen; i++ {
+			inputIdsData[b*seqLength+i] = int64(encodings[b].Ids[i])
 		}
-		for i, typeId := range encodings[b].TypeIds {
-			tokenTypeIdsData[b*seqLength+i] = int64(typeId)
+		copyLen = len(encodings[b].AttentionMask)
+		if copyLen > seqLength {
+			copyLen = seqLength
+		}
+		for i := 0; i < copyLen; i++ {
+			attentionMaskData[b*seqLength+i] = int64(encodings[b].AttentionMask[i])
+		}
+		copyLen = len(encodings[b].TypeIds)
+		if copyLen > seqLength {
+			copyLen = seqLength
+		}
+		for i := 0; i < copyLen; i++ {
+			tokenTypeIdsData[b*seqLength+i] = int64(encodings[b].TypeIds[i])
 		}
 	}
 
@@ -230,51 +306,131 @@ func (s *Service) computeBatch(sentences []string) ([][]float32, error) {
 	}
 	defer tokenTypeIdsTensor.Destroy()
 
-	sentenceOutputShape := ort.NewShape(int64(batchSize), int64(hiddenSize))
-	sentenceOutputTensor, err := ort.NewEmptyTensor[float32](sentenceOutputShape)
+	// Create output tensor based on pooling strategy
+	var outputShape ort.Shape
+
+	switch m.config.Pooling {
+	case PoolingNone:
+		// Direct sentence embedding output: [batch, hidden]
+		outputShape = ort.NewShape(int64(batchSize), int64(hiddenSize))
+	case PoolingMean, PoolingCLS:
+		// Token-level output: [batch, seq_len, hidden]
+		outputShape = ort.NewShape(int64(batchSize), int64(seqLength), int64(hiddenSize))
+	default:
+		outputShape = ort.NewShape(int64(batchSize), int64(hiddenSize))
+	}
+
+	outputTensor, err := ort.NewEmptyTensor[float32](outputShape)
 	if err != nil {
 		return nil, fmt.Errorf("create output tensor: %w", err)
 	}
-	defer sentenceOutputTensor.Destroy()
+	defer outputTensor.Destroy()
 
 	// Run inference
 	inputTensors := []ort.Value{inputIdsTensor, attentionMaskTensor, tokenTypeIdsTensor}
-	outputTensors := []ort.Value{sentenceOutputTensor}
+	outputTensors := []ort.Value{outputTensor}
 
-	if err := s.session.Run(inputTensors, outputTensors); err != nil {
+	if err := m.session.Run(inputTensors, outputTensors); err != nil {
 		return nil, fmt.Errorf("run inference: %w", err)
 	}
 
-	// Extract results
-	flatOutput := sentenceOutputTensor.GetData()
-	expectedSize := batchSize * hiddenSize
-	if len(flatOutput) != expectedSize {
-		return nil, fmt.Errorf("unexpected output size: got %d, expected %d", len(flatOutput), expectedSize)
-	}
+	// Extract and pool results based on strategy
+	flatOutput := outputTensor.GetData()
 
+	switch m.config.Pooling {
+	case PoolingNone:
+		// Direct output, no pooling needed
+		expectedSize := batchSize * hiddenSize
+		if len(flatOutput) != expectedSize {
+			return nil, fmt.Errorf("unexpected output size: got %d, expected %d", len(flatOutput), expectedSize)
+		}
+		results := make([][]float32, batchSize)
+		for i := 0; i < batchSize; i++ {
+			start := i * hiddenSize
+			end := start + hiddenSize
+			results[i] = make([]float32, hiddenSize)
+			copy(results[i], flatOutput[start:end])
+		}
+		return results, nil
+
+	case PoolingMean:
+		// Mean pooling over tokens (weighted by attention mask)
+		return meanPooling(flatOutput, attentionMaskData, batchSize, seqLength, hiddenSize), nil
+
+	case PoolingCLS:
+		// CLS token pooling (first token of each sequence)
+		return clsPooling(flatOutput, batchSize, seqLength, hiddenSize), nil
+
+	default:
+		return nil, fmt.Errorf("unknown pooling strategy: %s", m.config.Pooling)
+	}
+}
+
+// meanPooling applies mean pooling over token embeddings, weighted by attention mask.
+// Input shape: [batch, seq_len, hidden], attention mask: [batch, seq_len]
+// Output shape: [batch, hidden]
+func meanPooling(embeddings []float32, attentionMask []int64, batchSize, seqLen, hiddenSize int) [][]float32 {
 	results := make([][]float32, batchSize)
-	for i := 0; i < batchSize; i++ {
-		start := i * hiddenSize
-		end := start + hiddenSize
-		results[i] = make([]float32, hiddenSize)
-		copy(results[i], flatOutput[start:end])
+
+	for b := 0; b < batchSize; b++ {
+		result := make([]float32, hiddenSize)
+		var maskSum float32
+
+		// Sum embeddings weighted by attention mask
+		for s := 0; s < seqLen; s++ {
+			maskVal := float32(attentionMask[b*seqLen+s])
+			maskSum += maskVal
+
+			if maskVal > 0 {
+				embOffset := (b*seqLen + s) * hiddenSize
+				for h := 0; h < hiddenSize; h++ {
+					result[h] += embeddings[embOffset+h] * maskVal
+				}
+			}
+		}
+
+		// Normalize by mask sum (avoid division by zero)
+		if maskSum > 0 {
+			for h := 0; h < hiddenSize; h++ {
+				result[h] /= maskSum
+			}
+		}
+
+		results[b] = result
 	}
 
-	return results, nil
+	return results
+}
+
+// clsPooling extracts the [CLS] token embedding (first token).
+// Input shape: [batch, seq_len, hidden]
+// Output shape: [batch, hidden]
+func clsPooling(embeddings []float32, batchSize, seqLen, hiddenSize int) [][]float32 {
+	results := make([][]float32, batchSize)
+
+	for b := 0; b < batchSize; b++ {
+		result := make([]float32, hiddenSize)
+		// CLS token is at position 0
+		embOffset := b * seqLen * hiddenSize
+		copy(result, embeddings[embOffset:embOffset+hiddenSize])
+		results[b] = result
+	}
+
+	return results
 }
 
 // Close releases model resources.
-func (s *Service) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (m *bgeModel) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	var errs []error
 
-	if s.session != nil {
-		if err := s.session.Destroy(); err != nil {
+	if m.session != nil {
+		if err := m.session.Destroy(); err != nil {
 			errs = append(errs, fmt.Errorf("destroy session: %w", err))
 		}
-		s.session = nil
+		m.session = nil
 	}
 
 	if err := ort.DestroyEnvironment(); err != nil {
@@ -282,10 +438,75 @@ func (s *Service) Close() error {
 	}
 
 	// Optionally clean up extracted library (leave for caching)
-	// os.RemoveAll(s.libDir)
+	// os.RemoveAll(m.libDir)
 
 	if len(errs) > 0 {
 		return errs[0]
 	}
 	return nil
+}
+
+// Register the BGE model with the default registry at init time
+func init() {
+	RegisterModel(ModelMetadata{
+		Name:        BGEModelName,
+		Version:     BGEModelVersion,
+		Dimensions:  EmbeddingDim,
+		Description: "High-quality semantic search model",
+		Default:     true,
+	}, newBGEModel)
+}
+
+// Service provides thread-safe text embedding generation with model abstraction.
+type Service struct {
+	model EmbeddingModel
+}
+
+// NewService creates a new embedding service using the default model.
+func NewService() (*Service, error) {
+	return NewServiceWithModel(DefaultModelVersion)
+}
+
+// NewServiceWithModel creates a new embedding service using the specified model.
+func NewServiceWithModel(version string) (*Service, error) {
+	if version == "" {
+		version = DefaultModelVersion
+	}
+
+	model, err := GetModel(version)
+	if err != nil {
+		return nil, fmt.Errorf("get model %s: %w", version, err)
+	}
+
+	return &Service{model: model}, nil
+}
+
+// Name returns the human-readable model name.
+func (s *Service) Name() string {
+	return s.model.Name()
+}
+
+// Version returns the short version string for storage.
+func (s *Service) Version() string {
+	return s.model.Version()
+}
+
+// Dimensions returns the embedding vector size.
+func (s *Service) Dimensions() int {
+	return s.model.Dimensions()
+}
+
+// Embed generates an embedding for a single text.
+func (s *Service) Embed(text string) ([]float32, error) {
+	return s.model.Embed(text)
+}
+
+// EmbedBatch generates embeddings for multiple texts.
+func (s *Service) EmbedBatch(texts []string) ([][]float32, error) {
+	return s.model.EmbedBatch(texts)
+}
+
+// Close releases model resources.
+func (s *Service) Close() error {
+	return s.model.Close()
 }
