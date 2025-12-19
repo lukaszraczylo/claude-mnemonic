@@ -15,6 +15,7 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/pattern"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/scoring"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/update"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
@@ -66,6 +67,10 @@ type Service struct {
 	summaryStore     *sqlite.SummaryStore
 	promptStore      *sqlite.PromptStore
 	conflictStore    *sqlite.ConflictStore
+	patternStore     *sqlite.PatternStore
+
+	// Pattern detection
+	patternDetector *pattern.Detector
 
 	// Domain services
 	sessionManager *session.Manager
@@ -184,6 +189,7 @@ func (s *Service) initializeAsync() {
 	summaryStore := sqlite.NewSummaryStore(store)
 	promptStore := sqlite.NewPromptStore(store)
 	conflictStore := sqlite.NewConflictStore(store)
+	patternStore := sqlite.NewPatternStore(store)
 
 	// Enable conflict detection by linking stores
 	observationStore.SetConflictStore(conflictStore)
@@ -238,6 +244,7 @@ func (s *Service) initializeAsync() {
 	s.summaryStore = summaryStore
 	s.promptStore = promptStore
 	s.conflictStore = conflictStore
+	s.patternStore = patternStore
 	s.sessionManager = sessionManager
 	s.processor = processor
 	s.embedSvc = embedSvc
@@ -245,11 +252,50 @@ func (s *Service) initializeAsync() {
 	s.vectorSync = vectorSync
 	s.initMu.Unlock()
 
+	// Initialize pattern detector
+	patternDetector := pattern.NewDetector(patternStore, observationStore, pattern.DefaultConfig())
+
+	// Set pattern sync callback if vector sync is available
+	if vectorSync != nil {
+		patternDetector.SetSyncFunc(func(p *models.Pattern) {
+			if err := vectorSync.SyncPattern(s.ctx, p); err != nil {
+				log.Warn().Err(err).Int64("id", p.ID).Msg("Failed to sync pattern to sqlite-vec")
+			}
+		})
+
+		// Set cleanup callback for pattern deletions
+		patternStore.SetCleanupFunc(func(ctx context.Context, deletedIDs []int64) {
+			if err := vectorSync.DeletePatterns(ctx, deletedIDs); err != nil {
+				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete patterns from sqlite-vec")
+			}
+		})
+	}
+
+	s.initMu.Lock()
+	s.patternDetector = patternDetector
+	s.initMu.Unlock()
+
 	// Set vector sync callbacks on processor if both are available
 	if processor != nil && vectorSync != nil {
 		processor.SetSyncObservationFunc(func(obs *models.Observation) {
 			if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
 				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation to sqlite-vec")
+			}
+			// Trigger pattern detection for the new observation
+			if patternDetector != nil {
+				go func(observation *models.Observation) {
+					detectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if result, err := patternDetector.AnalyzeObservation(detectCtx, observation); err != nil {
+						log.Warn().Err(err).Int64("obs_id", observation.ID).Msg("Pattern detection failed")
+					} else if result.MatchedPattern != nil {
+						log.Debug().
+							Int64("pattern_id", result.MatchedPattern.ID).
+							Str("pattern_name", result.MatchedPattern.Name).
+							Bool("is_new", result.IsNewPattern).
+							Msg("Pattern matched for observation")
+					}
+				}(obs)
 			}
 		})
 		processor.SetSyncSummaryFunc(func(summary *models.SessionSummary) {
@@ -319,6 +365,12 @@ func (s *Service) initializeAsync() {
 		recalculator.Start(s.ctx)
 	}()
 	log.Info().Msg("Importance scoring system initialized")
+
+	// Start pattern detector background analysis
+	if patternDetector != nil {
+		patternDetector.Start()
+		log.Info().Msg("Pattern recognition engine started")
+	}
 
 	// Mark as ready
 	s.ready.Store(true)
@@ -444,6 +496,7 @@ func (s *Service) reinitializeDatabase() {
 	summaryStore := sqlite.NewSummaryStore(store)
 	promptStore := sqlite.NewPromptStore(store)
 	conflictStore := sqlite.NewConflictStore(store)
+	patternStore := sqlite.NewPatternStore(store)
 
 	// Enable conflict detection by linking stores
 	observationStore.SetConflictStore(conflictStore)
@@ -485,6 +538,30 @@ func (s *Service) reinitializeDatabase() {
 		})
 	}
 
+	// Stop old pattern detector if it exists
+	if s.patternDetector != nil {
+		s.patternDetector.Stop()
+	}
+
+	// Create new pattern detector
+	patternDetector := pattern.NewDetector(patternStore, observationStore, pattern.DefaultConfig())
+
+	// Set pattern sync callback if vector sync is available
+	if vectorSync != nil {
+		patternDetector.SetSyncFunc(func(p *models.Pattern) {
+			if err := vectorSync.SyncPattern(s.ctx, p); err != nil {
+				log.Warn().Err(err).Int64("id", p.ID).Msg("Failed to sync pattern to sqlite-vec")
+			}
+		})
+
+		// Set cleanup callback for pattern deletions
+		patternStore.SetCleanupFunc(func(ctx context.Context, deletedIDs []int64) {
+			if err := vectorSync.DeletePatterns(ctx, deletedIDs); err != nil {
+				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete patterns from sqlite-vec")
+			}
+		})
+	}
+
 	// Atomically swap all components
 	s.initMu.Lock()
 	s.store = store
@@ -493,6 +570,8 @@ func (s *Service) reinitializeDatabase() {
 	s.summaryStore = summaryStore
 	s.promptStore = promptStore
 	s.conflictStore = conflictStore
+	s.patternStore = patternStore
+	s.patternDetector = patternDetector
 	s.sessionManager = sessionManager
 	s.processor = processor
 	s.embedSvc = embedSvc
@@ -501,11 +580,30 @@ func (s *Service) reinitializeDatabase() {
 	s.initError = nil
 	s.initMu.Unlock()
 
+	// Start pattern detector
+	patternDetector.Start()
+
 	// Set vector sync callbacks on processor if both are available
 	if processor != nil && vectorSync != nil {
 		processor.SetSyncObservationFunc(func(obs *models.Observation) {
 			if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
 				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation to sqlite-vec")
+			}
+			// Trigger pattern detection for the new observation
+			if patternDetector != nil {
+				go func(observation *models.Observation) {
+					detectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if result, err := patternDetector.AnalyzeObservation(detectCtx, observation); err != nil {
+						log.Warn().Err(err).Int64("obs_id", observation.ID).Msg("Pattern detection failed")
+					} else if result.MatchedPattern != nil {
+						log.Debug().
+							Int64("pattern_id", result.MatchedPattern.ID).
+							Str("pattern_name", result.MatchedPattern.Name).
+							Bool("is_new", result.IsNewPattern).
+							Msg("Pattern matched for observation")
+					}
+				}(obs)
 			}
 		})
 		processor.SetSyncSummaryFunc(func(summary *models.SessionSummary) {
@@ -953,6 +1051,17 @@ func (s *Service) setupRoutes() {
 		r.Get("/api/context/count", s.handleContextCount)
 		r.Get("/api/context/inject", s.handleContextInject)
 		r.Get("/api/context/search", s.handleSearchByPrompt)
+
+		// Pattern routes
+		r.Get("/api/patterns", s.handleGetPatterns)
+		r.Get("/api/patterns/stats", s.handleGetPatternStats)
+		r.Get("/api/patterns/search", s.handleSearchPatterns)
+		r.Get("/api/patterns/by-name", s.handleGetPatternByName)
+		r.Get("/api/patterns/{id}", s.handleGetPatternByID)
+		r.Get("/api/patterns/{id}/insight", s.handleGetPatternInsight)
+		r.Delete("/api/patterns/{id}", s.handleDeletePattern)
+		r.Post("/api/patterns/{id}/deprecate", s.handleDeprecatePattern)
+		r.Post("/api/patterns/merge", s.handleMergePatterns)
 	})
 }
 
@@ -1178,6 +1287,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	// Stop background recalculator
 	if s.recalculator != nil {
 		s.recalculator.Stop()
+	}
+
+	// Stop pattern detector
+	if s.patternDetector != nil {
+		s.patternDetector.Stop()
 	}
 
 	// Shutdown all sessions

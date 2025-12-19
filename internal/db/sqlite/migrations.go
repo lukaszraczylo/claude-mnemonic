@@ -392,6 +392,66 @@ var Migrations = []Migration{
 			CREATE INDEX IF NOT EXISTS idx_observations_superseded ON observations(is_superseded, importance_score DESC);
 		`,
 	},
+	{
+		Version: 22,
+		Name:    "patterns_table",
+		SQL: `
+			-- Pattern Recognition Engine (Issue #7)
+			-- Tracks recurring patterns detected across observations
+			-- Enables Claude to reference historical insights: "I've encountered this pattern 12 times."
+			CREATE TABLE IF NOT EXISTS patterns (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				name TEXT NOT NULL,
+				type TEXT NOT NULL CHECK(type IN ('bug', 'refactor', 'architecture', 'anti-pattern', 'best-practice')),
+				description TEXT,
+				signature TEXT,  -- JSON array of keywords/concepts for detection
+				recommendation TEXT,  -- What works for this pattern
+				frequency INTEGER DEFAULT 1,  -- How many times encountered
+				projects TEXT,  -- JSON array of projects where seen
+				observation_ids TEXT,  -- JSON array of source observation IDs
+				status TEXT DEFAULT 'active' CHECK(status IN ('active', 'deprecated', 'merged')),
+				merged_into_id INTEGER,  -- If status is 'merged', which pattern it merged into
+				confidence REAL DEFAULT 0.5,  -- Detection confidence (0.0-1.0)
+				last_seen_at TEXT NOT NULL,
+				last_seen_at_epoch INTEGER NOT NULL,
+				created_at TEXT NOT NULL,
+				created_at_epoch INTEGER NOT NULL,
+				FOREIGN KEY(merged_into_id) REFERENCES patterns(id) ON DELETE SET NULL
+			);
+
+			-- Indexes for efficient pattern queries
+			CREATE INDEX IF NOT EXISTS idx_patterns_type ON patterns(type);
+			CREATE INDEX IF NOT EXISTS idx_patterns_status ON patterns(status);
+			CREATE INDEX IF NOT EXISTS idx_patterns_frequency ON patterns(frequency DESC);
+			CREATE INDEX IF NOT EXISTS idx_patterns_confidence ON patterns(confidence DESC);
+			CREATE INDEX IF NOT EXISTS idx_patterns_last_seen ON patterns(last_seen_at_epoch DESC);
+
+			-- FTS5 virtual table for pattern search
+			CREATE VIRTUAL TABLE IF NOT EXISTS patterns_fts USING fts5(
+				name, description, recommendation,
+				content='patterns',
+				content_rowid='id'
+			);
+
+			-- Triggers for FTS5 sync
+			CREATE TRIGGER IF NOT EXISTS patterns_ai AFTER INSERT ON patterns BEGIN
+				INSERT INTO patterns_fts(rowid, name, description, recommendation)
+				VALUES (new.id, new.name, new.description, new.recommendation);
+			END;
+
+			CREATE TRIGGER IF NOT EXISTS patterns_ad AFTER DELETE ON patterns BEGIN
+				INSERT INTO patterns_fts(patterns_fts, rowid, name, description, recommendation)
+				VALUES('delete', old.id, old.name, old.description, old.recommendation);
+			END;
+
+			CREATE TRIGGER IF NOT EXISTS patterns_au AFTER UPDATE ON patterns BEGIN
+				INSERT INTO patterns_fts(patterns_fts, rowid, name, description, recommendation)
+				VALUES('delete', old.id, old.name, old.description, old.recommendation);
+				INSERT INTO patterns_fts(rowid, name, description, recommendation)
+				VALUES (new.id, new.name, new.description, new.recommendation);
+			END;
+		`,
+	},
 }
 
 // MigrationManager handles database schema migrations.

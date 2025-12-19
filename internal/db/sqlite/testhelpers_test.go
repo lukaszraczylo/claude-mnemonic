@@ -177,6 +177,31 @@ func createBaseTables(t *testing.T, db *sql.DB) {
 		t.Fatalf("create user_prompts: %v", err)
 	}
 
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS patterns (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL CHECK(type IN ('bug', 'refactor', 'architecture', 'anti-pattern', 'best-practice')),
+			description TEXT,
+			signature TEXT,
+			recommendation TEXT,
+			frequency INTEGER DEFAULT 1,
+			projects TEXT,
+			observation_ids TEXT,
+			status TEXT DEFAULT 'active' CHECK(status IN ('active', 'deprecated', 'merged')),
+			merged_into_id INTEGER,
+			confidence REAL DEFAULT 0.5,
+			last_seen_at TEXT NOT NULL,
+			last_seen_at_epoch INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			created_at_epoch INTEGER NOT NULL,
+			FOREIGN KEY(merged_into_id) REFERENCES patterns(id) ON DELETE SET NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create patterns: %v", err)
+	}
+
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_sdk_sessions_claude_id ON sdk_sessions(claude_session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sdk_sessions_sdk_id ON sdk_sessions(sdk_session_id)`,
