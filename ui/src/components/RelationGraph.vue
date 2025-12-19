@@ -294,7 +294,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Graph container -->
-        <div class="flex-1 relative min-h-[400px]">
+        <div class="relative" style="height: 60vh; min-height: 500px;">
           <!-- Loading state -->
           <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-slate-900/50">
             <div class="flex items-center gap-3 text-amber-400">
@@ -327,7 +327,7 @@ onUnmounted(() => {
           </div>
 
           <!-- Graph -->
-          <div ref="graphContainer" class="w-full h-full" style="min-height: 400px;" />
+          <div ref="graphContainer" class="absolute inset-0" />
         </div>
 
         <!-- Relation details panel -->
