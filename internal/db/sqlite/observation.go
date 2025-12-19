@@ -31,6 +31,7 @@ type ObservationStore struct {
 	store         *Store
 	cleanupFunc   CleanupFunc
 	conflictStore *ConflictStore
+	relationStore *RelationStore
 }
 
 // NewObservationStore creates a new observation store.
@@ -46,6 +47,11 @@ func (s *ObservationStore) SetCleanupFunc(fn CleanupFunc) {
 // SetConflictStore sets the conflict store for conflict detection.
 func (s *ObservationStore) SetConflictStore(conflictStore *ConflictStore) {
 	s.conflictStore = conflictStore
+}
+
+// SetRelationStore sets the relation store for relationship detection.
+func (s *ObservationStore) SetRelationStore(relationStore *RelationStore) {
+	s.relationStore = relationStore
 }
 
 // StoreObservation stores a new observation.
@@ -112,6 +118,15 @@ func (s *ObservationStore) StoreObservation(ctx context.Context, sdkSessionID, p
 		}(id, project, obs)
 	}
 
+	// Detect relationships with existing observations (async to not block handler)
+	if s.relationStore != nil && project != "" {
+		go func(newObsID int64, proj string) {
+			relationCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			s.detectAndStoreRelations(relationCtx, newObsID, proj)
+		}(id, project)
+	}
+
 	return id, nowEpoch, nil
 }
 
@@ -161,6 +176,43 @@ func (s *ObservationStore) detectAndStoreConflicts(ctx context.Context, newObsID
 	if len(deletedIDs) > 0 && s.cleanupFunc != nil {
 		s.cleanupFunc(ctx, deletedIDs)
 	}
+}
+
+// MinRelationConfidence is the minimum confidence threshold for storing relations.
+const MinRelationConfidence = 0.4
+
+// detectAndStoreRelations detects relationships between a new observation and existing ones.
+func (s *ObservationStore) detectAndStoreRelations(ctx context.Context, newObsID int64, project string) {
+	// Fetch the newly stored observation
+	newObs, err := s.GetObservationByID(ctx, newObsID)
+	if err != nil || newObs == nil {
+		return
+	}
+
+	// Fetch recent observations from the same project to check for relations
+	existing, err := s.GetRecentObservations(ctx, project, 50)
+	if err != nil {
+		return
+	}
+
+	// Detect relationships using the models package detection logic
+	results := models.DetectRelationsWithExisting(newObs, existing, MinRelationConfidence)
+	if len(results) == 0 {
+		return
+	}
+
+	// Convert detection results to relation objects
+	relations := make([]*models.ObservationRelation, len(results))
+	for i, r := range results {
+		relations[i] = models.NewObservationRelation(
+			r.SourceID, r.TargetID,
+			r.RelationType, r.Confidence,
+			r.DetectionSource, r.Reason,
+		)
+	}
+
+	// Store all relations
+	_ = s.relationStore.StoreRelations(ctx, relations)
 }
 
 // ensureSessionExists creates a session if it doesn't exist.

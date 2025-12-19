@@ -70,6 +70,7 @@ type Service struct {
 	promptStore      *sqlite.PromptStore
 	conflictStore    *sqlite.ConflictStore
 	patternStore     *sqlite.PatternStore
+	relationStore    *sqlite.RelationStore
 
 	// Pattern detection
 	patternDetector *pattern.Detector
@@ -198,9 +199,13 @@ func (s *Service) initializeAsync() {
 	promptStore := sqlite.NewPromptStore(store)
 	conflictStore := sqlite.NewConflictStore(store)
 	patternStore := sqlite.NewPatternStore(store)
+	relationStore := sqlite.NewRelationStore(store)
 
 	// Enable conflict detection by linking stores
 	observationStore.SetConflictStore(conflictStore)
+
+	// Enable relation detection by linking stores
+	observationStore.SetRelationStore(relationStore)
 
 	// Create session manager
 	sessionManager := session.NewManager(sessionStore)
@@ -277,6 +282,7 @@ func (s *Service) initializeAsync() {
 	s.promptStore = promptStore
 	s.conflictStore = conflictStore
 	s.patternStore = patternStore
+	s.relationStore = relationStore
 	s.sessionManager = sessionManager
 	s.processor = processor
 	s.embedSvc = embedSvc
@@ -530,9 +536,13 @@ func (s *Service) reinitializeDatabase() {
 	promptStore := sqlite.NewPromptStore(store)
 	conflictStore := sqlite.NewConflictStore(store)
 	patternStore := sqlite.NewPatternStore(store)
+	relationStore := sqlite.NewRelationStore(store)
 
 	// Enable conflict detection by linking stores
 	observationStore.SetConflictStore(conflictStore)
+
+	// Enable relation detection by linking stores
+	observationStore.SetRelationStore(relationStore)
 
 	// Create new session manager
 	sessionManager := session.NewManager(sessionStore)
@@ -634,6 +644,7 @@ func (s *Service) reinitializeDatabase() {
 	s.promptStore = promptStore
 	s.conflictStore = conflictStore
 	s.patternStore = patternStore
+	s.relationStore = relationStore
 	s.patternDetector = patternDetector
 	s.sessionManager = sessionManager
 	s.processor = processor
@@ -1126,6 +1137,13 @@ func (s *Service) setupRoutes() {
 		r.Delete("/api/patterns/{id}", s.handleDeletePattern)
 		r.Post("/api/patterns/{id}/deprecate", s.handleDeprecatePattern)
 		r.Post("/api/patterns/merge", s.handleMergePatterns)
+
+		// Relation routes (knowledge graph)
+		r.Get("/api/relations/stats", s.handleGetRelationStats)
+		r.Get("/api/relations/type/{type}", s.handleGetRelationsByType)
+		r.Get("/api/observations/{id}/relations", s.handleGetRelations)
+		r.Get("/api/observations/{id}/graph", s.handleGetRelationGraph)
+		r.Get("/api/observations/{id}/related", s.handleGetRelatedObservations)
 	})
 }
 

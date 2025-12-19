@@ -452,6 +452,44 @@ var Migrations = []Migration{
 			END;
 		`,
 	},
+	{
+		Version: 23,
+		Name:    "observation_relations",
+		SQL: `
+			-- Knowledge Graph: Observation Relations (Issue #4)
+			-- Tracks explicit relationships between observations for knowledge graph navigation.
+			-- Enables queries like "What caused this bug?" or "What depends on this decision?"
+			CREATE TABLE IF NOT EXISTS observation_relations (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				source_id INTEGER NOT NULL,
+				target_id INTEGER NOT NULL,
+				relation_type TEXT NOT NULL CHECK(relation_type IN ('causes', 'fixes', 'supersedes', 'depends_on', 'relates_to', 'evolves_from')),
+				confidence REAL NOT NULL DEFAULT 0.5,
+				detection_source TEXT NOT NULL CHECK(detection_source IN ('file_overlap', 'embedding_similarity', 'temporal_proximity', 'narrative_mention', 'concept_overlap', 'type_progression')),
+				reason TEXT,
+				created_at TEXT NOT NULL,
+				created_at_epoch INTEGER NOT NULL,
+				FOREIGN KEY(source_id) REFERENCES observations(id) ON DELETE CASCADE,
+				FOREIGN KEY(target_id) REFERENCES observations(id) ON DELETE CASCADE,
+				UNIQUE(source_id, target_id, relation_type)
+			);
+
+			-- Index for finding relations by source observation
+			CREATE INDEX IF NOT EXISTS idx_relations_source ON observation_relations(source_id);
+
+			-- Index for finding relations by target observation
+			CREATE INDEX IF NOT EXISTS idx_relations_target ON observation_relations(target_id);
+
+			-- Index for relation type queries
+			CREATE INDEX IF NOT EXISTS idx_relations_type ON observation_relations(relation_type);
+
+			-- Index for confidence-based filtering
+			CREATE INDEX IF NOT EXISTS idx_relations_confidence ON observation_relations(confidence DESC);
+
+			-- Index for finding all relations involving an observation (either direction)
+			CREATE INDEX IF NOT EXISTS idx_relations_both ON observation_relations(source_id, target_id);
+		`,
+	},
 }
 
 // MigrationManager handles database schema migrations.
