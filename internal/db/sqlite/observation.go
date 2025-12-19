@@ -229,6 +229,25 @@ func (s *ObservationStore) GetAllRecentObservations(ctx context.Context, limit i
 	return scanObservationRows(rows)
 }
 
+// GetAllObservations retrieves all observations (for vector rebuild).
+func (s *ObservationStore) GetAllObservations(ctx context.Context) ([]*models.Observation, error) {
+	const query = `
+		SELECT id, sdk_session_id, project, COALESCE(scope, 'project') as scope, type, title, subtitle, facts, narrative,
+		       concepts, files_read, files_modified, file_mtimes, prompt_number, discovery_tokens,
+		       created_at, created_at_epoch
+		FROM observations
+		ORDER BY id
+	`
+
+	rows, err := s.store.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanObservationRows(rows)
+}
+
 // SearchObservationsFTS performs full-text search on observations.
 func (s *ObservationStore) SearchObservationsFTS(ctx context.Context, query, project string, limit int) ([]*models.Observation, error) {
 	if limit <= 0 {

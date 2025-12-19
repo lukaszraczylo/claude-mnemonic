@@ -48,6 +48,9 @@ type Config struct {
 	Model          string `json:"model"`
 	ClaudeCodePath string `json:"claude_code_path"`
 
+	// Embedding settings
+	EmbeddingModel string `json:"embedding_model"` // e.g., "bge-v1.5"
+
 	// Context injection settings
 	ContextObservations    int      `json:"context_observations"`
 	ContextFullCount       int      `json:"context_full_count"`
@@ -119,6 +122,9 @@ func EnsureAll() error {
 	return nil
 }
 
+// DefaultEmbeddingModel is the default embedding model to use.
+const DefaultEmbeddingModel = "bge-v1.5"
+
 // Default returns a Config with default values.
 func Default() *Config {
 	return &Config{
@@ -126,6 +132,7 @@ func Default() *Config {
 		DBPath:                 DBPath(),
 		MaxConns:               4,
 		Model:                  DefaultModel,
+		EmbeddingModel:         DefaultEmbeddingModel,
 		ContextObservations:    100,
 		ContextFullCount:       25,
 		ContextSessionCount:    10,
@@ -165,6 +172,9 @@ func Load() (*Config, error) {
 	}
 	if v, ok := settings["CLAUDE_CODE_PATH"].(string); ok {
 		cfg.ClaudeCodePath = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_EMBEDDING_MODEL"].(string); ok && v != "" {
+		cfg.EmbeddingModel = v
 	}
 	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_OBSERVATIONS"].(float64); ok {
 		cfg.ContextObservations = int(v)
