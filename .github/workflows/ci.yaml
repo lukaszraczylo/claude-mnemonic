@@ -20,4 +20,5 @@ jobs:
     uses: lukaszraczylo/shared-actions/.github/workflows/go-pr.yaml@main
     with:
       go-version: ">=1.24"
+      lfs: true
     secrets: inherit
