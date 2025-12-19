@@ -35,20 +35,21 @@ func NewManager(
 
 // SearchParams contains parameters for unified search.
 type SearchParams struct {
-	Query         string
-	Type          string // "observations", "sessions", "prompts", or empty for all
-	Project       string
-	ObsType       string // Observation type filter
-	Concepts      string
-	Files         string
-	DateStart     int64
-	DateEnd       int64
-	OrderBy       string // "relevance", "date_desc", "date_asc"
-	Limit         int
-	Offset        int
-	Format        string // "index" or "full"
-	Scope         string // "project", "global", or empty for project+global
-	IncludeGlobal bool   // If true, include global observations along with project-scoped
+	Query             string
+	Type              string // "observations", "sessions", "prompts", or empty for all
+	Project           string
+	ObsType           string // Observation type filter
+	Concepts          string
+	Files             string
+	DateStart         int64
+	DateEnd           int64
+	OrderBy           string // "relevance", "date_desc", "date_asc"
+	Limit             int
+	Offset            int
+	Format            string // "index" or "full"
+	Scope             string // "project", "global", or empty for project+global
+	IncludeGlobal     bool   // If true, include global observations along with project-scoped
+	ExcludeSuperseded bool   // If true, exclude observations that have been superseded
 }
 
 // SearchResult represents a unified search result.
@@ -126,6 +127,10 @@ func (m *Manager) vectorSearch(ctx context.Context, params SearchParams) (*Unifi
 		obs, err := m.observationStore.GetObservationsByIDs(ctx, obsIDs, params.OrderBy, 0)
 		if err == nil {
 			for _, o := range obs {
+				// Skip superseded observations when requested
+				if params.ExcludeSuperseded && o.IsSuperseded {
+					continue
+				}
 				results = append(results, m.observationToResult(o, params.Format))
 			}
 		}
@@ -167,7 +172,16 @@ func (m *Manager) filterSearch(ctx context.Context, params SearchParams) (*Unifi
 
 	// Search observations
 	if params.Type == "" || params.Type == "observations" {
-		obs, err := m.observationStore.GetRecentObservations(ctx, params.Project, params.Limit)
+		var obs []*models.Observation
+		var err error
+
+		// Use active observations (excluding superseded) when requested
+		if params.ExcludeSuperseded {
+			obs, err = m.observationStore.GetActiveObservations(ctx, params.Project, params.Limit)
+		} else {
+			obs, err = m.observationStore.GetRecentObservations(ctx, params.Project, params.Limit)
+		}
+
 		if err == nil {
 			for _, o := range obs {
 				results = append(results, m.observationToResult(o, params.Format))

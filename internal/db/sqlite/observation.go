@@ -19,7 +19,8 @@ const observationColumns = `id, sdk_session_id, project, COALESCE(scope, 'projec
        COALESCE(importance_score, 1.0) as importance_score,
        COALESCE(user_feedback, 0) as user_feedback,
        COALESCE(retrieval_count, 0) as retrieval_count,
-       last_retrieved_at_epoch, score_updated_at_epoch`
+       last_retrieved_at_epoch, score_updated_at_epoch,
+       COALESCE(is_superseded, 0) as is_superseded`
 
 // CleanupFunc is a callback for when observations are cleaned up.
 // Receives the IDs of deleted observations for downstream cleanup (e.g., vector DB).
@@ -27,8 +28,9 @@ type CleanupFunc func(ctx context.Context, deletedIDs []int64)
 
 // ObservationStore provides observation-related database operations.
 type ObservationStore struct {
-	store       *Store
-	cleanupFunc CleanupFunc
+	store         *Store
+	cleanupFunc   CleanupFunc
+	conflictStore *ConflictStore
 }
 
 // NewObservationStore creates a new observation store.
@@ -39,6 +41,11 @@ func NewObservationStore(store *Store) *ObservationStore {
 // SetCleanupFunc sets the callback for when observations are deleted during cleanup.
 func (s *ObservationStore) SetCleanupFunc(fn CleanupFunc) {
 	s.cleanupFunc = fn
+}
+
+// SetConflictStore sets the conflict store for conflict detection.
+func (s *ObservationStore) SetConflictStore(conflictStore *ConflictStore) {
+	s.conflictStore = conflictStore
 }
 
 // StoreObservation stores a new observation.
@@ -96,7 +103,64 @@ func (s *ObservationStore) StoreObservation(ctx context.Context, sdkSessionID, p
 		}(project)
 	}
 
+	// Detect conflicts with existing observations (async to not block handler)
+	if s.conflictStore != nil && project != "" {
+		go func(newObsID int64, proj string, parsedObs *models.ParsedObservation) {
+			conflictCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			s.detectAndStoreConflicts(conflictCtx, newObsID, proj, parsedObs)
+		}(id, project, obs)
+	}
+
 	return id, nowEpoch, nil
+}
+
+// detectAndStoreConflicts detects conflicts between a new observation and existing ones.
+func (s *ObservationStore) detectAndStoreConflicts(ctx context.Context, newObsID int64, project string, parsedObs *models.ParsedObservation) {
+	// Fetch the newly stored observation
+	newObs, err := s.GetObservationByID(ctx, newObsID)
+	if err != nil || newObs == nil {
+		return
+	}
+
+	// Fetch recent observations from the same project to check for conflicts
+	existing, err := s.GetRecentObservations(ctx, project, 50)
+	if err != nil {
+		return
+	}
+
+	// Detect conflicts
+	conflicts := models.DetectConflictsWithExisting(newObs, existing)
+
+	// Store conflicts and mark superseded observations
+	var supersededIDs []int64
+	for _, result := range conflicts {
+		for _, olderID := range result.OlderObsIDs {
+			conflict := models.NewObservationConflict(
+				newObsID, olderID,
+				result.Type, result.Resolution, result.Reason,
+			)
+			if _, err := s.conflictStore.StoreConflict(ctx, conflict); err != nil {
+				continue
+			}
+
+			// If resolution is to prefer newer, mark older as superseded
+			if result.Resolution == models.ResolutionPreferNewer {
+				supersededIDs = append(supersededIDs, olderID)
+			}
+		}
+	}
+
+	// Mark superseded observations
+	if len(supersededIDs) > 0 {
+		_ = s.conflictStore.MarkObservationsSuperseded(ctx, supersededIDs)
+	}
+
+	// Cleanup old superseded observations (older than 3 days)
+	deletedIDs, _ := s.conflictStore.CleanupSupersededObservations(ctx, project)
+	if len(deletedIDs) > 0 && s.cleanupFunc != nil {
+		s.cleanupFunc(ctx, deletedIDs)
+	}
 }
 
 // ensureSessionExists creates a session if it doesn't exist.
@@ -170,6 +234,50 @@ func (s *ObservationStore) GetRecentObservations(ctx context.Context, project st
 		WHERE (project = ? AND (scope IS NULL OR scope = 'project'))
 		   OR scope = 'global'
 		ORDER BY COALESCE(importance_score, 1.0) DESC, created_at_epoch DESC
+		LIMIT ?
+	`
+
+	rows, err := s.store.QueryContext(ctx, query, project, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanObservationRows(rows)
+}
+
+// GetActiveObservations retrieves recent non-superseded observations for a project.
+// This excludes observations that have been marked as superseded by newer ones.
+// Use this for context injection where you want to avoid outdated/contradicted advice.
+// Results are ordered by importance_score DESC, then created_at_epoch DESC.
+func (s *ObservationStore) GetActiveObservations(ctx context.Context, project string, limit int) ([]*models.Observation, error) {
+	query := `SELECT ` + observationColumns + `
+		FROM observations
+		WHERE ((project = ? AND (scope IS NULL OR scope = 'project'))
+		   OR scope = 'global')
+		  AND COALESCE(is_superseded, 0) = 0
+		ORDER BY COALESCE(importance_score, 1.0) DESC, created_at_epoch DESC
+		LIMIT ?
+	`
+
+	rows, err := s.store.QueryContext(ctx, query, project, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanObservationRows(rows)
+}
+
+// GetSupersededObservations retrieves observations that have been superseded by newer ones.
+// Use this for verification/debugging to see which observations were marked as outdated.
+// Results are ordered by created_at_epoch DESC.
+func (s *ObservationStore) GetSupersededObservations(ctx context.Context, project string, limit int) ([]*models.Observation, error) {
+	query := `SELECT ` + observationColumns + `
+		FROM observations
+		WHERE project = ?
+		  AND COALESCE(is_superseded, 0) = 1
+		ORDER BY created_at_epoch DESC
 		LIMIT ?
 	`
 
@@ -273,7 +381,8 @@ func (s *ObservationStore) SearchObservationsFTS(ctx context.Context, query, pro
 		       COALESCE(o.importance_score, 1.0) as importance_score,
 		       COALESCE(o.user_feedback, 0) as user_feedback,
 		       COALESCE(o.retrieval_count, 0) as retrieval_count,
-		       o.last_retrieved_at_epoch, o.score_updated_at_epoch
+		       o.last_retrieved_at_epoch, o.score_updated_at_epoch,
+		       COALESCE(o.is_superseded, 0) as is_superseded
 		FROM observations o
 		JOIN observations_fts fts ON o.id = fts.rowid
 		WHERE observations_fts MATCH ?
@@ -471,6 +580,8 @@ func scanObservation(scanner interface{ Scan(...interface{}) error }) (*models.O
 		// Importance scoring fields
 		&obs.ImportanceScore, &obs.UserFeedback, &obs.RetrievalCount,
 		&obs.LastRetrievedAt, &obs.ScoreUpdatedAt,
+		// Conflict detection fields
+		&obs.IsSuperseded,
 	); err != nil {
 		return nil, err
 	}

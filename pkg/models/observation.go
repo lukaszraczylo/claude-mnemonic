@@ -146,6 +146,9 @@ type Observation struct {
 	RetrievalCount  int           `db:"retrieval_count" json:"retrieval_count"`
 	LastRetrievedAt sql.NullInt64 `db:"last_retrieved_at_epoch" json:"last_retrieved_at_epoch,omitempty"`
 	ScoreUpdatedAt  sql.NullInt64 `db:"score_updated_at_epoch" json:"score_updated_at_epoch,omitempty"`
+
+	// Conflict detection fields
+	IsSuperseded bool `db:"is_superseded" json:"is_superseded,omitempty"`
 }
 
 // ParsedObservation represents an observation parsed from SDK response XML.
@@ -219,6 +222,9 @@ type ObservationJSON struct {
 	RetrievalCount  int     `json:"retrieval_count"`
 	LastRetrievedAt int64   `json:"last_retrieved_at_epoch,omitempty"`
 	ScoreUpdatedAt  int64   `json:"score_updated_at_epoch,omitempty"`
+
+	// Conflict detection fields
+	IsSuperseded bool `json:"is_superseded,omitempty"`
 }
 
 // MarshalJSON implements json.Marshaler for Observation.
@@ -243,6 +249,8 @@ func (o *Observation) MarshalJSON() ([]byte, error) {
 		ImportanceScore: o.ImportanceScore,
 		UserFeedback:    o.UserFeedback,
 		RetrievalCount:  o.RetrievalCount,
+		// Conflict detection fields
+		IsSuperseded: o.IsSuperseded,
 	}
 	if o.Title.Valid {
 		j.Title = o.Title.String

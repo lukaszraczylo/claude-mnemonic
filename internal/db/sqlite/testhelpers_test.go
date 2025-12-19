@@ -108,11 +108,33 @@ func createBaseTables(t *testing.T, db *sql.DB) {
 			retrieval_count INTEGER DEFAULT 0,
 			last_retrieved_at_epoch INTEGER,
 			score_updated_at_epoch INTEGER,
+			is_superseded INTEGER DEFAULT 0,
 			FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id) ON DELETE CASCADE
 		)
 	`)
 	if err != nil {
 		t.Fatalf("create observations: %v", err)
+	}
+
+	// Create observation_conflicts table for conflict detection
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS observation_conflicts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			newer_obs_id INTEGER NOT NULL,
+			older_obs_id INTEGER NOT NULL,
+			conflict_type TEXT NOT NULL CHECK(conflict_type IN ('superseded', 'contradicts', 'outdated_pattern')),
+			resolution TEXT NOT NULL CHECK(resolution IN ('prefer_newer', 'prefer_older', 'manual')),
+			reason TEXT,
+			detected_at TEXT NOT NULL,
+			detected_at_epoch INTEGER NOT NULL,
+			resolved INTEGER DEFAULT 0,
+			resolved_at TEXT,
+			FOREIGN KEY(newer_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
+			FOREIGN KEY(older_obs_id) REFERENCES observations(id) ON DELETE CASCADE
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create observation_conflicts: %v", err)
 	}
 
 	_, err = db.Exec(`

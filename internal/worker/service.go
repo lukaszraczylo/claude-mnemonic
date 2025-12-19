@@ -65,6 +65,7 @@ type Service struct {
 	observationStore *sqlite.ObservationStore
 	summaryStore     *sqlite.SummaryStore
 	promptStore      *sqlite.PromptStore
+	conflictStore    *sqlite.ConflictStore
 
 	// Domain services
 	sessionManager *session.Manager
@@ -182,6 +183,10 @@ func (s *Service) initializeAsync() {
 	observationStore := sqlite.NewObservationStore(store)
 	summaryStore := sqlite.NewSummaryStore(store)
 	promptStore := sqlite.NewPromptStore(store)
+	conflictStore := sqlite.NewConflictStore(store)
+
+	// Enable conflict detection by linking stores
+	observationStore.SetConflictStore(conflictStore)
 
 	// Create session manager
 	sessionManager := session.NewManager(sessionStore)
@@ -232,6 +237,7 @@ func (s *Service) initializeAsync() {
 	s.observationStore = observationStore
 	s.summaryStore = summaryStore
 	s.promptStore = promptStore
+	s.conflictStore = conflictStore
 	s.sessionManager = sessionManager
 	s.processor = processor
 	s.embedSvc = embedSvc
@@ -437,6 +443,10 @@ func (s *Service) reinitializeDatabase() {
 	observationStore := sqlite.NewObservationStore(store)
 	summaryStore := sqlite.NewSummaryStore(store)
 	promptStore := sqlite.NewPromptStore(store)
+	conflictStore := sqlite.NewConflictStore(store)
+
+	// Enable conflict detection by linking stores
+	observationStore.SetConflictStore(conflictStore)
 
 	// Create new session manager
 	sessionManager := session.NewManager(sessionStore)
@@ -482,6 +492,7 @@ func (s *Service) reinitializeDatabase() {
 	s.observationStore = observationStore
 	s.summaryStore = summaryStore
 	s.promptStore = promptStore
+	s.conflictStore = conflictStore
 	s.sessionManager = sessionManager
 	s.processor = processor
 	s.embedSvc = embedSvc

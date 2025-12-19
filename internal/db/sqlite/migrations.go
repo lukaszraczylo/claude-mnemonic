@@ -358,6 +358,40 @@ var Migrations = []Migration{
 				('tooling', 0.05, datetime('now'));
 		`,
 	},
+	{
+		Version: 21,
+		Name:    "observation_conflicts",
+		SQL: `
+			-- Observation conflicts table for tracking contradictions and superseded observations
+			-- Implements Issue #5: Contradiction & Obsolescence Detection
+			CREATE TABLE IF NOT EXISTS observation_conflicts (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				newer_obs_id INTEGER NOT NULL,
+				older_obs_id INTEGER NOT NULL,
+				conflict_type TEXT NOT NULL CHECK(conflict_type IN ('superseded', 'contradicts', 'outdated_pattern')),
+				resolution TEXT NOT NULL CHECK(resolution IN ('prefer_newer', 'prefer_older', 'manual')),
+				reason TEXT,
+				detected_at TEXT NOT NULL,
+				detected_at_epoch INTEGER NOT NULL,
+				resolved INTEGER DEFAULT 0,
+				resolved_at TEXT,
+				FOREIGN KEY(newer_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
+				FOREIGN KEY(older_obs_id) REFERENCES observations(id) ON DELETE CASCADE
+			);
+
+			-- Index for looking up conflicts by observation ID
+			CREATE INDEX IF NOT EXISTS idx_conflicts_newer ON observation_conflicts(newer_obs_id);
+			CREATE INDEX IF NOT EXISTS idx_conflicts_older ON observation_conflicts(older_obs_id);
+			CREATE INDEX IF NOT EXISTS idx_conflicts_unresolved ON observation_conflicts(resolved, detected_at_epoch DESC);
+
+			-- Add is_superseded column to observations for quick filtering
+			-- Set to 1 when this observation has been superseded by a newer one
+			ALTER TABLE observations ADD COLUMN is_superseded INTEGER DEFAULT 0;
+
+			-- Index for filtering out superseded observations in queries
+			CREATE INDEX IF NOT EXISTS idx_observations_superseded ON observations(is_superseded, importance_score DESC);
+		`,
+	},
 }
 
 // MigrationManager handles database schema migrations.
