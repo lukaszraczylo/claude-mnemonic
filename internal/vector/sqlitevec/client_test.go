@@ -501,3 +501,254 @@ func TestClient_DeleteDocuments_NonExistent(t *testing.T) {
 	err = client.DeleteDocuments(context.Background(), []string{"non-existent-id"})
 	require.NoError(t, err)
 }
+
+func TestClient_Count_Empty(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	count, err := client.Count(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), count)
+}
+
+func TestClient_Count_WithVectors(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	// Add some documents
+	docs := []Document{
+		{ID: "doc-1", Content: "test content 1"},
+		{ID: "doc-2", Content: "test content 2"},
+		{ID: "doc-3", Content: "test content 3"},
+	}
+	err = client.AddDocuments(context.Background(), docs)
+	require.NoError(t, err)
+
+	count, err := client.Count(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), count)
+}
+
+func TestClient_ModelVersion(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	version := client.ModelVersion()
+	assert.NotEmpty(t, version)
+	// Should match the embedding service version
+	assert.Equal(t, embedSvc.Version(), version)
+}
+
+func TestClient_NeedsRebuild_EmptyDatabase(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	needsRebuild, reason := client.NeedsRebuild(context.Background())
+	assert.True(t, needsRebuild)
+	assert.Equal(t, "empty", reason)
+}
+
+func TestClient_NeedsRebuild_ModelMismatch(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	// Insert vectors with wrong model version
+	embedding := make([]float32, 384)
+	for i := range embedding {
+		embedding[i] = 0.1
+	}
+	embeddingBytes, err := sqlite_vec.SerializeFloat32(embedding)
+	require.NoError(t, err)
+
+	_, err = db.Exec(`
+		INSERT INTO vectors (doc_id, embedding, model_version, sqlite_id, doc_type, field_type, project, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "doc-1", embeddingBytes, "old-model-v1", 1, "observation", "content", "test", "project")
+	require.NoError(t, err)
+
+	_, err = db.Exec(`
+		INSERT INTO vectors (doc_id, embedding, model_version, sqlite_id, doc_type, field_type, project, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "doc-2", embeddingBytes, "old-model-v1", 2, "observation", "content", "test", "project")
+	require.NoError(t, err)
+
+	needsRebuild, reason := client.NeedsRebuild(context.Background())
+	assert.True(t, needsRebuild)
+	assert.Contains(t, reason, "model_mismatch:2")
+}
+
+func TestClient_NeedsRebuild_CurrentModel(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	// Add documents with current model version
+	docs := []Document{
+		{ID: "doc-1", Content: "test content 1"},
+		{ID: "doc-2", Content: "test content 2"},
+	}
+	err = client.AddDocuments(context.Background(), docs)
+	require.NoError(t, err)
+
+	needsRebuild, reason := client.NeedsRebuild(context.Background())
+	assert.False(t, needsRebuild)
+	assert.Empty(t, reason)
+}
+
+func TestClient_GetStaleVectors_Empty(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	stale, err := client.GetStaleVectors(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, stale)
+}
+
+func TestClient_GetStaleVectors_WithMismatch(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	// Insert vectors with wrong model version
+	embedding := make([]float32, 384)
+	embeddingBytes, err := sqlite_vec.SerializeFloat32(embedding)
+	require.NoError(t, err)
+
+	_, err = db.Exec(`
+		INSERT INTO vectors (doc_id, embedding, model_version, sqlite_id, doc_type, field_type, project, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "doc-1", embeddingBytes, "old-model", 1, "observation", "content", "project-1", "project")
+	require.NoError(t, err)
+
+	_, err = db.Exec(`
+		INSERT INTO vectors (doc_id, embedding, model_version, sqlite_id, doc_type, field_type, project, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "doc-2", embeddingBytes, embedSvc.Version(), 2, "observation", "title", "project-1", "project")
+	require.NoError(t, err)
+
+	stale, err := client.GetStaleVectors(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, stale, 1)
+	assert.Equal(t, "doc-1", stale[0].DocID)
+	assert.Equal(t, int64(1), stale[0].SQLiteID)
+	assert.Equal(t, "observation", stale[0].DocType)
+	assert.Equal(t, "content", stale[0].FieldType)
+	assert.Equal(t, "project-1", stale[0].Project)
+	assert.Equal(t, "project", stale[0].Scope)
+}
+
+func TestClient_DeleteVectorsByDocIDs_Empty(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	// Deleting empty slice should not error
+	err = client.DeleteVectorsByDocIDs(context.Background(), []string{})
+	require.NoError(t, err)
+}
+
+func TestClient_DeleteVectorsByDocIDs_Success(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	// Add documents
+	docs := []Document{
+		{ID: "doc-1", Content: "test 1"},
+		{ID: "doc-2", Content: "test 2"},
+		{ID: "doc-3", Content: "test 3"},
+	}
+	err = client.AddDocuments(context.Background(), docs)
+	require.NoError(t, err)
+
+	// Verify 3 documents exist
+	count, err := client.Count(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), count)
+
+	// Delete doc-1 and doc-3
+	err = client.DeleteVectorsByDocIDs(context.Background(), []string{"doc-1", "doc-3"})
+	require.NoError(t, err)
+
+	// Should have 1 document remaining
+	count, err = client.Count(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count)
+
+	// Verify doc-2 still exists
+	var exists int
+	err = db.QueryRow("SELECT COUNT(*) FROM vectors WHERE doc_id = ?", "doc-2").Scan(&exists)
+	require.NoError(t, err)
+	assert.Equal(t, 1, exists)
+}
+
+func TestClient_DeleteVectorsByDocIDs_NonExistent(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	// Deleting non-existent IDs should not error
+	err = client.DeleteVectorsByDocIDs(context.Background(), []string{"non-existent-1", "non-existent-2"})
+	require.NoError(t, err)
+}

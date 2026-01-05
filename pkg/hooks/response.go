@@ -143,3 +143,38 @@ func RunHook[T any](hookName string, handler HookHandler[T]) {
 
 	WriteResponse(hookName, true)
 }
+
+// StatuslineHandler is a function that handles statusline-specific logic.
+// It receives input and port, returns formatted status string.
+// No context injection or worker startup - just display.
+type StatuslineHandler[T any] func(input *T, port int) string
+
+// RunStatuslineHook executes a statusline hook with minimal overhead.
+// Unlike RunHook, this:
+// - Does NOT check CLAUDE_MNEMONIC_INTERNAL (statuslines always run)
+// - Uses GetWorkerPort() instead of EnsureWorkerRunning() (no startup)
+// - Prints output directly to stdout (no JSON wrapping)
+// This keeps statusline fast (<100ms requirement).
+func RunStatuslineHook[T any](handler StatuslineHandler[T]) {
+	// Read input from stdin
+	inputData, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		// On error, handler receives nil and should return offline status
+		fmt.Println(handler(nil, 0))
+		return
+	}
+
+	// Parse input
+	var input T
+	if err := json.Unmarshal(inputData, &input); err != nil {
+		// On parse error, handler receives nil and should return offline status
+		fmt.Println(handler(nil, 0))
+		return
+	}
+
+	// Get worker port (does NOT start worker)
+	port := GetWorkerPort()
+
+	// Run handler and print result
+	fmt.Println(handler(&input, port))
+}
