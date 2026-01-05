@@ -68,6 +68,7 @@ func (s *Service) handleObservationFeedback(w http.ResponseWriter, r *http.Reque
 			if err := observationStore.UpdateImportanceScore(r.Context(), id, newScore); err != nil {
 				// Log but don't fail - feedback was recorded
 				// Score will be updated on next recalculation cycle
+				_ = err // Explicitly ignore - non-critical operation
 			}
 		}
 	}
@@ -263,6 +264,7 @@ func (s *Service) handleUpdateConceptWeight(w http.ResponseWriter, r *http.Reque
 	if recalculator != nil {
 		if err := recalculator.RefreshConceptWeights(r.Context()); err != nil {
 			// Log but don't fail - weight was saved
+			_ = err // Explicitly ignore - non-critical operation
 		}
 	}
 
@@ -310,6 +312,7 @@ func (s *Service) handleTriggerRecalculation(w http.ResponseWriter, r *http.Requ
 	go func() {
 		if err := recalculator.RecalculateNow(r.Context()); err != nil {
 			// Log error but don't block response
+			_ = err // Explicitly ignore - background operation
 		}
 	}()
 
@@ -349,6 +352,7 @@ func (s *Service) incrementRetrievalCounts(ids []int64) {
 
 		if err := store.IncrementRetrievalCount(ctx, ids); err != nil {
 			// Log but don't fail - this is a background operation
+			_ = err // Explicitly ignore - background operation
 		}
 	}()
 }

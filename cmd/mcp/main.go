@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/mcp"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/search"
@@ -71,22 +71,22 @@ func main() {
 		cancel()
 	}()
 
-	// Initialize SQLite store (migrations run automatically)
-	storeCfg := sqlite.StoreConfig{
+	// Initialize database store (migrations run automatically)
+	storeCfg := gorm.Config{
 		Path:     dbPath,
 		MaxConns: cfg.MaxConns,
-		WALMode:  true,
+		// WALMode is enabled automatically by GORM
 	}
-	store, err := sqlite.NewStore(storeCfg)
+	store, err := gorm.NewStore(storeCfg)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize SQLite store")
+		log.Fatal().Err(err).Msg("Failed to initialize database store")
 	}
 	defer store.Close()
 
 	// Initialize stores
-	observationStore := sqlite.NewObservationStore(store)
-	summaryStore := sqlite.NewSummaryStore(store)
-	promptStore := sqlite.NewPromptStore(store)
+	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
+	summaryStore := gorm.NewSummaryStore(store)
+	promptStore := gorm.NewPromptStore(store, nil)
 
 	// Initialize embedding service and vector client
 	var vectorClient *sqlitevec.Client
@@ -95,7 +95,7 @@ func main() {
 		log.Warn().Err(err).Msg("Embedding service unavailable, vector search disabled")
 	} else {
 		defer embedSvc.Close()
-		vectorClient, err = sqlitevec.NewClient(sqlitevec.Config{DB: store.DB()}, embedSvc)
+		vectorClient, err = sqlitevec.NewClient(sqlitevec.Config{DB: store.GetRawDB()}, embedSvc)
 		if err != nil {
 			log.Warn().Err(err).Msg("Vector client unavailable, vector search disabled")
 		} else {

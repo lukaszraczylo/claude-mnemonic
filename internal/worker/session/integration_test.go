@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
@@ -25,10 +25,9 @@ func hasFTS5(t *testing.T) bool {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	store, err := sqlite.NewStore(sqlite.StoreConfig{
+	store, err := gorm.NewStore(gorm.Config{
 		Path:     tmpDir + "/check.db",
 		MaxConns: 1,
-		WALMode:  true,
 	})
 	if err != nil {
 		return false
@@ -37,8 +36,8 @@ func hasFTS5(t *testing.T) bool {
 	return true
 }
 
-// testStore creates a sqlite.Store with a temporary database for testing.
-func testStore(t *testing.T) (*sqlite.Store, func()) {
+// testStore creates a gorm.Store with a temporary database for testing.
+func testStore(t *testing.T) (*gorm.Store, func()) {
 	t.Helper()
 
 	if !hasFTS5(t) {
@@ -50,10 +49,9 @@ func testStore(t *testing.T) (*sqlite.Store, func()) {
 
 	dbPath := tmpDir + "/test.db"
 
-	store, err := sqlite.NewStore(sqlite.StoreConfig{
+	store, err := gorm.NewStore(gorm.Config{
 		Path:     dbPath,
 		MaxConns: 1,
-		WALMode:  true,
 	})
 	require.NoError(t, err)
 
@@ -68,8 +66,8 @@ func testStore(t *testing.T) (*sqlite.Store, func()) {
 // SessionIntegrationSuite tests session manager with real SQLite stores.
 type SessionIntegrationSuite struct {
 	suite.Suite
-	store        *sqlite.Store
-	sessionStore *sqlite.SessionStore
+	store        *gorm.Store
+	sessionStore *gorm.SessionStore
 	cleanup      func()
 	manager      *Manager
 }
@@ -80,7 +78,7 @@ func (s *SessionIntegrationSuite) SetupTest() {
 	}
 
 	s.store, s.cleanup = testStore(s.T())
-	s.sessionStore = sqlite.NewSessionStore(s.store)
+	s.sessionStore = gorm.NewSessionStore(s.store)
 	s.manager = NewManager(s.sessionStore)
 }
 

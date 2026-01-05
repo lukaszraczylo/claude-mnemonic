@@ -34,7 +34,7 @@ func TestIsWorkerRunning(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/health" {
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -68,7 +68,7 @@ func TestGetWorkerVersion(t *testing.T) {
 			name: "returns version from server",
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/api/version" {
-					json.NewEncoder(w).Encode(map[string]string{"version": "1.2.3"})
+					_ = json.NewEncoder(w).Encode(map[string]string{"version": "1.2.3"})
 				}
 			},
 			expectedResult: "1.2.3",
@@ -83,7 +83,7 @@ func TestGetWorkerVersion(t *testing.T) {
 		{
 			name: "returns empty on invalid JSON",
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
-				w.Write([]byte("not json"))
+				_, _ = w.Write([]byte("not json"))
 			},
 			expectedResult: "",
 		},
@@ -332,7 +332,7 @@ func TestPOST(t *testing.T) {
 				assert.Equal(t, http.MethodPost, r.Method)
 				assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 			},
 			body:           map[string]string{"key": "value"},
 			expectError:    false,
@@ -358,7 +358,7 @@ func TestPOST(t *testing.T) {
 			name: "POST with non-JSON response",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("not json"))
+				_, _ = w.Write([]byte("not json"))
 			},
 			body:           map[string]string{"key": "value"},
 			expectError:    false,
@@ -403,7 +403,7 @@ func TestGET(t *testing.T) {
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, http.MethodGet, r.Method)
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{"data": "test"})
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": "test"})
 			},
 			expectError:    false,
 			expectedResult: map[string]interface{}{"data": "test"},
@@ -419,7 +419,7 @@ func TestGET(t *testing.T) {
 			name: "GET with invalid JSON",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("not valid json"))
+				_, _ = w.Write([]byte("not valid json"))
 			},
 			expectError: true,
 		},
@@ -666,7 +666,7 @@ func TestGetWorkerVersion_WithServer(t *testing.T) {
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/api/version" {
 					w.WriteHeader(http.StatusOK)
-					json.NewEncoder(w).Encode(map[string]string{"version": "v1.2.3"})
+					_ = json.NewEncoder(w).Encode(map[string]string{"version": "v1.2.3"})
 				}
 			},
 			expectedResult: "v1.2.3",
@@ -682,7 +682,7 @@ func TestGetWorkerVersion_WithServer(t *testing.T) {
 			name: "returns empty on invalid JSON",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("not json"))
+				_, _ = w.Write([]byte("not json"))
 			},
 			expectedResult: "",
 		},
@@ -690,7 +690,7 @@ func TestGetWorkerVersion_WithServer(t *testing.T) {
 			name: "returns empty on missing version field",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]string{"other": "field"})
+				_ = json.NewEncoder(w).Encode(map[string]string{"other": "field"})
 			},
 			expectedResult: "",
 		},
@@ -1082,7 +1082,7 @@ func TestPOST_EmptyBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}))
 	defer server.Close()
 
@@ -1101,7 +1101,7 @@ func TestGET_WithQueryParams(t *testing.T) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		assert.Equal(t, "/test?foo=bar", r.URL.String())
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}))
 	defer server.Close()
 

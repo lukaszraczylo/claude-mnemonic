@@ -1,9 +1,0 @@
-{
-  "name": "claude-mnemonic",
-  "version": "1.0.0",
-  "description": "Persistent memory system for Claude Code - Go implementation with SQLite and ChromaDB",
-  "author": {
-    "name": "lukaszraczylo",
-    "email": "lukaszraczylo@users.noreply.github.com"
-  }
-}

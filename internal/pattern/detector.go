@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/rs/zerolog/log"
 )
@@ -39,8 +39,8 @@ type PatternSyncFunc func(pattern *models.Pattern)
 // Detector detects and tracks recurring patterns across observations.
 type Detector struct {
 	config           DetectorConfig
-	patternStore     *sqlite.PatternStore
-	observationStore *sqlite.ObservationStore
+	patternStore     *gorm.PatternStore
+	observationStore *gorm.ObservationStore
 
 	// Vector sync callback
 	syncFunc PatternSyncFunc
@@ -71,7 +71,7 @@ type candidatePattern struct {
 }
 
 // NewDetector creates a new pattern detector.
-func NewDetector(patternStore *sqlite.PatternStore, observationStore *sqlite.ObservationStore, config DetectorConfig) *Detector {
+func NewDetector(patternStore *gorm.PatternStore, observationStore *gorm.ObservationStore, config DetectorConfig) *Detector {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Detector{
 		config:           config,

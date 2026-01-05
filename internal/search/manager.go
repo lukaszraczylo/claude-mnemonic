@@ -5,24 +5,24 @@ import (
 	"context"
 	"strings"
 
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 )
 
 // Manager provides unified search across SQLite and sqlite-vec.
 type Manager struct {
-	observationStore *sqlite.ObservationStore
-	summaryStore     *sqlite.SummaryStore
-	promptStore      *sqlite.PromptStore
+	observationStore *gorm.ObservationStore
+	summaryStore     *gorm.SummaryStore
+	promptStore      *gorm.PromptStore
 	vectorClient     *sqlitevec.Client
 }
 
 // NewManager creates a new search manager.
 func NewManager(
-	observationStore *sqlite.ObservationStore,
-	summaryStore *sqlite.SummaryStore,
-	promptStore *sqlite.PromptStore,
+	observationStore *gorm.ObservationStore,
+	summaryStore *gorm.SummaryStore,
+	promptStore *gorm.PromptStore,
 	vectorClient *sqlitevec.Client,
 ) *Manager {
 	return &Manager{
