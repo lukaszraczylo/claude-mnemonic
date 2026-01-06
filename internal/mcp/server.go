@@ -9,7 +9,11 @@ import (
 	"io"
 	"os"
 
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/scoring"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/search"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
+	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/rs/zerolog/log"
 )
 
@@ -19,15 +23,41 @@ type Server struct {
 	version   string
 	stdin     io.Reader
 	stdout    io.Writer
+
+	// Store dependencies for enhanced tools
+	observationStore *gorm.ObservationStore
+	patternStore     *gorm.PatternStore
+	relationStore    *gorm.RelationStore
+	sessionStore     *gorm.SessionStore
+	vectorClient     *sqlitevec.Client
+	scoreCalculator  *scoring.Calculator
+	recalculator     *scoring.Recalculator
 }
 
 // NewServer creates a new MCP server.
-func NewServer(searchMgr *search.Manager, version string) *Server {
+func NewServer(
+	searchMgr *search.Manager,
+	version string,
+	observationStore *gorm.ObservationStore,
+	patternStore *gorm.PatternStore,
+	relationStore *gorm.RelationStore,
+	sessionStore *gorm.SessionStore,
+	vectorClient *sqlitevec.Client,
+	scoreCalculator *scoring.Calculator,
+	recalculator *scoring.Recalculator,
+) *Server {
 	return &Server{
-		searchMgr: searchMgr,
-		version:   version,
-		stdin:     os.Stdin,
-		stdout:    os.Stdout,
+		searchMgr:        searchMgr,
+		version:          version,
+		stdin:            os.Stdin,
+		stdout:           os.Stdout,
+		observationStore: observationStore,
+		patternStore:     patternStore,
+		relationStore:    relationStore,
+		sessionStore:     sessionStore,
+		vectorClient:     vectorClient,
+		scoreCalculator:  scoreCalculator,
+		recalculator:     recalculator,
 	}
 }
 
@@ -333,6 +363,19 @@ func (s *Server) handleToolsList(req *Request) *Response {
 				},
 			},
 		},
+		{
+			Name:        "find_related_observations",
+			Description: "Find observations related to a given observation ID filtered by confidence threshold. Returns related observations sorted by confidence score. Useful for discovering relevant context.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id":             map[string]any{"type": "number", "description": "Observation ID"},
+					"min_confidence": map[string]any{"type": "number", "default": 0.5, "minimum": 0.0, "maximum": 1.0, "description": "Minimum confidence threshold"},
+					"limit":          map[string]any{"type": "number", "default": 20, "minimum": 1, "maximum": 100},
+				},
+			},
+		},
 	}
 
 	return &Response{
@@ -388,6 +431,12 @@ func (s *Server) handleToolsCall(ctx context.Context, req *Request) *Response {
 
 // callTool dispatches to the appropriate tool handler.
 func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	// Relation discovery tool
+	if name == "find_related_observations" {
+		return s.handleFindRelatedObservations(ctx, args)
+	}
+
+	// Original search-based tools
 	var params search.SearchParams
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
@@ -535,6 +584,72 @@ func (s *Server) handleTimelineByQuery(ctx context.Context, args json.RawMessage
 	// Now get timeline around that result
 	params.AnchorID = result.Results[0].ID
 	return s.handleTimeline(ctx, args)
+}
+
+// handleFindRelatedObservations finds observations related to a given observation ID.
+func (s *Server) handleFindRelatedObservations(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		ID            int64   `json:"id"`
+		MinConfidence float64 `json:"min_confidence"`
+		Limit         int     `json:"limit"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	if params.ID == 0 {
+		return "", fmt.Errorf("id is required")
+	}
+
+	if params.MinConfidence == 0 {
+		params.MinConfidence = 0.5
+	}
+
+	if params.Limit == 0 {
+		params.Limit = 20
+	}
+	if params.Limit > 100 {
+		params.Limit = 100
+	}
+
+	// Get related observation IDs with confidence filter
+	relatedIDs, err := s.relationStore.GetRelatedObservationIDs(ctx, params.ID, params.MinConfidence)
+	if err != nil {
+		return "", fmt.Errorf("failed to get related observations: %w", err)
+	}
+
+	if relatedIDs == nil {
+		relatedIDs = []int64{}
+	}
+
+	// Limit results
+	if len(relatedIDs) > params.Limit {
+		relatedIDs = relatedIDs[:params.Limit]
+	}
+
+	// Fetch full observations
+	observations := make([]*models.Observation, 0, len(relatedIDs))
+	for _, id := range relatedIDs {
+		obs, err := s.observationStore.GetObservationByID(ctx, id)
+		if err != nil {
+			continue // Skip errors for individual observations
+		}
+		if obs != nil {
+			observations = append(observations, obs)
+		}
+	}
+
+	response := map[string]any{
+		"observations": observations,
+		"count":        len(observations),
+	}
+
+	output, err := json.Marshal(response)
+	if err != nil {
+		return "", fmt.Errorf("marshal response: %w", err)
+	}
+
+	return string(output), nil
 }
 
 // sendResponse sends a JSON-RPC response.

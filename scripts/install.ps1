@@ -186,6 +186,34 @@ function Register-Plugin {
         $Marketplaces | Add-Member -NotePropertyName "claude-mnemonic" -NotePropertyValue $MarketplaceEntry -Force
         $Marketplaces | ConvertTo-Json -Depth 10 | Out-File -Encoding UTF8 $MarketplacesFile
         Write-Success "Marketplace registered in known_marketplaces.json"
+
+        # Register MCP server in settings.json
+        $McpBinary = Join-Path $InstallDir "mcp-server.exe"
+        if (Test-Path $McpBinary) {
+            Write-Info "Registering MCP server in settings.json..."
+
+            # Reload settings to include any previous updates
+            $Settings = Get-Content $SettingsFile -Raw | ConvertFrom-Json
+
+            # Ensure mcpServers object exists
+            if (-not $Settings.mcpServers) {
+                $Settings | Add-Member -NotePropertyName "mcpServers" -NotePropertyValue @{} -Force
+            }
+
+            # Add MCP server entry
+            $McpEntry = @{
+                command = $McpBinary
+                args    = @("--project", "`${CLAUDE_PROJECT}")
+                env     = @{}
+            }
+
+            $Settings.mcpServers | Add-Member -NotePropertyName "claude-mnemonic" -NotePropertyValue $McpEntry -Force
+
+            $Settings | ConvertTo-Json -Depth 10 | Out-File -Encoding UTF8 $SettingsFile
+            Write-Success "MCP server registered successfully"
+        } else {
+            Write-Warn "MCP server binary not found at $McpBinary, skipping MCP registration"
+        }
     } catch {
         Write-Warn "Plugin registration encountered an error: $_"
     }
@@ -281,6 +309,10 @@ function Uninstall-ClaudeMnemonic {
             # Remove statusline if it's ours
             if ($Settings.statusLine -and $Settings.statusLine.command -match "claude-mnemonic") {
                 $Settings.PSObject.Properties.Remove("statusLine")
+            }
+            # Remove MCP server entry
+            if ($Settings.mcpServers) {
+                $Settings.mcpServers.PSObject.Properties.Remove("claude-mnemonic")
             }
             $Settings | ConvertTo-Json -Depth 10 | Out-File -Encoding UTF8 $SettingsFile
         }

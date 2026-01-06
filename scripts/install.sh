@@ -297,6 +297,37 @@ EOF
         && mv "${MARKETPLACES_FILE}.tmp" "$MARKETPLACES_FILE"
 
     success "Marketplace registered in known_marketplaces.json"
+
+    # Register MCP server in settings.json
+    local mcp_binary="$INSTALL_DIR/mcp-server"
+    if [[ -f "$mcp_binary" ]]; then
+        info "Registering MCP server in settings.json..."
+
+        # MCP server entry - note the escaped ${CLAUDE_PROJECT}
+        local mcp_entry
+        mcp_entry=$(cat <<'EOF'
+{
+    "command": "MCP_BINARY_PLACEHOLDER",
+    "args": ["--project", "${CLAUDE_PROJECT}"],
+    "env": {}
+}
+EOF
+)
+        # Replace placeholder with actual path
+        mcp_entry=$(echo "$mcp_entry" | sed "s|MCP_BINARY_PLACEHOLDER|$mcp_binary|g")
+
+        # Add or update mcpServers field
+        if jq --arg key "claude-mnemonic" --argjson entry "$mcp_entry" \
+            '.mcpServers //= {} | .mcpServers[$key] = $entry' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp"; then
+            mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+            success "MCP server registered successfully"
+        else
+            warn "Failed to register MCP server (jq error)"
+            rm -f "${SETTINGS_FILE}.tmp"
+        fi
+    else
+        warn "MCP server binary not found at $mcp_binary, skipping MCP registration"
+    fi
 }
 
 # Start the worker service
@@ -479,8 +510,10 @@ if [[ "${1:-}" == "--uninstall" ]]; then
             jq 'del(.plugins["'"$PLUGIN_KEY"'"])' "$PLUGINS_FILE" > "${PLUGINS_FILE}.tmp" && mv "${PLUGINS_FILE}.tmp" "$PLUGINS_FILE"
         fi
         if [[ -f "$SETTINGS_FILE" ]]; then
-            # Remove plugin from enabled plugins and remove statusline if it's ours
-            jq 'del(.enabledPlugins["'"$PLUGIN_KEY"'"]) | if .statusLine.command | test("claude-mnemonic") then del(.statusLine) else . end' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+            # Remove plugin from enabled plugins, remove statusline if it's ours, and remove MCP server entry
+            jq 'del(.enabledPlugins["'"$PLUGIN_KEY"'"]) |
+                if .statusLine.command | test("claude-mnemonic") then del(.statusLine) else . end |
+                del(.mcpServers["claude-mnemonic"])' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
         fi
         if [[ -f "$MARKETPLACES_FILE" ]]; then
             jq 'del(.["claude-mnemonic"])' "$MARKETPLACES_FILE" > "${MARKETPLACES_FILE}.tmp" && mv "${MARKETPLACES_FILE}.tmp" "$MARKETPLACES_FILE"

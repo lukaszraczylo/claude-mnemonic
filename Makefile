@@ -146,8 +146,8 @@ install: build stop-worker
 	@# Copy slash commands if they exist
 	@if [ -d "$(PLUGIN_DIR)/commands" ]; then cp -r $(PLUGIN_DIR)/commands/* $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/commands/ 2>/dev/null || true; fi
 	@# Update plugin.json and marketplace.json with current version to prevent stale version directories
-	@sed 's/"version": "[^"]*"/"version": "$(VERSION)"/g' $(PLUGIN_DIR)/.claude-plugin/plugin.json > $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/plugin.json
-	@sed 's/"version": "[^"]*"/"version": "$(VERSION)"/g' $(PLUGIN_DIR)/.claude-plugin/marketplace.json > $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/marketplace.json
+	@sed 's/{{ .Version }}/$(VERSION)/g; s/{{.Version}}/$(VERSION)/g' $(PLUGIN_DIR)/.claude-plugin/plugin.json.tpl > $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/plugin.json
+	@sed 's/{{ .Version }}/$(VERSION)/g; s/{{.Version}}/$(VERSION)/g' $(PLUGIN_DIR)/.claude-plugin/marketplace.json.tpl > $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/marketplace.json
 	@echo "Registering plugin with Claude Code..."
 	@./scripts/register-plugin.sh "$(VERSION)"
 	@$(MAKE) start-worker

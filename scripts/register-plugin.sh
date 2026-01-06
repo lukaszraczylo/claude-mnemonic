@@ -107,6 +107,37 @@ EOF
         && mv "${MARKETPLACES_FILE}.tmp" "$MARKETPLACES_FILE"
 
     echo "Marketplace registered in known_marketplaces.json"
+
+    # Register MCP server in settings.json
+    MCP_BINARY="$MARKETPLACE_PATH/mcp-server"
+    if [ -f "$MCP_BINARY" ]; then
+        echo "Registering MCP server in settings.json..."
+
+        # MCP server entry - note the escaped ${CLAUDE_PROJECT}
+        MCP_ENTRY=$(cat <<'EOF'
+{
+    "command": "MCP_BINARY_PLACEHOLDER",
+    "args": ["--project", "${CLAUDE_PROJECT}"],
+    "env": {}
+}
+EOF
+)
+        # Replace placeholder with actual path
+        MCP_ENTRY=$(echo "$MCP_ENTRY" | sed "s|MCP_BINARY_PLACEHOLDER|$MCP_BINARY|g")
+
+        # Add or update mcpServers field
+        if jq --arg key "claude-mnemonic" --argjson entry "$MCP_ENTRY" \
+            '.mcpServers //= {} | .mcpServers[$key] = $entry' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp"; then
+            mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+            echo "MCP server registered successfully"
+        else
+            echo "Warning: Failed to register MCP server (jq error)"
+            rm -f "${SETTINGS_FILE}.tmp"
+        fi
+    else
+        echo "MCP server binary not found at $MCP_BINARY, skipping MCP registration"
+    fi
+
     echo "Plugin registered successfully using jq"
 else
     echo "ERROR: jq is required for plugin registration"
