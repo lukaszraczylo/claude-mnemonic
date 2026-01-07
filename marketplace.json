@@ -13,7 +13,7 @@
     {
       "name": "claude-mnemonic",
       "description": "Persistent memory system for Claude Code - Go implementation with SQLite and ChromaDB vector search",
-      "version": "0.9.5",
+      "version": "0.10.1",
       "author": {
         "name": "lukaszraczylo",
         "url": "https://github.com/lukaszraczylo"
@@ -23,25 +23,25 @@
       "license": "MIT",
       "homepage": "https://github.com/lukaszraczylo/claude-mnemonic",
       "releases": {
-        "latest": "0.9.5",
+        "latest": "0.10.1",
         "versions": {
-          "0.9.5": {
-            "releaseDate": "2026-01-02",
+          "0.10.1": {
+            "releaseDate": "2026-01-07",
             "downloads": {
               "darwin-arm64": {
-                "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/v0.9.5/claude-mnemonic_0.9.5_darwin_arm64.tar.gz",
+                "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/v0.10.1/claude-mnemonic_0.10.1_darwin_arm64.tar.gz",
                 "format": "tar.gz",
-                "sha256": "38c847ee564a7b695262875c251e1c737ca35590a28ce9093a72ba40abab507c"
+                "sha256": "bb437008fb929b01139c5d566dc2083346fe4c3b10dd61a68f6b5642bc443d50"
               },
               "linux-amd64": {
-                "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/v0.9.5/claude-mnemonic_0.9.5_linux_amd64.tar.gz",
+                "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/v0.10.1/claude-mnemonic_0.10.1_linux_amd64.tar.gz",
                 "format": "tar.gz",
-                "sha256": "5b4fe2fcfe255d00d52a33c257dc0509e3013415874fb64a782dfeb21b0a3912"
+                "sha256": "319008d90f56b6417aa50369619911ac24c85a0bd978913c4149814065b7521d"
               },
               "windows-amd64": {
-                "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/v0.9.5/claude-mnemonic_0.9.5_windows_amd64.zip",
+                "url": "https://github.com/lukaszraczylo/claude-mnemonic/releases/download/v0.10.1/claude-mnemonic_0.10.1_windows_amd64.zip",
                 "format": "zip",
-                "sha256": "e293f6c1968f224407ba5bf5c6e411dba9f68a1f51a9bf40bcb398bdeea03ff5"
+                "sha256": "34eea672b80e97a03d0800a4de0cb71d0da45c6efa7a98bc332ec5df95336bf9"
               }
             }
           }
