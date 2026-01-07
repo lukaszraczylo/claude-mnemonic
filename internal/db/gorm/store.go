@@ -88,6 +88,11 @@ func NewStore(cfg Config) (*Store, error) {
 	if _, err := sqlDB.Exec("PRAGMA synchronous=NORMAL"); err != nil {
 		return nil, fmt.Errorf("set synchronous mode: %w", err)
 	}
+	// Set busy timeout to 5 seconds to handle concurrent writes
+	// This allows SQLite to retry when database is locked instead of failing immediately
+	if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		return nil, fmt.Errorf("set busy timeout: %w", err)
+	}
 
 	return store, nil
 }
