@@ -36,41 +36,38 @@ var CriticalConcepts = []string{
 }
 
 // Config holds the application configuration.
+// Field order optimized for memory alignment (fieldalignment).
 type Config struct {
-	// Worker settings
-	WorkerPort int `json:"worker_port"`
-
-	// Database settings
-	DBPath   string `json:"db_path"`
-	MaxConns int    `json:"max_conns"`
-
-	// SDK Agent settings
-	Model          string `json:"model"`
-	ClaudeCodePath string `json:"claude_code_path"`
-
-	// Embedding settings
-	EmbeddingModel string `json:"embedding_model"` // e.g., "bge-v1.5"
-
-	// Reranking settings (cross-encoder)
-	RerankingEnabled        bool    `json:"reranking_enabled"`         // Enable cross-encoder reranking
-	RerankingCandidates     int     `json:"reranking_candidates"`      // Number of candidates to retrieve before reranking (default 100)
-	RerankingResults        int     `json:"reranking_results"`         // Number of results to return after reranking (default 10)
-	RerankingAlpha          float64 `json:"reranking_alpha"`           // Weight for combining scores: alpha*rerank + (1-alpha)*original (default 0.7)
-	RerankingMinImprovement float64 `json:"reranking_min_improvement"` // Minimum rank improvement to trigger reranking (default 0, always rerank)
-	RerankingPureMode       bool    `json:"reranking_pure_mode"`       // Use pure cross-encoder scores without combining with bi-encoder (default false)
-
-	// Context injection settings
+	ContextFullField          string   `json:"context_full_field"`
+	DBPath                    string   `json:"db_path"`
+	Model                     string   `json:"model"`
+	ClaudeCodePath            string   `json:"claude_code_path"`
+	EmbeddingModel            string   `json:"embedding_model"`
+	VectorStorageStrategy     string   `json:"vector_storage_strategy"`
+	ContextObsConcepts        []string `json:"context_obs_concepts"`
+	ContextObsTypes           []string `json:"context_obs_types"`
+	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`
+	RerankingResults          int      `json:"reranking_results"`
+	GraphEdgeWeight           float64  `json:"graph_edge_weight"`
+	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"`
+	RerankingCandidates       int      `json:"reranking_candidates"`
+	WorkerPort                int      `json:"worker_port"`
+	RerankingMinImprovement   float64  `json:"reranking_min_improvement"`
 	ContextObservations       int      `json:"context_observations"`
 	ContextFullCount          int      `json:"context_full_count"`
 	ContextSessionCount       int      `json:"context_session_count"`
-	ContextShowReadTokens     bool     `json:"context_show_read_tokens"`
-	ContextShowWorkTokens     bool     `json:"context_show_work_tokens"`
-	ContextFullField          string   `json:"context_full_field"`
+	MaxConns                  int      `json:"max_conns"`
+	RerankingAlpha            float64  `json:"reranking_alpha"`
+	GraphMaxHops              int      `json:"graph_max_hops"`
+	GraphBranchFactor         int      `json:"graph_branch_factor"`
+	GraphRebuildIntervalMin   int      `json:"graph_rebuild_interval_min"`
+	HubThreshold              int      `json:"hub_threshold"`
 	ContextShowLastSummary    bool     `json:"context_show_last_summary"`
-	ContextObsTypes           []string `json:"context_obs_types"`
-	ContextObsConcepts        []string `json:"context_obs_concepts"`
-	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"` // 0.0-1.0, minimum similarity for inclusion
-	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`  // Max results per prompt (0 = threshold only)
+	RerankingEnabled          bool     `json:"reranking_enabled"`
+	ContextShowWorkTokens     bool     `json:"context_show_work_tokens"`
+	ContextShowReadTokens     bool     `json:"context_show_read_tokens"`
+	RerankingPureMode         bool     `json:"reranking_pure_mode"`
+	GraphEnabled              bool     `json:"graph_enabled"`
 }
 
 var (
@@ -143,11 +140,18 @@ func Default() *Config {
 		MaxConns:                  4,
 		Model:                     DefaultModel,
 		EmbeddingModel:            DefaultEmbeddingModel,
-		RerankingEnabled:          true, // Enable by default for improved relevance
-		RerankingCandidates:       100,  // Retrieve top 100 candidates
-		RerankingResults:          10,   // Return top 10 after reranking
-		RerankingAlpha:            0.7,  // Favor cross-encoder score
-		RerankingMinImprovement:   0,    // Always apply reranking
+		RerankingEnabled:          true,  // Enable by default for improved relevance
+		RerankingCandidates:       100,   // Retrieve top 100 candidates
+		RerankingResults:          10,    // Return top 10 after reranking
+		RerankingAlpha:            0.7,   // Favor cross-encoder score
+		RerankingMinImprovement:   0,     // Always apply reranking
+		GraphEnabled:              true,  // Enable graph-aware search by default
+		GraphMaxHops:              2,     // Two-hop traversal
+		GraphBranchFactor:         5,     // Expand top 5 neighbors per node
+		GraphEdgeWeight:           0.3,   // Minimum edge weight to follow
+		GraphRebuildIntervalMin:   60,    // Rebuild graph every 60 minutes
+		VectorStorageStrategy:     "hub", // Hub storage strategy (LEANN-inspired)
+		HubThreshold:              5,     // Require 5+ accesses to store embedding
 		ContextObservations:       100,
 		ContextFullCount:          25,
 		ContextSessionCount:       10,
@@ -232,6 +236,29 @@ func Load() (*Config, error) {
 	}
 	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_MAX_PROMPT_RESULTS"].(float64); ok && v >= 0 {
 		cfg.ContextMaxPromptResults = int(v)
+	}
+	// Graph settings
+	if v, ok := settings["CLAUDE_MNEMONIC_GRAPH_ENABLED"].(bool); ok {
+		cfg.GraphEnabled = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_GRAPH_MAX_HOPS"].(float64); ok && v > 0 {
+		cfg.GraphMaxHops = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_GRAPH_BRANCH_FACTOR"].(float64); ok && v > 0 {
+		cfg.GraphBranchFactor = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_GRAPH_EDGE_WEIGHT"].(float64); ok && v >= 0 && v <= 1 {
+		cfg.GraphEdgeWeight = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_GRAPH_REBUILD_INTERVAL_MIN"].(float64); ok && v > 0 {
+		cfg.GraphRebuildIntervalMin = int(v)
+	}
+	// Vector storage settings (LEANN Phase 2)
+	if v, ok := settings["CLAUDE_MNEMONIC_VECTOR_STORAGE_STRATEGY"].(string); ok && v != "" {
+		cfg.VectorStorageStrategy = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_HUB_THRESHOLD"].(float64); ok && v > 0 {
+		cfg.HubThreshold = int(v)
 	}
 
 	return cfg, nil

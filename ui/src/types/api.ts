@@ -63,3 +63,58 @@ export interface SelfCheckResponse {
   uptime: string
   components: ComponentHealth[]
 }
+
+export interface GraphStats {
+  enabled: boolean
+  nodeCount: number
+  edgeCount: number
+  avgDegree: number
+  maxDegree: number
+  minDegree: number
+  medianDegree: number
+  edgeTypes: Record<string, number>
+  config: {
+    maxHops: number
+    branchFactor: number
+    edgeWeight: number
+    rebuildIntervalMin: number
+  }
+  message?: string
+}
+
+export interface VectorMetrics {
+  enabled: boolean
+  queries: {
+    total: number
+    hubOnly: number
+    hybrid: number
+    onDemand: number
+    graph: number
+  }
+  latency: {
+    avg: string
+    p50: string
+    p95: string
+    p99: string
+    avgHub: string
+    avgRecompute: string
+  }
+  storage: {
+    totalDocuments: number
+    hubDocuments: number
+    storedEmbeddings: number
+    savingsPercent: number
+    recomputedTotal: number
+  }
+  cache: {
+    hits: number
+    misses: number
+    hitRate: number
+  }
+  graph: {
+    traversals: number
+    avgDepth: number
+  }
+  uptime: string
+  message?: string
+}

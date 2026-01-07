@@ -669,16 +669,16 @@ func TestActiveSessionCWD(t *testing.T) {
 // TestToolInputResponse tests various tool input/response types.
 func TestToolInputResponse(t *testing.T) {
 	tests := []struct {
-		name     string
 		input    interface{}
 		response interface{}
+		name     string
 	}{
-		{"nil_values", nil, nil},
-		{"string_values", "input string", "response string"},
-		{"map_values", map[string]string{"key": "value"}, map[string]interface{}{"result": true}},
-		{"slice_values", []string{"a", "b"}, []int{1, 2, 3}},
-		{"int_values", 42, 100},
-		{"bool_values", true, false},
+		{name: "nil_values", input: nil, response: nil},
+		{name: "string_values", input: "input string", response: "response string"},
+		{name: "map_values", input: map[string]string{"key": "value"}, response: map[string]interface{}{"result": true}},
+		{name: "slice_values", input: []string{"a", "b"}, response: []int{1, 2, 3}},
+		{name: "int_values", input: 42, response: 100},
+		{name: "bool_values", input: true, response: false},
 	}
 
 	for _, tt := range tests {

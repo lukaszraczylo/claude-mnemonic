@@ -17,18 +17,18 @@ import (
 
 // SDKSession represents a Claude Code session.
 type SDKSession struct {
-	ID               int64          `gorm:"primaryKey;autoIncrement"`
 	ClaudeSessionID  string         `gorm:"uniqueIndex;not null"`
-	SDKSessionID     sql.NullString `gorm:"uniqueIndex"`
 	Project          string         `gorm:"index;not null"`
+	Status           string         `gorm:"type:text;check:status IN ('active', 'completed', 'failed');default:'active';index"`
+	StartedAt        string         `gorm:"not null"`
+	SDKSessionID     sql.NullString `gorm:"uniqueIndex"`
 	UserPrompt       sql.NullString
-	WorkerPort       sql.NullInt64
-	PromptCounter    int    `gorm:"default:0"`
-	Status           string `gorm:"type:text;check:status IN ('active', 'completed', 'failed');default:'active';index"`
-	StartedAt        string `gorm:"not null"`
-	StartedAtEpoch   int64  `gorm:"index:idx_sessions_started,sort:desc;not null"`
 	CompletedAt      sql.NullString
+	WorkerPort       sql.NullInt64
 	CompletedAtEpoch sql.NullInt64
+	ID               int64 `gorm:"primaryKey;autoIncrement"`
+	PromptCounter    int   `gorm:"default:0"`
+	StartedAtEpoch   int64 `gorm:"index:idx_sessions_started,sort:desc;not null"`
 }
 
 func (SDKSession) TableName() string { return "sdk_sessions" }
@@ -46,34 +46,28 @@ func (s *SDKSession) BeforeCreate(tx *gorm.DB) error {
 
 // Observation represents a stored observation (learning).
 type Observation struct {
-	ID           int64                   `gorm:"primaryKey;autoIncrement"`
-	SDKSessionID string                  `gorm:"index;not null"`
-	Project      string                  `gorm:"index;not null"`
-	Scope        models.ObservationScope `gorm:"type:text;default:'project';check:scope IN ('project', 'global');index:idx_observations_scope;index:idx_observations_project_scope,priority:2"`
-	Type         models.ObservationType  `gorm:"type:text;check:type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change');index;not null"`
-
-	// Content fields
-	Title         sql.NullString         `gorm:"type:text"`
-	Subtitle      sql.NullString         `gorm:"type:text"`
-	Facts         models.JSONStringArray `gorm:"type:text"` // JSON array
-	Narrative     sql.NullString         `gorm:"type:text"`
-	Concepts      models.JSONStringArray `gorm:"type:text"` // JSON array
-	FilesRead     models.JSONStringArray `gorm:"type:text"` // JSON array
-	FilesModified models.JSONStringArray `gorm:"type:text"` // JSON array
-	FileMtimes    models.JSONInt64Map    `gorm:"type:text"` // JSON object
-
-	// Metadata
+	FileMtimes      models.JSONInt64Map     `gorm:"type:text"`
+	SDKSessionID    string                  `gorm:"index;not null"`
+	Project         string                  `gorm:"index;not null"`
+	Scope           models.ObservationScope `gorm:"type:text;default:'project';check:scope IN ('project', 'global');index:idx_observations_scope;index:idx_observations_project_scope,priority:2"`
+	Type            models.ObservationType  `gorm:"type:text;check:type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change');index;not null"`
+	CreatedAt       string                  `gorm:"not null"`
+	Title           sql.NullString          `gorm:"type:text"`
+	Narrative       sql.NullString          `gorm:"type:text"`
+	Concepts        models.JSONStringArray  `gorm:"type:text"`
+	FilesRead       models.JSONStringArray  `gorm:"type:text"`
+	FilesModified   models.JSONStringArray  `gorm:"type:text"`
+	Subtitle        sql.NullString          `gorm:"type:text"`
+	Facts           models.JSONStringArray  `gorm:"type:text"`
+	LastRetrievedAt sql.NullInt64           `gorm:"column:last_retrieved_at_epoch"`
 	PromptNumber    sql.NullInt64
-	DiscoveryTokens int64  `gorm:"default:0"`
-	CreatedAt       string `gorm:"not null"`
-	CreatedAtEpoch  int64  `gorm:"index:idx_observations_created,sort:desc;not null"`
-
-	// Importance scoring fields
+	ScoreUpdatedAt  sql.NullInt64 `gorm:"column:score_updated_at_epoch;index:idx_observations_score_updated"`
+	ID              int64         `gorm:"primaryKey;autoIncrement"`
 	ImportanceScore float64       `gorm:"type:real;default:1.0;index:idx_observations_importance,priority:1,sort:desc"`
 	UserFeedback    int           `gorm:"default:0"`
 	RetrievalCount  int           `gorm:"default:0"`
-	LastRetrievedAt sql.NullInt64 `gorm:"column:last_retrieved_at_epoch"`
-	ScoreUpdatedAt  sql.NullInt64 `gorm:"column:score_updated_at_epoch;index:idx_observations_score_updated"`
+	CreatedAtEpoch  int64         `gorm:"index:idx_observations_created,sort:desc;not null"`
+	DiscoveryTokens int64         `gorm:"default:0"`
 	IsSuperseded    int           `gorm:"default:0;index:idx_observations_superseded,priority:1"`
 }
 
@@ -95,23 +89,19 @@ func (o *Observation) BeforeCreate(tx *gorm.DB) error {
 
 // SessionSummary represents a session summary.
 type SessionSummary struct {
-	ID           int64  `gorm:"primaryKey;autoIncrement"`
-	SDKSessionID string `gorm:"index;not null"`
-	Project      string `gorm:"index;not null"`
-
-	// Summary fields (nullable TEXT)
-	Request      sql.NullString
-	Investigated sql.NullString
-	Learned      sql.NullString
-	Completed    sql.NullString
-	NextSteps    sql.NullString `gorm:"column:next_steps"`
-	Notes        sql.NullString
-
-	// Metadata
-	PromptNumber    sql.NullInt64
-	DiscoveryTokens int64  `gorm:"default:0"`
 	CreatedAt       string `gorm:"not null"`
-	CreatedAtEpoch  int64  `gorm:"index:idx_summaries_created,sort:desc;not null"`
+	SDKSessionID    string `gorm:"index;not null"`
+	Project         string `gorm:"index;not null"`
+	Completed       sql.NullString
+	Investigated    sql.NullString
+	Learned         sql.NullString
+	NextSteps       sql.NullString `gorm:"column:next_steps"`
+	Notes           sql.NullString
+	Request         sql.NullString
+	PromptNumber    sql.NullInt64
+	ID              int64 `gorm:"primaryKey;autoIncrement"`
+	DiscoveryTokens int64 `gorm:"default:0"`
+	CreatedAtEpoch  int64 `gorm:"index:idx_summaries_created,sort:desc;not null"`
 }
 
 func (SessionSummary) TableName() string { return "session_summaries" }
@@ -129,12 +119,12 @@ func (s *SessionSummary) BeforeCreate(tx *gorm.DB) error {
 
 // UserPrompt represents a user prompt.
 type UserPrompt struct {
-	ID                  int64  `gorm:"primaryKey;autoIncrement"`
 	ClaudeSessionID     string `gorm:"index;not null;uniqueIndex:idx_user_prompts_session_number_unique,priority:1"`
-	PromptNumber        int    `gorm:"index;not null;uniqueIndex:idx_user_prompts_session_number_unique,priority:2"`
 	PromptText          string `gorm:"type:text;not null"`
-	MatchedObservations int    `gorm:"default:0"`
 	CreatedAt           string `gorm:"not null"`
+	ID                  int64  `gorm:"primaryKey;autoIncrement"`
+	PromptNumber        int    `gorm:"index;not null;uniqueIndex:idx_user_prompts_session_number_unique,priority:2"`
+	MatchedObservations int    `gorm:"default:0"`
 	CreatedAtEpoch      int64  `gorm:"index:idx_prompts_created,sort:desc;not null"`
 }
 
@@ -153,16 +143,16 @@ func (p *UserPrompt) BeforeCreate(tx *gorm.DB) error {
 
 // ObservationConflict tracks conflicts between observations.
 type ObservationConflict struct {
-	ID              int64                     `gorm:"primaryKey;autoIncrement"`
-	NewerObsID      int64                     `gorm:"index:idx_conflicts_newer;not null"`
-	OlderObsID      int64                     `gorm:"index:idx_conflicts_older;not null"`
 	ConflictType    models.ConflictType       `gorm:"type:text;check:conflict_type IN ('superseded', 'contradicts', 'outdated_pattern');not null"`
 	Resolution      models.ConflictResolution `gorm:"type:text;check:resolution IN ('prefer_newer', 'prefer_older', 'manual');not null"`
-	Reason          sql.NullString            `gorm:"type:text"`
 	DetectedAt      string                    `gorm:"not null"`
-	DetectedAtEpoch int64                     `gorm:"index:idx_conflicts_unresolved,priority:2,sort:desc;not null"`
-	Resolved        int                       `gorm:"default:0;index:idx_conflicts_unresolved,priority:1"`
+	Reason          sql.NullString            `gorm:"type:text"`
 	ResolvedAt      sql.NullString
+	ID              int64 `gorm:"primaryKey;autoIncrement"`
+	NewerObsID      int64 `gorm:"index:idx_conflicts_newer;not null"`
+	OlderObsID      int64 `gorm:"index:idx_conflicts_older;not null"`
+	DetectedAtEpoch int64 `gorm:"index:idx_conflicts_unresolved,priority:2,sort:desc;not null"`
+	Resolved        int   `gorm:"default:0;index:idx_conflicts_unresolved,priority:1"`
 }
 
 func (ObservationConflict) TableName() string { return "observation_conflicts" }
@@ -180,14 +170,14 @@ func (c *ObservationConflict) BeforeCreate(tx *gorm.DB) error {
 
 // ObservationRelation tracks relationships between observations.
 type ObservationRelation struct {
+	RelationType    models.RelationType            `gorm:"type:text;check:relation_type IN ('causes', 'fixes', 'supersedes', 'depends_on', 'relates_to', 'evolves_from');index:idx_relations_type;uniqueIndex:idx_relations_unique,priority:3;not null"`
+	DetectionSource models.RelationDetectionSource `gorm:"type:text;check:detection_source IN ('file_overlap', 'embedding_similarity', 'temporal_proximity', 'narrative_mention', 'concept_overlap', 'type_progression');not null"`
+	CreatedAt       string                         `gorm:"not null"`
+	Reason          sql.NullString                 `gorm:"type:text"`
 	ID              int64                          `gorm:"primaryKey;autoIncrement"`
 	SourceID        int64                          `gorm:"index:idx_relations_source;index:idx_relations_both,priority:1;uniqueIndex:idx_relations_unique,priority:1;not null"`
 	TargetID        int64                          `gorm:"index:idx_relations_target;index:idx_relations_both,priority:2;uniqueIndex:idx_relations_unique,priority:2;not null"`
-	RelationType    models.RelationType            `gorm:"type:text;check:relation_type IN ('causes', 'fixes', 'supersedes', 'depends_on', 'relates_to', 'evolves_from');index:idx_relations_type;uniqueIndex:idx_relations_unique,priority:3;not null"`
 	Confidence      float64                        `gorm:"type:real;default:0.5;index:idx_relations_confidence,sort:desc;not null"`
-	DetectionSource models.RelationDetectionSource `gorm:"type:text;check:detection_source IN ('file_overlap', 'embedding_similarity', 'temporal_proximity', 'narrative_mention', 'concept_overlap', 'type_progression');not null"`
-	Reason          sql.NullString                 `gorm:"type:text"`
-	CreatedAt       string                         `gorm:"not null"`
 	CreatedAtEpoch  int64                          `gorm:"not null"`
 }
 
@@ -209,21 +199,21 @@ func (r *ObservationRelation) BeforeCreate(tx *gorm.DB) error {
 
 // Pattern represents a detected recurring pattern.
 type Pattern struct {
-	ID              int64                  `gorm:"primaryKey;autoIncrement"`
+	Status          models.PatternStatus   `gorm:"type:text;default:'active';check:status IN ('active', 'deprecated', 'merged');index"`
 	Name            string                 `gorm:"type:text;not null"`
 	Type            models.PatternType     `gorm:"type:text;check:type IN ('bug', 'refactor', 'architecture', 'anti-pattern', 'best-practice');index;not null"`
-	Description     sql.NullString         `gorm:"type:text"`
-	Signature       models.JSONStringArray `gorm:"type:text"` // JSON array of keywords
+	CreatedAt       string                 `gorm:"not null"`
+	LastSeenAt      string                 `gorm:"not null"`
+	Signature       models.JSONStringArray `gorm:"type:text"`
+	Projects        models.JSONStringArray `gorm:"type:text"`
+	ObservationIDs  models.JSONInt64Array  `gorm:"type:text"`
 	Recommendation  sql.NullString         `gorm:"type:text"`
-	Frequency       int                    `gorm:"default:1;index:idx_patterns_frequency,sort:desc"`
-	Projects        models.JSONStringArray `gorm:"type:text"` // JSON array
-	ObservationIDs  models.JSONInt64Array  `gorm:"type:text"` // JSON array
-	Status          models.PatternStatus   `gorm:"type:text;default:'active';check:status IN ('active', 'deprecated', 'merged');index"`
+	Description     sql.NullString         `gorm:"type:text"`
 	MergedIntoID    sql.NullInt64
+	Frequency       int     `gorm:"default:1;index:idx_patterns_frequency,sort:desc"`
 	Confidence      float64 `gorm:"type:real;default:0.5;index:idx_patterns_confidence,sort:desc"`
-	LastSeenAt      string  `gorm:"not null"`
+	ID              int64   `gorm:"primaryKey;autoIncrement"`
 	LastSeenAtEpoch int64   `gorm:"index:idx_patterns_last_seen,sort:desc;not null"`
-	CreatedAt       string  `gorm:"not null"`
 	CreatedAtEpoch  int64   `gorm:"not null"`
 }
 
@@ -256,8 +246,8 @@ func (p *Pattern) BeforeCreate(tx *gorm.DB) error {
 // ConceptWeight stores configurable weights for importance scoring.
 type ConceptWeight struct {
 	Concept   string  `gorm:"primaryKey;type:text"`
-	Weight    float64 `gorm:"type:real;not null;default:0.1"`
 	UpdatedAt string  `gorm:"not null"`
+	Weight    float64 `gorm:"type:real;not null;default:0.1"`
 }
 
 func (ConceptWeight) TableName() string { return "concept_weights" }

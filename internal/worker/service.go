@@ -12,6 +12,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/chunking"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/chunking/golang"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/chunking/python"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/chunking/typescript"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
@@ -20,6 +24,7 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/internal/scoring"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/search/expansion"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/update"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/hybrid"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/watcher"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sdk"
@@ -56,80 +61,53 @@ type RetrievalStats struct {
 
 // Service is the main worker service orchestrator.
 type Service struct {
-	// Version of the worker binary
-	version string
-
-	// Configuration
-	config *config.Config
-
-	// Database
-	store            *gorm.Store
-	sessionStore     *gorm.SessionStore
-	observationStore *gorm.ObservationStore
-	summaryStore     *gorm.SummaryStore
-	promptStore      *gorm.PromptStore
-	conflictStore    *gorm.ConflictStore
-	patternStore     *gorm.PatternStore
-	relationStore    *gorm.RelationStore
-
-	// Pattern detection
-	patternDetector *pattern.Detector
-
-	// Domain services
-	sessionManager *session.Manager
-	sseBroadcaster *sse.Broadcaster
-	processor      *sdk.Processor
-
-	// Vector database (sqlite-vec with local embeddings)
-	embedSvc     *embedding.Service
-	vectorClient *sqlitevec.Client
-	vectorSync   *sqlitevec.Sync
-
-	// Cross-encoder reranking (for improved search relevance)
-	reranker *reranking.Service
-
-	// Query expansion (for improved search recall)
-	queryExpander *expansion.Expander
-
-	// Importance scoring
-	scoreCalculator *scoring.Calculator
-	recalculator    *scoring.Recalculator
-
-	// HTTP server
-	router    *chi.Mux
-	server    *http.Server
-	startTime time.Time
-
-	// Retrieval statistics (per-project)
-	retrievalStats   map[string]*RetrievalStats
-	retrievalStatsMu sync.RWMutex
-
-	// Lifecycle
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-
-	// Initialization state (for deferred init)
-	ready     atomic.Bool
-	initError error
-	initMu    sync.RWMutex
-
-	// Background verification queue for stale observations
-	staleQueue     chan staleVerifyRequest
-	staleQueueOnce sync.Once
-
-	// File watchers for auto-recreation on deletion
-	dbWatcher     *watcher.Watcher
-	configWatcher *watcher.Watcher
-
-	// Self-updater
-	updater *update.Updater
+	startTime          time.Time
+	initError          error
+	ctx                context.Context
+	patternDetector    *pattern.Detector
+	queryExpander      *expansion.Expander
+	summaryStore       *gorm.SummaryStore
+	promptStore        *gorm.PromptStore
+	conflictStore      *gorm.ConflictStore
+	patternStore       *gorm.PatternStore
+	relationStore      *gorm.RelationStore
+	updater            *update.Updater
+	sessionManager     *session.Manager
+	scoreCalculator    *scoring.Calculator
+	processor          *sdk.Processor
+	embedSvc           *embedding.Service
+	vectorClient       *sqlitevec.Client
+	vectorSync         *sqlitevec.Sync
+	graphSearchClient  *hybrid.GraphSearchClient
+	hybridMetrics      *hybrid.Metrics
+	graphRebuildTicker *time.Ticker
+	chunkingManager    *chunking.Manager
+	observationStore   *gorm.ObservationStore
+	reranker           *reranking.Service
+	sseBroadcaster     *sse.Broadcaster
+	recalculator       *scoring.Recalculator
+	router             *chi.Mux
+	server             *http.Server
+	sessionStore       *gorm.SessionStore
+	retrievalStats     map[string]*RetrievalStats
+	configWatcher      *watcher.Watcher
+	store              *gorm.Store
+	cancel             context.CancelFunc
+	dbWatcher          *watcher.Watcher
+	staleQueue         chan staleVerifyRequest
+	config             *config.Config
+	version            string
+	wg                 sync.WaitGroup
+	initMu             sync.RWMutex
+	retrievalStatsMu   sync.RWMutex
+	staleQueueOnce     sync.Once
+	ready              atomic.Bool
 }
 
 // staleVerifyRequest represents a request to verify a stale observation in background
 type staleVerifyRequest struct {
-	observationID int64
 	cwd           string
+	observationID int64
 }
 
 // NewService creates a new worker service with deferred initialization.
@@ -210,6 +188,9 @@ func (s *Service) initializeAsync() {
 	var embedSvc *embedding.Service
 	var vectorClient *sqlitevec.Client
 	var vectorSync *sqlitevec.Sync
+	var graphSearchClient *hybrid.GraphSearchClient
+	var hybridMetrics *hybrid.Metrics
+	var chunkingManager *chunking.Manager
 
 	var reranker *reranking.Service
 
@@ -218,18 +199,51 @@ func (s *Service) initializeAsync() {
 		log.Warn().Err(err).Msg("Embedding service creation failed - vector search disabled")
 	} else {
 		embedSvc = emb
-		// Create sqlite-vec client using the same DB connection
-		client, err := sqlitevec.NewClient(sqlitevec.Config{
+		// Create base sqlite-vec client using the same DB connection
+		baseClient, err := sqlitevec.NewClient(sqlitevec.Config{
 			DB: store.GetRawDB(),
 		}, embedSvc)
 		if err != nil {
 			log.Warn().Err(err).Msg("sqlite-vec client creation failed - vector search disabled")
 		} else {
-			vectorClient = client
-			vectorSync = sqlitevec.NewSync(client)
+			vectorClient = baseClient
+
+			// Wrap with LEANN hybrid storage client
+			strategy := hybrid.ParseStrategy(s.config.VectorStorageStrategy)
+			hybridClient := hybrid.NewClient(hybrid.Config{
+				BaseClient:   baseClient,
+				DB:           store.GetRawDB(),
+				EmbedSvc:     embedSvc,
+				Strategy:     strategy,
+				HubThreshold: s.config.HubThreshold,
+			})
+
+			// Wrap with graph-aware search client
+			graphConfig := hybrid.GraphConfig{
+				Enabled:      s.config.GraphEnabled,
+				MaxHops:      s.config.GraphMaxHops,
+				BranchFactor: s.config.GraphBranchFactor,
+				EdgeWeight:   s.config.GraphEdgeWeight,
+			}
+			graphSearchClient = hybrid.NewGraphSearchClient(hybridClient, nil, graphConfig)
+			hybridMetrics = hybrid.NewMetrics()
+
+			vectorSync = sqlitevec.NewSync(baseClient)
+
+			// Initialize AST-aware code chunking
+			chunkOpts := chunking.DefaultChunkOptions()
+			chunkers := []chunking.Chunker{
+				golang.NewChunker(chunkOpts),
+				python.NewChunker(chunkOpts),
+				typescript.NewChunker(chunkOpts),
+			}
+			chunkingManager = chunking.NewManager(chunkers, chunkOpts)
+
 			log.Info().
 				Str("model", embedSvc.Version()).
-				Msg("sqlite-vec vector search enabled")
+				Str("storage_strategy", s.config.VectorStorageStrategy).
+				Bool("graph_enabled", s.config.GraphEnabled).
+				Msg("LEANN hybrid vector storage and graph search enabled")
 		}
 
 		// Create cross-encoder reranking service if enabled
@@ -284,6 +298,9 @@ func (s *Service) initializeAsync() {
 	s.embedSvc = embedSvc
 	s.vectorClient = vectorClient
 	s.vectorSync = vectorSync
+	s.graphSearchClient = graphSearchClient
+	s.hybridMetrics = hybridMetrics
+	s.chunkingManager = chunkingManager
 	s.reranker = reranker
 	s.initMu.Unlock()
 
@@ -410,6 +427,18 @@ func (s *Service) initializeAsync() {
 	// Mark as ready
 	s.ready.Store(true)
 	log.Info().Msg("Async initialization complete - service ready")
+
+	// Build initial observation graph if graph search is enabled
+	if graphSearchClient != nil && s.config.GraphEnabled {
+		s.wg.Add(1)
+		go s.buildInitialGraph(observationStore)
+
+		// Start periodic graph rebuild timer
+		if s.config.GraphRebuildIntervalMin > 0 {
+			s.wg.Add(1)
+			go s.startGraphRebuildTimer(observationStore)
+		}
+	}
 
 	// Start queue processor if SDK processor is available
 	if processor != nil {
@@ -1136,6 +1165,10 @@ func (s *Service) setupRoutes() {
 		r.Get("/api/observations/{id}/relations", s.handleGetRelations)
 		r.Get("/api/observations/{id}/graph", s.handleGetRelationGraph)
 		r.Get("/api/observations/{id}/related", s.handleGetRelatedObservations)
+
+		// LEANN Phase 2: Graph-based search and hybrid vector storage
+		r.Get("/api/graph/stats", s.handleGetGraphStats)
+		r.Get("/api/vector/metrics", s.handleGetVectorMetrics)
 	})
 }
 
@@ -1344,6 +1377,87 @@ func (s *Service) processAllSessions() {
 
 	// Broadcast status after processing
 	s.broadcastProcessingStatus()
+}
+
+// buildInitialGraph builds the observation relationship graph in the background.
+func (s *Service) buildInitialGraph(observationStore *gorm.ObservationStore) {
+	defer s.wg.Done()
+
+	log.Info().Msg("Building initial observation graph...")
+	start := time.Now()
+
+	// Fetch all observations
+	observations, err := observationStore.GetAllObservations(s.ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch observations for graph building")
+		return
+	}
+
+	if len(observations) == 0 {
+		log.Info().Msg("No observations to build graph from")
+		return
+	}
+
+	// Build graph using RebuildGraph method
+	if err := s.graphSearchClient.RebuildGraph(s.ctx, observations); err != nil {
+		log.Error().Err(err).Msg("Failed to build observation graph")
+		return
+	}
+
+	elapsed := time.Since(start)
+	stats := s.graphSearchClient.GetGraphStats()
+
+	log.Info().
+		Int("observations", len(observations)).
+		Int("nodes", stats.NodeCount).
+		Int("edges", stats.EdgeCount).
+		Float64("avg_degree", stats.AvgDegree).
+		Int("max_degree", stats.MaxDegree).
+		Dur("elapsed", elapsed).
+		Msg("Initial observation graph built successfully")
+}
+
+// startGraphRebuildTimer starts a periodic ticker to rebuild the observation graph.
+func (s *Service) startGraphRebuildTimer(observationStore *gorm.ObservationStore) {
+	defer s.wg.Done()
+
+	interval := time.Duration(s.config.GraphRebuildIntervalMin) * time.Minute
+	s.graphRebuildTicker = time.NewTicker(interval)
+
+	log.Info().
+		Dur("interval", interval).
+		Msg("Started periodic graph rebuild timer")
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			s.graphRebuildTicker.Stop()
+			log.Info().Msg("Stopped graph rebuild timer")
+			return
+
+		case <-s.graphRebuildTicker.C:
+			log.Info().Msg("Periodic graph rebuild triggered")
+			start := time.Now()
+
+			observations, err := observationStore.GetAllObservations(s.ctx)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to fetch observations for graph rebuild")
+				continue
+			}
+
+			if err := s.graphSearchClient.RebuildGraph(s.ctx, observations); err != nil {
+				log.Error().Err(err).Msg("Failed to rebuild observation graph")
+				continue
+			}
+
+			stats := s.graphSearchClient.GetGraphStats()
+			log.Info().
+				Int("nodes", stats.NodeCount).
+				Int("edges", stats.EdgeCount).
+				Dur("elapsed", time.Since(start)).
+				Msg("Periodic graph rebuild complete")
+		}
+	}
 }
 
 // Shutdown gracefully shuts down the service.

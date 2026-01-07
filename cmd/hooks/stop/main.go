@@ -14,17 +14,17 @@ import (
 // Input is the hook input from Claude Code.
 type Input struct {
 	hooks.BaseInput
-	StopHookActive bool   `json:"stop_hook_active"`
 	TranscriptPath string `json:"transcript_path"`
+	StopHookActive bool   `json:"stop_hook_active"`
 }
 
 // TranscriptMessage represents a message in the transcript JSONL file.
 type TranscriptMessage struct {
-	Type    string `json:"type"`
 	Message struct {
+		Content any    `json:"content"`
 		Role    string `json:"role"`
-		Content any    `json:"content"` // Can be string or array
 	} `json:"message"`
+	Type string `json:"type"` // Can be string or array
 }
 
 // extractTextContent extracts text content from message content (handles both string and array formats).

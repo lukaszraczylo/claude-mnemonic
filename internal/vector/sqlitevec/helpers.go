@@ -12,17 +12,17 @@ const (
 
 // Document represents a document to store with vector embedding.
 type Document struct {
+	Metadata map[string]any
 	ID       string
 	Content  string
-	Metadata map[string]any
 }
 
 // QueryResult represents a search result from vector search.
 type QueryResult struct {
+	Metadata   map[string]any
 	ID         string
 	Distance   float64
-	Similarity float64 // 1.0 = identical, 0.0 = opposite (derived from distance)
-	Metadata   map[string]any
+	Similarity float64
 }
 
 // DistanceToSimilarity converts sqlite-vec cosine distance to similarity score.

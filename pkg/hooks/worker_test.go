@@ -320,11 +320,11 @@ func TestExtractBaseVersion(t *testing.T) {
 // TestPOST tests the POST function with a mock server.
 func TestPOST(t *testing.T) {
 	tests := []struct {
-		name           string
-		serverHandler  func(w http.ResponseWriter, r *http.Request)
 		body           interface{}
-		expectError    bool
+		serverHandler  func(w http.ResponseWriter, r *http.Request)
 		expectedResult map[string]interface{}
+		name           string
+		expectError    bool
 	}{
 		{
 			name: "successful POST with JSON response",
@@ -393,10 +393,10 @@ func TestPOST(t *testing.T) {
 // TestGET tests the GET function with a mock server.
 func TestGET(t *testing.T) {
 	tests := []struct {
-		name           string
 		serverHandler  func(w http.ResponseWriter, r *http.Request)
-		expectError    bool
 		expectedResult map[string]interface{}
+		name           string
+		expectError    bool
 	}{
 		{
 			name: "successful GET with JSON response",
@@ -532,8 +532,8 @@ func TestExitCodes(t *testing.T) {
 func TestHookResponse(t *testing.T) {
 	tests := []struct {
 		name     string
-		response HookResponse
 		expected string
+		response HookResponse
 	}{
 		{
 			name:     "continue true",
@@ -597,8 +597,8 @@ func TestHookContext(t *testing.T) {
 // TestIsWorkerRunning_WithServer tests IsWorkerRunning with actual server.
 func TestIsWorkerRunning_WithServer(t *testing.T) {
 	tests := []struct {
-		name           string
 		serverHandler  func(w http.ResponseWriter, r *http.Request)
+		name           string
 		expectedResult bool
 	}{
 		{
@@ -828,8 +828,8 @@ func TestBaseInput_PartialFields(t *testing.T) {
 func TestHookResponse_Marshal(t *testing.T) {
 	tests := []struct {
 		name     string
-		response HookResponse
 		contains []string
+		response HookResponse
 	}{
 		{
 			name:     "continue true",

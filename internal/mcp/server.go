@@ -19,12 +19,9 @@ import (
 
 // Server is the MCP server that exposes search tools.
 type Server struct {
-	searchMgr *search.Manager
-	version   string
-	stdin     io.Reader
-	stdout    io.Writer
-
-	// Store dependencies for enhanced tools
+	stdin            io.Reader
+	stdout           io.Writer
+	searchMgr        *search.Manager
 	observationStore *gorm.ObservationStore
 	patternStore     *gorm.PatternStore
 	relationStore    *gorm.RelationStore
@@ -32,6 +29,7 @@ type Server struct {
 	vectorClient     *sqlitevec.Client
 	scoreCalculator  *scoring.Calculator
 	recalculator     *scoring.Recalculator
+	version          string
 }
 
 // NewServer creates a new MCP server.
@@ -71,17 +69,17 @@ type Request struct {
 
 // Response represents a JSON-RPC response.
 type Response struct {
-	JSONRPC string `json:"jsonrpc"`
 	ID      any    `json:"id"`
 	Result  any    `json:"result,omitempty"`
 	Error   *Error `json:"error,omitempty"`
+	JSONRPC string `json:"jsonrpc"`
 }
 
 // Error represents a JSON-RPC error.
 type Error struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
+	Message string `json:"message"`
+	Code    int    `json:"code"`
 }
 
 // ToolCallParams represents parameters for tools/call method.
@@ -92,9 +90,9 @@ type ToolCallParams struct {
 
 // Tool represents an MCP tool definition.
 type Tool struct {
+	InputSchema map[string]any `json:"inputSchema"`
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
 }
 
 // Run starts the MCP server loop.
@@ -489,17 +487,17 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 
 // TimelineParams represents parameters for timeline operations.
 type TimelineParams struct {
-	AnchorID  int64  `json:"anchor_id"`
 	Query     string `json:"query"`
-	Before    int    `json:"before"`
-	After     int    `json:"after"`
 	Project   string `json:"project"`
 	ObsType   string `json:"obs_type"`
 	Concepts  string `json:"concepts"`
 	Files     string `json:"files"`
+	Format    string `json:"format"`
+	AnchorID  int64  `json:"anchor_id"`
+	Before    int    `json:"before"`
+	After     int    `json:"after"`
 	DateStart int64  `json:"dateStart"`
 	DateEnd   int64  `json:"dateEnd"`
-	Format    string `json:"format"`
 }
 
 // handleTimeline handles timeline requests.

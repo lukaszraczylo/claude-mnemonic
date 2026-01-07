@@ -4,8 +4,8 @@ package models
 // ConceptWeight represents a configurable weight for a concept.
 type ConceptWeight struct {
 	Concept   string  `db:"concept" json:"concept"`
-	Weight    float64 `db:"weight" json:"weight"`
 	UpdatedAt string  `db:"updated_at" json:"updated_at"`
+	Weight    float64 `db:"weight" json:"weight"`
 }
 
 // UserFeedbackType represents the type of user feedback.
@@ -62,28 +62,12 @@ var TypeBaseScores = map[ObservationType]float64{
 
 // ScoringConfig contains all scoring weights and parameters.
 type ScoringConfig struct {
-	// RecencyHalfLifeDays is the number of days for the importance score to halve.
-	// With 7 days, a 7-day old observation has 50% of a new observation's recency score.
-	RecencyHalfLifeDays float64 `json:"recency_half_life_days"`
-
-	// FeedbackWeight scales the user feedback contribution to final score.
-	// With 0.30, a thumbs up adds 0.30 to the score, thumbs down subtracts 0.30.
-	FeedbackWeight float64 `json:"feedback_weight"`
-
-	// ConceptWeight scales the concept boost contribution.
-	// The sum of matching concept weights is multiplied by this.
-	ConceptWeight float64 `json:"concept_weight"`
-
-	// RetrievalWeight scales the retrieval boost contribution.
-	// Popular observations get a logarithmic bonus.
-	RetrievalWeight float64 `json:"retrieval_weight"`
-
-	// ConceptWeights maps concept names to their importance weights.
-	ConceptWeights map[string]float64 `json:"concept_weights"`
-
-	// MinScore is the minimum allowed importance score.
-	// Prevents observations from completely disappearing.
-	MinScore float64 `json:"min_score"`
+	ConceptWeights      map[string]float64 `json:"concept_weights"`
+	RecencyHalfLifeDays float64            `json:"recency_half_life_days"`
+	FeedbackWeight      float64            `json:"feedback_weight"`
+	ConceptWeight       float64            `json:"concept_weight"`
+	RetrievalWeight     float64            `json:"retrieval_weight"`
+	MinScore            float64            `json:"min_score"`
 }
 
 // DefaultScoringConfig returns the default scoring configuration.

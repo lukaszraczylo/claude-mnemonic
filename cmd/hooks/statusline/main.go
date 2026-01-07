@@ -43,21 +43,21 @@ type StatusInput struct {
 
 // WorkerStats is the response from the worker's /api/stats endpoint.
 type WorkerStats struct {
-	Uptime              string `json:"uptime"`
-	ActiveSessions      int    `json:"activeSessions"`
-	QueueDepth          int    `json:"queueDepth"`
-	IsProcessing        bool   `json:"isProcessing"`
-	ConnectedClients    int    `json:"connectedClients"`
-	SessionsToday       int    `json:"sessionsToday"`
-	Ready               bool   `json:"ready"`
-	Project             string `json:"project,omitempty"`
-	ProjectObservations int    `json:"projectObservations,omitempty"`
-	Retrieval           struct {
+	Uptime    string `json:"uptime"`
+	Project   string `json:"project,omitempty"`
+	Retrieval struct {
 		TotalRequests      int64 `json:"TotalRequests"`
 		ObservationsServed int64 `json:"ObservationsServed"`
 		SearchRequests     int64 `json:"SearchRequests"`
 		ContextInjections  int64 `json:"ContextInjections"`
 	} `json:"retrieval"`
+	ActiveSessions      int  `json:"activeSessions"`
+	QueueDepth          int  `json:"queueDepth"`
+	ConnectedClients    int  `json:"connectedClients"`
+	SessionsToday       int  `json:"sessionsToday"`
+	ProjectObservations int  `json:"projectObservations,omitempty"`
+	IsProcessing        bool `json:"isProcessing"`
+	Ready               bool `json:"ready"`
 }
 
 // ANSI color codes

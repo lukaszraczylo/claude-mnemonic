@@ -51,8 +51,8 @@ func (s *ConflictSuite) TestDetectExplicitCorrection_TableDriven() {
 	tests := []struct {
 		name          string
 		text          string
-		expectMatch   bool
 		expectPattern string
+		expectMatch   bool
 	}{
 		{
 			name:          "actually that was wrong",
@@ -128,9 +128,9 @@ func (s *ConflictSuite) TestDetectExplicitCorrection_TableDriven() {
 // TestDetectOpposingFileChanges_TableDriven tests opposing file change detection.
 func (s *ConflictSuite) TestDetectOpposingFileChanges_TableDriven() {
 	tests := []struct {
-		name           string
 		newerObs       *Observation
 		olderObs       *Observation
+		name           string
 		expectConflict bool
 	}{
 		{
@@ -202,9 +202,9 @@ func (s *ConflictSuite) TestDetectOpposingFileChanges_TableDriven() {
 // TestDetectConceptTagMismatch_TableDriven tests concept tag mismatch detection.
 func (s *ConflictSuite) TestDetectConceptTagMismatch_TableDriven() {
 	tests := []struct {
-		name           string
 		newerObs       *Observation
 		olderObs       *Observation
+		name           string
 		expectConflict bool
 	}{
 		{

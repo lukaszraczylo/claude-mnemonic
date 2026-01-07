@@ -1,4 +1,4 @@
-import type { Observation, UserPrompt, SessionSummary, Stats, FeedItem, ObservationFeedItem, PromptFeedItem, SummaryFeedItem, RelationWithDetails, RelationGraph, RelationStats } from '@/types'
+import type { Observation, UserPrompt, SessionSummary, Stats, FeedItem, ObservationFeedItem, PromptFeedItem, SummaryFeedItem, RelationWithDetails, RelationGraph, RelationStats, GraphStats, VectorMetrics } from '@/types'
 
 const API_BASE = '/api'
 const DEFAULT_TIMEOUT = 10000 // 10 seconds
@@ -163,4 +163,12 @@ export async function fetchRelatedObservations(observationId: number, minConfide
 
 export async function fetchRelationStats(signal?: AbortSignal): Promise<RelationStats> {
   return fetchWithRetry<RelationStats>(`${API_BASE}/relations/stats`, { signal })
+}
+
+export async function fetchGraphStats(signal?: AbortSignal): Promise<GraphStats> {
+  return fetchWithRetry<GraphStats>(`${API_BASE}/graph/stats`, { signal })
+}
+
+export async function fetchVectorMetrics(signal?: AbortSignal): Promise<VectorMetrics> {
+  return fetchWithRetry<VectorMetrics>(`${API_BASE}/vector/metrics`, { signal })
 }

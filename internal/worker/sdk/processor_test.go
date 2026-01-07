@@ -11,8 +11,8 @@ import (
 
 func TestIsSelfReferentialSummary(t *testing.T) {
 	tests := []struct {
-		name     string
 		summary  *models.ParsedSummary
+		name     string
 		expected bool
 	}{
 		{
@@ -281,8 +281,8 @@ func TestTruncateForLog(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
 		{
 			name:     "shorter_than_max",
@@ -719,8 +719,8 @@ func TestShouldSkipTrivialOperation_EdgeCases(t *testing.T) {
 // TestIsSelfReferentialSummary_MoreCases tests additional self-referential detection cases.
 func TestIsSelfReferentialSummary_MoreCases(t *testing.T) {
 	tests := []struct {
-		name     string
 		summary  *models.ParsedSummary
+		name     string
 		expected bool
 	}{
 		{

@@ -158,10 +158,10 @@ type SessionInitRequest struct {
 
 // SessionInitResponse is the response for session initialization.
 type SessionInitResponse struct {
+	Reason       string `json:"reason,omitempty"`
 	SessionDBID  int64  `json:"sessionDbId"`
 	PromptNumber int    `json:"promptNumber"`
 	Skipped      bool   `json:"skipped,omitempty"`
-	Reason       string `json:"reason,omitempty"`
 }
 
 // DuplicatePromptWindowSeconds is the time window for detecting duplicate prompt submissions.
@@ -1311,4 +1311,86 @@ func (s *Service) handleRestart(w http.ResponseWriter, r *http.Request) {
 			log.Error().Err(err).Msg("Failed to restart worker")
 		}
 	}()
+}
+
+// handleGetGraphStats returns observation graph statistics.
+func (s *Service) handleGetGraphStats(w http.ResponseWriter, r *http.Request) {
+	if s.graphSearchClient == nil {
+		writeJSON(w, map[string]interface{}{
+			"enabled": false,
+			"message": "Graph search not enabled",
+		})
+		return
+	}
+
+	stats := s.graphSearchClient.GetGraphStats()
+
+	response := map[string]interface{}{
+		"enabled":      s.config.GraphEnabled,
+		"nodeCount":    stats.NodeCount,
+		"edgeCount":    stats.EdgeCount,
+		"avgDegree":    stats.AvgDegree,
+		"maxDegree":    stats.MaxDegree,
+		"minDegree":    stats.MinDegree,
+		"medianDegree": stats.MedianDegree,
+		"edgeTypes":    stats.EdgeTypes,
+		"config": map[string]interface{}{
+			"maxHops":            s.config.GraphMaxHops,
+			"branchFactor":       s.config.GraphBranchFactor,
+			"edgeWeight":         s.config.GraphEdgeWeight,
+			"rebuildIntervalMin": s.config.GraphRebuildIntervalMin,
+		},
+	}
+
+	writeJSON(w, response)
+}
+
+// handleGetVectorMetrics returns hybrid vector storage metrics.
+func (s *Service) handleGetVectorMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.hybridMetrics == nil {
+		writeJSON(w, map[string]interface{}{
+			"enabled": false,
+			"message": "Vector metrics not available",
+		})
+		return
+	}
+
+	snapshot := s.hybridMetrics.GetSnapshot()
+
+	response := map[string]interface{}{
+		"queries": map[string]interface{}{
+			"total":    snapshot.TotalQueries,
+			"hubOnly":  snapshot.HubOnlyQueries,
+			"hybrid":   snapshot.HybridQueries,
+			"onDemand": snapshot.OnDemandQueries,
+			"graph":    snapshot.GraphQueries,
+		},
+		"latency": map[string]interface{}{
+			"avg":          snapshot.AvgLatency.String(),
+			"p50":          snapshot.P50Latency.String(),
+			"p95":          snapshot.P95Latency.String(),
+			"p99":          snapshot.P99Latency.String(),
+			"avgHub":       snapshot.AvgHubLatency.String(),
+			"avgRecompute": snapshot.AvgRecomputeLatency.String(),
+		},
+		"storage": map[string]interface{}{
+			"totalDocuments":   snapshot.TotalDocuments,
+			"hubDocuments":     snapshot.HubDocuments,
+			"storedEmbeddings": snapshot.StoredEmbeddings,
+			"savingsPercent":   snapshot.StorageSavingsPercent,
+			"recomputedTotal":  snapshot.RecomputedTotal,
+		},
+		"cache": map[string]interface{}{
+			"hits":    snapshot.CacheHits,
+			"misses":  snapshot.CacheMisses,
+			"hitRate": snapshot.CacheHitRate,
+		},
+		"graph": map[string]interface{}{
+			"traversals": snapshot.GraphTraversals,
+			"avgDepth":   snapshot.AvgTraversalDepth,
+		},
+		"uptime": snapshot.Uptime.String(),
+	}
+
+	writeJSON(w, response)
 }

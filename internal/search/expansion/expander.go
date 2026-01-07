@@ -30,25 +30,25 @@ const (
 // ExpandedQuery represents a query variant with metadata.
 type ExpandedQuery struct {
 	Query  string      `json:"query"`
-	Weight float64     `json:"weight"` // Weight for result merging (0.0-1.0)
-	Source string      `json:"source"` // Where this expansion came from
-	Intent QueryIntent `json:"intent"` // Detected intent
+	Source string      `json:"source"`
+	Intent QueryIntent `json:"intent"`
+	Weight float64     `json:"weight"`
 }
 
 // Expander provides context-aware query expansion.
 type Expander struct {
 	embedSvc       *embedding.Service
-	vocabulary     []VocabEntry // Known vocabulary from observations
-	vocabVectors   [][]float32  // Embeddings for vocabulary entries
-	vocabMu        sync.RWMutex // Protects vocabulary
 	intentPatterns map[QueryIntent][]*regexp.Regexp
+	vocabulary     []VocabEntry
+	vocabVectors   [][]float32
+	vocabMu        sync.RWMutex
 }
 
 // VocabEntry represents a vocabulary term from observations.
 type VocabEntry struct {
-	Term   string  // The term itself
-	Weight float64 // How common/important this term is (0.0-1.0)
-	Source string  // Where it came from (title, concept, narrative)
+	Term   string
+	Source string
+	Weight float64
 }
 
 // Config holds expander configuration.

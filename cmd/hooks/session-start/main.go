@@ -18,12 +18,12 @@ type Input struct {
 
 // Observation represents an observation from the API.
 type Observation struct {
-	ID        int64    `json:"id"`
 	Type      string   `json:"type"`
 	Title     string   `json:"title"`
 	Subtitle  string   `json:"subtitle"`
 	Narrative string   `json:"narrative"`
 	Facts     []string `json:"facts"`
+	ID        int64    `json:"id"`
 }
 
 func main() {

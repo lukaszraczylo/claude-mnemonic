@@ -214,9 +214,9 @@ func (s *ConflictStore) CleanupSupersededObservations(ctx context.Context, proje
 // GetConflictsWithDetails retrieves all conflicts with observation titles for display.
 func (s *ConflictStore) GetConflictsWithDetails(ctx context.Context, project string, limit int) ([]*ConflictWithDetails, error) {
 	var results []struct {
-		ObservationConflict
 		NewerTitle sql.NullString `gorm:"column:newer_title"`
 		OlderTitle sql.NullString `gorm:"column:older_title"`
+		ObservationConflict
 	}
 
 	err := s.db.WithContext(ctx).

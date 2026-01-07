@@ -38,21 +38,15 @@ type PatternSyncFunc func(pattern *models.Pattern)
 
 // Detector detects and tracks recurring patterns across observations.
 type Detector struct {
-	config           DetectorConfig
+	ctx              context.Context
 	patternStore     *gorm.PatternStore
 	observationStore *gorm.ObservationStore
-
-	// Vector sync callback
-	syncFunc PatternSyncFunc
-
-	// Candidate tracking (patterns not yet confirmed)
-	candidates   map[string]*candidatePattern
-	candidatesMu sync.RWMutex
-
-	// Background analysis
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	syncFunc         PatternSyncFunc
+	candidates       map[string]*candidatePattern
+	cancel           context.CancelFunc
+	config           DetectorConfig
+	wg               sync.WaitGroup
+	candidatesMu     sync.RWMutex
 }
 
 // SetSyncFunc sets the callback for syncing patterns to vector store.
@@ -62,11 +56,11 @@ func (d *Detector) SetSyncFunc(fn PatternSyncFunc) {
 
 // candidatePattern tracks a potential pattern before it reaches frequency threshold.
 type candidatePattern struct {
+	patternType    models.PatternType
+	title          string
 	signature      []string
 	observationIDs []int64
 	projects       []string
-	patternType    models.PatternType
-	title          string
 	lastSeenEpoch  int64
 }
 

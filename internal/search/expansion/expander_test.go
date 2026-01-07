@@ -88,16 +88,16 @@ func (s *ExpanderSuite) TestExpand() {
 	tests := []struct {
 		name           string
 		query          string
+		expectedIntent QueryIntent
 		minExpansions  int
 		hasOriginal    bool
-		expectedIntent QueryIntent
 	}{
-		{"question", "how do I implement auth", 1, true, IntentQuestion},
-		{"error", "fix the bug in login", 1, true, IntentError},
-		{"implementation", "implement user handler", 1, true, IntentImplementation},
-		{"architecture", "architecture design", 1, true, IntentArchitecture},
-		{"general", "database connection", 1, true, IntentGeneral},
-		{"empty", "", 0, false, IntentGeneral},
+		{name: "question", query: "how do I implement auth", expectedIntent: IntentQuestion, minExpansions: 1, hasOriginal: true},
+		{name: "error", query: "fix the bug in login", expectedIntent: IntentError, minExpansions: 1, hasOriginal: true},
+		{name: "implementation", query: "implement user handler", expectedIntent: IntentImplementation, minExpansions: 1, hasOriginal: true},
+		{name: "architecture", query: "architecture design", expectedIntent: IntentArchitecture, minExpansions: 1, hasOriginal: true},
+		{name: "general", query: "database connection", expectedIntent: IntentGeneral, minExpansions: 1, hasOriginal: true},
+		{name: "empty", query: "", expectedIntent: IntentGeneral, minExpansions: 0, hasOriginal: false},
 	}
 
 	for _, tt := range tests {
@@ -392,13 +392,13 @@ func TestTruncate(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
-		{"short", "hello", 10, "hello"},
-		{"exact", "hello", 5, "hello"},
-		{"long", "hello world", 5, "hello..."},
-		{"empty", "", 10, ""},
+		{name: "short", input: "hello", expected: "hello", maxLen: 10},
+		{name: "exact", input: "hello", expected: "hello", maxLen: 5},
+		{name: "long", input: "hello world", expected: "hello...", maxLen: 5},
+		{name: "empty", input: "", expected: "", maxLen: 10},
 	}
 
 	for _, tt := range tests {
