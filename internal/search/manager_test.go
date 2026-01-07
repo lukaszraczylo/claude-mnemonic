@@ -4,7 +4,6 @@ package search
 import (
 	"database/sql"
 	"testing"
-	"time"
 
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/stretchr/testify/assert"
@@ -94,8 +93,8 @@ func TestTruncate(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
 		{
 			name:     "short string no truncation",
@@ -147,11 +146,11 @@ func TestTruncate(t *testing.T) {
 func TestObservationToResult(t *testing.T) {
 	m := NewManager(nil, nil, nil, nil)
 
-	tests := []struct {
-		name     string
+	tests := []struct { //nolint:govet
 		obs      *models.Observation
-		format   string
 		expected SearchResult
+		format   string
+		name     string
 	}{
 		{
 			name: "full format with all fields",
@@ -239,11 +238,11 @@ func TestObservationToResult(t *testing.T) {
 func TestSummaryToResult(t *testing.T) {
 	m := NewManager(nil, nil, nil, nil)
 
-	tests := []struct {
-		name     string
+	tests := []struct { //nolint:govet
 		summary  *models.SessionSummary
-		format   string
 		expected SearchResult
+		format   string
+		name     string
 	}{
 		{
 			name: "full format with all fields",
@@ -321,11 +320,11 @@ func TestSummaryToResult(t *testing.T) {
 func TestPromptToResult(t *testing.T) {
 	m := NewManager(nil, nil, nil, nil)
 
-	tests := []struct {
-		name     string
+	tests := []struct { //nolint:govet
 		prompt   *models.UserPromptWithSession
-		format   string
 		expected SearchResult
+		format   string
+		name     string
 	}{
 		{
 			name: "full format with content",
@@ -406,9 +405,9 @@ func TestPromptToResult(t *testing.T) {
 func TestSearchParamsValidation(t *testing.T) {
 	tests := []struct {
 		name          string
+		expectedOrder string
 		params        SearchParams
 		expectedLimit int
-		expectedOrder string
 	}{
 		{
 			name: "default limit applied",
@@ -731,23 +730,21 @@ func TestPromptToResultFormats(t *testing.T) {
 func TestSearchParamsDefaults(t *testing.T) {
 	tests := []struct {
 		name          string
-		initialLimit  int
 		initialOrder  string
-		expectedLimit int
 		expectedOrder string
+		initialLimit  int
+		expectedLimit int
 	}{
-		{"zero_limit", 0, "", 20, "date_desc"},
-		{"negative_limit", -5, "", 20, "date_desc"},
-		{"over_100_limit", 150, "", 100, "date_desc"},
-		{"valid_limit_50", 50, "relevance", 50, "relevance"},
-		{"custom_order", 30, "date_asc", 30, "date_asc"},
+		{name: "zero_limit", initialLimit: 0, initialOrder: "", expectedLimit: 20, expectedOrder: "date_desc"},
+		{name: "negative_limit", initialLimit: -5, initialOrder: "", expectedLimit: 20, expectedOrder: "date_desc"},
+		{name: "over_100_limit", initialLimit: 150, initialOrder: "", expectedLimit: 100, expectedOrder: "date_desc"},
+		{name: "valid_limit_50", initialLimit: 50, initialOrder: "relevance", expectedLimit: 50, expectedOrder: "relevance"},
+		{name: "custom_order", initialLimit: 30, initialOrder: "date_asc", expectedLimit: 30, expectedOrder: "date_asc"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			params := SearchParams{
-				Query:   "test",
-				Project: "project",
 				Limit:   tt.initialLimit,
 				OrderBy: tt.initialOrder,
 			}
@@ -774,18 +771,18 @@ func TestTruncateEdgeCases(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
 		// Unicode strings - uses byte length so ensure maxLen accommodates full string
-		{"unicode_string_no_truncate", "日本語テスト", 20, "日本語テスト"},
-		{"mixed_unicode_no_truncate", "Hello世界", 15, "Hello世界"},
+		{name: "unicode_string_no_truncate", input: "日本語テスト", maxLen: 20, expected: "日本語テスト"},
+		{name: "mixed_unicode_no_truncate", input: "Hello世界", maxLen: 15, expected: "Hello世界"},
 		// ASCII truncation
-		{"ascii_truncate", "Hello World", 5, "Hello..."},
-		{"only_whitespace", "   ", 10, ""},
-		{"tabs_and_newlines", "\t\n  \t", 10, ""},
-		{"newlines_with_content", "\n\nhello\n\n", 10, "hello"},
-		{"zero_max_len", "hello", 0, "..."},
+		{name: "ascii_truncate", input: "Hello World", maxLen: 5, expected: "Hello..."},
+		{name: "only_whitespace", input: "   ", maxLen: 10, expected: ""},
+		{name: "tabs_and_newlines", input: "\t\n  \t", maxLen: 10, expected: ""},
+		{name: "newlines_with_content", input: "\n\nhello\n\n", maxLen: 10, expected: "hello"},
+		{name: "zero_max_len", input: "hello", maxLen: 0, expected: "..."},
 	}
 
 	for _, tt := range tests {
@@ -812,8 +809,6 @@ func TestUnifiedSearchResultEmpty(t *testing.T) {
 // TestSearchResultMetadata tests SearchResult metadata handling.
 func TestSearchResultMetadata(t *testing.T) {
 	result := SearchResult{
-		Type: "observation",
-		ID:   1,
 		Metadata: map[string]interface{}{
 			"obs_type": "discovery",
 			"scope":    "project",
@@ -835,10 +830,7 @@ func TestSearchResultTypes(t *testing.T) {
 	for _, typ := range types {
 		t.Run(typ, func(t *testing.T) {
 			result := SearchResult{
-				Type:      typ,
-				ID:        1,
-				Project:   "test",
-				CreatedAt: time.Now().UnixMilli(),
+				Type: typ,
 			}
 			assert.Equal(t, typ, result.Type)
 		})
@@ -952,8 +944,8 @@ func TestSearchParams_OrderByValues(t *testing.T) {
 	for _, order := range validOrders {
 		t.Run("order_"+order, func(t *testing.T) {
 			params := SearchParams{
-				Query:   "test",
-				Project: "test",
+				Query:   "test", //nolint:govet
+				Project: "test", //nolint:govet
 				OrderBy: order,
 			}
 			assert.Equal(t, order, params.OrderBy)
@@ -968,9 +960,7 @@ func TestSearchParams_TypeValues(t *testing.T) {
 	for _, typ := range validTypes {
 		t.Run("type_"+typ, func(t *testing.T) {
 			params := SearchParams{
-				Query:   "test",
-				Project: "test",
-				Type:    typ,
+				Type: typ,
 			}
 			assert.Equal(t, typ, params.Type)
 		})
@@ -984,8 +974,8 @@ func TestSearchParams_ScopeValues(t *testing.T) {
 	for _, scope := range validScopes {
 		t.Run("scope_"+scope, func(t *testing.T) {
 			params := SearchParams{
-				Query:   "test",
-				Project: "test",
+				Query:   "test", //nolint:govet
+				Project: "test", //nolint:govet
 				Scope:   scope,
 			}
 			assert.Equal(t, scope, params.Scope)
@@ -1000,8 +990,8 @@ func TestSearchParams_FormatValues(t *testing.T) {
 	for _, format := range validFormats {
 		t.Run("format_"+format, func(t *testing.T) {
 			params := SearchParams{
-				Query:   "test",
-				Project: "test",
+				Query:   "test", //nolint:govet
+				Project: "test", //nolint:govet
 				Format:  format,
 			}
 			assert.Equal(t, format, params.Format)
@@ -1020,7 +1010,7 @@ func TestUnifiedSearchResult_MultipleResults(t *testing.T) {
 	result := UnifiedSearchResult{
 		Results:    results,
 		TotalCount: 3,
-		Query:      "test query",
+		Query:      "test query", //nolint:govet
 	}
 
 	assert.Len(t, result.Results, 3)
@@ -1040,8 +1030,8 @@ func TestSearchResult_Metadata(t *testing.T) {
 	}
 
 	result := SearchResult{
-		Type:     "observation",
-		ID:       1,
+		Type:     "observation", //nolint:govet
+		ID:       1,             //nolint:govet
 		Metadata: metadata,
 	}
 
@@ -1066,8 +1056,6 @@ func TestSearchResult_Scores(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := SearchResult{
-				Type:  "observation",
-				ID:    1,
 				Score: tt.score,
 			}
 			assert.Equal(t, tt.score, result.Score)

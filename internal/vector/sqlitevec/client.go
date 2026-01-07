@@ -87,9 +87,9 @@ func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
 
 	for i, doc := range docs {
 		// Serialize embedding to blob format
-		embBlob, err := sqlite_vec.SerializeFloat32(embeddings[i])
-		if err != nil {
-			return fmt.Errorf("serialize embedding for %s: %w", doc.ID, err)
+		embBlob, serErr := sqlite_vec.SerializeFloat32(embeddings[i])
+		if serErr != nil {
+			return fmt.Errorf("serialize embedding for %s: %w", doc.ID, serErr)
 		}
 
 		// Extract metadata
@@ -212,8 +212,8 @@ func (c *Client) Query(ctx context.Context, query string, limit int, where map[s
 		var sqliteID int64
 		var docType, fieldType, project, scope sql.NullString
 
-		if err := rows.Scan(&r.ID, &r.Distance, &sqliteID, &docType, &fieldType, &project, &scope); err != nil {
-			return nil, fmt.Errorf("scan row: %w", err)
+		if scanErr := rows.Scan(&r.ID, &r.Distance, &sqliteID, &docType, &fieldType, &project, &scope); scanErr != nil {
+			return nil, fmt.Errorf("scan row: %w", scanErr)
 		}
 
 		r.Similarity = DistanceToSimilarity(r.Distance)
@@ -319,11 +319,11 @@ func (c *Client) NeedsRebuild(ctx context.Context) (bool, string) {
 // StaleVectorInfo contains information about a vector that needs rebuilding.
 type StaleVectorInfo struct {
 	DocID     string
-	SQLiteID  int64
 	DocType   string
 	FieldType string
 	Project   string
 	Scope     string
+	SQLiteID  int64
 }
 
 // GetStaleVectors returns doc_ids of vectors with mismatched or null model versions.
@@ -352,8 +352,8 @@ func (c *Client) GetStaleVectors(ctx context.Context) ([]StaleVectorInfo, error)
 		var sqliteID sql.NullInt64
 		var docType, fieldType, project, scope sql.NullString
 
-		if err := rows.Scan(&info.DocID, &sqliteID, &docType, &fieldType, &project, &scope); err != nil {
-			return nil, fmt.Errorf("scan row: %w", err)
+		if scanErr := rows.Scan(&info.DocID, &sqliteID, &docType, &fieldType, &project, &scope); scanErr != nil {
+			return nil, fmt.Errorf("scan row: %w", scanErr)
 		}
 
 		info.SQLiteID = sqliteID.Int64

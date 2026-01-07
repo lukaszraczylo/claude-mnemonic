@@ -256,8 +256,8 @@ func TestHandleSSE(t *testing.T) {
 // TestBroadcastJSON tests broadcasting various JSON types.
 func TestBroadcastJSON(t *testing.T) {
 	tests := []struct {
-		name    string
 		data    interface{}
+		name    string
 		wantErr bool
 	}{
 		{

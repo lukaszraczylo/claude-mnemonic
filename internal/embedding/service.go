@@ -46,9 +46,9 @@ var bgeONNXConfig = ONNXConfig{
 type bgeModel struct {
 	tk      *tokenizer.Tokenizer
 	session *ort.DynamicAdvancedSession
+	libDir  string
+	config  ONNXConfig
 	mu      sync.Mutex
-	libDir  string     // temp directory containing extracted libraries
-	config  ONNXConfig // ONNX configuration for this model
 }
 
 // Compile-time check that bgeModel implements EmbeddingModel
@@ -70,8 +70,8 @@ func newBGEModel() (EmbeddingModel, error) {
 	ort.SetSharedLibraryPath(libPath)
 
 	// Initialize ONNX runtime
-	if err := ort.InitializeEnvironment(); err != nil {
-		return nil, fmt.Errorf("initialize ONNX runtime: %w", err)
+	if initErr := ort.InitializeEnvironment(); initErr != nil {
+		return nil, fmt.Errorf("initialize ONNX runtime: %w", initErr)
 	}
 
 	// Load tokenizer from embedded data
@@ -292,19 +292,19 @@ func (m *bgeModel) computeBatch(sentences []string) ([][]float32, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create input_ids tensor: %w", err)
 	}
-	defer inputIdsTensor.Destroy()
+	defer func() { _ = inputIdsTensor.Destroy() }()
 
 	attentionMaskTensor, err := ort.NewTensor(inputShape, attentionMaskData)
 	if err != nil {
 		return nil, fmt.Errorf("create attention_mask tensor: %w", err)
 	}
-	defer attentionMaskTensor.Destroy()
+	defer func() { _ = attentionMaskTensor.Destroy() }()
 
 	tokenTypeIdsTensor, err := ort.NewTensor(inputShape, tokenTypeIdsData)
 	if err != nil {
 		return nil, fmt.Errorf("create token_type_ids tensor: %w", err)
 	}
-	defer tokenTypeIdsTensor.Destroy()
+	defer func() { _ = tokenTypeIdsTensor.Destroy() }()
 
 	// Create output tensor based on pooling strategy
 	var outputShape ort.Shape
@@ -324,7 +324,7 @@ func (m *bgeModel) computeBatch(sentences []string) ([][]float32, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create output tensor: %w", err)
 	}
-	defer outputTensor.Destroy()
+	defer func() { _ = outputTensor.Destroy() }()
 
 	// Run inference
 	inputTensors := []ort.Value{inputIdsTensor, attentionMaskTensor, tokenTypeIdsTensor}

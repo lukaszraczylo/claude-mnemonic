@@ -19,10 +19,10 @@ const (
 
 // Client represents a connected SSE client.
 type Client struct {
-	ID      string
 	Writer  http.ResponseWriter
 	Flusher http.Flusher
 	Done    chan struct{}
+	ID      string
 }
 
 // Broadcaster manages SSE client connections and message broadcasting.

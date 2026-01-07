@@ -1276,8 +1276,6 @@ func TestObservationRequest_Fields(t *testing.T) {
 		ClaudeSessionID: "session-abc",
 		Project:         "my-project",
 		ToolName:        "Read",
-		ToolInput:       map[string]string{"path": "/file.go"},
-		ToolResponse:    "file contents",
 		CWD:             "/home/user/project",
 	}
 

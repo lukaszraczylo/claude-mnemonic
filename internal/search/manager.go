@@ -35,41 +35,41 @@ func NewManager(
 
 // SearchParams contains parameters for unified search.
 type SearchParams struct {
-	Query             string
-	Type              string // "observations", "sessions", "prompts", or empty for all
+	Format            string
+	Type              string
 	Project           string
-	ObsType           string // Observation type filter
+	ObsType           string
 	Concepts          string
 	Files             string
+	Query             string
+	Scope             string
+	OrderBy           string
 	DateStart         int64
-	DateEnd           int64
-	OrderBy           string // "relevance", "date_desc", "date_asc"
-	Limit             int
 	Offset            int
-	Format            string // "index" or "full"
-	Scope             string // "project", "global", or empty for project+global
-	IncludeGlobal     bool   // If true, include global observations along with project-scoped
-	ExcludeSuperseded bool   // If true, exclude observations that have been superseded
+	Limit             int
+	DateEnd           int64
+	IncludeGlobal     bool
+	ExcludeSuperseded bool
 }
 
 // SearchResult represents a unified search result.
 type SearchResult struct {
-	Type      string                 `json:"type"` // "observation", "session", "prompt"
-	ID        int64                  `json:"id"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	Type      string                 `json:"type"`
 	Title     string                 `json:"title,omitempty"`
 	Content   string                 `json:"content,omitempty"`
 	Project   string                 `json:"project"`
-	Scope     string                 `json:"scope,omitempty"` // "project" or "global"
+	Scope     string                 `json:"scope,omitempty"`
+	ID        int64                  `json:"id"`
 	CreatedAt int64                  `json:"created_at_epoch"`
 	Score     float64                `json:"score,omitempty"`
-	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // UnifiedSearchResult contains the combined search results.
 type UnifiedSearchResult struct {
+	Query      string         `json:"query,omitempty"`
 	Results    []SearchResult `json:"results"`
 	TotalCount int            `json:"total_count"`
-	Query      string         `json:"query,omitempty"`
 }
 
 // UnifiedSearch performs a unified search across all document types.

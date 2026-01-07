@@ -9,9 +9,9 @@ import (
 
 // Migration represents a database schema migration.
 type Migration struct {
-	Version int
 	Name    string
 	SQL     string
+	Version int
 }
 
 // Migrations is the list of all database migrations in order.
@@ -539,11 +539,11 @@ func (m *MigrationManager) ApplyMigration(migration Migration) error {
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Execute migration SQL
-	if _, err := tx.Exec(migration.SQL); err != nil {
-		return fmt.Errorf("execute migration %d (%s): %w", migration.Version, migration.Name, err)
+	if _, execErr := tx.Exec(migration.SQL); execErr != nil {
+		return fmt.Errorf("execute migration %d (%s): %w", migration.Version, migration.Name, execErr)
 	}
 
 	// Record migration

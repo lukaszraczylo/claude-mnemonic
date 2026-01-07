@@ -130,13 +130,13 @@ func (s *StoreSuite) TestQueryContext() {
 	seedSession(s.T(), s.db, "claude-1", "sdk-1", "project-a")
 
 	tests := []struct {
+		setupFunc  func()
+		assertFunc func(rows *sql.Rows)
 		name       string
 		query      string
 		args       []interface{}
-		wantErr    bool
 		wantRows   int
-		setupFunc  func()
-		assertFunc func(rows *sql.Rows)
+		wantErr    bool
 	}{
 		{
 			name:     "query existing session",
@@ -366,8 +366,8 @@ func (s *HelpersSuite) TestNullInt() {
 func (s *HelpersSuite) TestRepeatPlaceholders() {
 	tests := []struct {
 		name     string
-		input    int
 		expected string
+		input    int
 	}{
 		{
 			name:     "zero",
@@ -438,10 +438,10 @@ func TestBuildGetByIDsQuery(t *testing.T) {
 	tests := []struct {
 		name      string
 		baseQuery string
-		ids       []int64
 		orderBy   string
-		limit     int
 		wantQuery string
+		ids       []int64
+		limit     int
 		wantArgs  int
 	}{
 		{
@@ -483,10 +483,10 @@ func TestEnsureSessionExists(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
+		setup        func()
 		name         string
 		sdkSessionID string
 		project      string
-		setup        func()
 		wantErr      bool
 	}{
 		{

@@ -12,8 +12,8 @@ func TestTruncate(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
 		{
 			name:     "shorter_than_max",
@@ -58,10 +58,10 @@ func TestTruncate(t *testing.T) {
 func TestBuildObservationPrompt(t *testing.T) {
 	now := time.Now().UnixMilli()
 
-	tests := []struct {
-		name     string
+	tests := []struct { //nolint:govet
 		exec     ToolExecution
 		contains []string
+		name     string
 	}{
 		{
 			name: "basic_read_tool",

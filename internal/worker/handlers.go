@@ -158,10 +158,10 @@ type SessionInitRequest struct {
 
 // SessionInitResponse is the response for session initialization.
 type SessionInitResponse struct {
+	Reason       string `json:"reason,omitempty"`
 	SessionDBID  int64  `json:"sessionDbId"`
 	PromptNumber int    `json:"promptNumber"`
 	Skipped      bool   `json:"skipped,omitempty"`
-	Reason       string `json:"reason,omitempty"`
 }
 
 // DuplicatePromptWindowSeconds is the time window for detecting duplicate prompt submissions.
@@ -296,8 +296,8 @@ func (s *Service) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req SessionStartRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if decodeErr := json.NewDecoder(r.Body).Decode(&req); decodeErr != nil {
+		http.Error(w, decodeErr.Error(), http.StatusBadRequest)
 		return
 	}
 

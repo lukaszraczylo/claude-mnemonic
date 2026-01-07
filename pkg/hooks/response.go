@@ -62,11 +62,11 @@ type BaseInput struct {
 // HookContext provides common context for hook handlers.
 type HookContext struct {
 	HookName  string
-	Port      int
 	Project   string
 	SessionID string
 	CWD       string
 	RawInput  []byte
+	Port      int
 }
 
 // HookHandler is a function that handles hook-specific logic.
@@ -92,8 +92,8 @@ func RunHook[T any](hookName string, handler HookHandler[T]) {
 
 	// Parse input
 	var input T
-	if err := json.Unmarshal(inputData, &input); err != nil {
-		WriteError(hookName, err)
+	if unmarshalErr := json.Unmarshal(inputData, &input); unmarshalErr != nil {
+		WriteError(hookName, unmarshalErr)
 		os.Exit(1)
 	}
 

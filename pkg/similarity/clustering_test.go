@@ -12,9 +12,9 @@ import (
 
 func TestJaccardSimilarity(t *testing.T) {
 	tests := []struct {
-		name     string
 		set1     map[string]bool
 		set2     map[string]bool
+		name     string
 		expected float64
 	}{
 		{

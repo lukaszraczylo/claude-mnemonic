@@ -8,12 +8,12 @@ import (
 
 func TestDetectFileOverlapRelation(t *testing.T) {
 	tests := []struct {
-		name          string
 		newer         *Observation
 		older         *Observation
-		wantRelation  bool
+		name          string
 		wantRelType   RelationType
 		wantMinConfid float64
+		wantRelation  bool
 	}{
 		{
 			name: "no file overlap",
@@ -105,11 +105,11 @@ func TestDetectFileOverlapRelation(t *testing.T) {
 
 func TestDetectConceptOverlapRelation(t *testing.T) {
 	tests := []struct {
-		name          string
 		newer         *Observation
 		older         *Observation
-		wantRelation  bool
+		name          string
 		wantMinConfid float64
+		wantRelation  bool
 	}{
 		{
 			name: "no concept overlap",
@@ -179,8 +179,8 @@ func TestDetectTypeProgressionRelation(t *testing.T) {
 		name         string
 		newerType    ObservationType
 		olderType    ObservationType
-		wantRelation bool
 		wantRelType  RelationType
+		wantRelation bool
 	}{
 		{
 			name:         "bugfix fixes discovery",
@@ -314,8 +314,8 @@ func TestDetectNarrativeMentionRelation(t *testing.T) {
 	tests := []struct {
 		name         string
 		narrative    string
-		wantRelation bool
 		wantRelType  RelationType
+		wantRelation bool
 	}{
 		{
 			name:         "fixes language",

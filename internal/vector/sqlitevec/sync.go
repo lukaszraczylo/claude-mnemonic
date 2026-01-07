@@ -5,13 +5,15 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/lukaszraczylo/claude-mnemonic/internal/chunking"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/rs/zerolog/log"
 )
 
 // Sync provides synchronization between SQLite data and vector embeddings.
 type Sync struct {
-	client *Client
+	client          *Client
+	chunkingManager *chunking.Manager
 }
 
 // NewSync creates a new sync service.
@@ -19,9 +21,23 @@ func NewSync(client *Client) *Sync {
 	return &Sync{client: client}
 }
 
+// SetChunkingManager sets the code chunking manager (optional).
+// If set, observations will include code chunks from tracked files.
+func (s *Sync) SetChunkingManager(manager *chunking.Manager) {
+	s.chunkingManager = manager
+}
+
 // SyncObservation syncs a single observation to the vector store.
+// If a chunking manager is configured, also chunks tracked code files.
 func (s *Sync) SyncObservation(ctx context.Context, obs *models.Observation) error {
 	docs := s.formatObservationDocs(obs)
+
+	// Add code chunks from tracked files if chunking manager is available
+	if s.chunkingManager != nil {
+		codeChunkDocs := s.formatCodeChunkDocs(ctx, obs)
+		docs = append(docs, codeChunkDocs...)
+	}
+
 	if len(docs) == 0 {
 		return nil
 	}
@@ -94,6 +110,98 @@ func (s *Sync) formatObservationDocs(obs *models.Observation) []Document {
 				"fact_index": i,
 			}),
 		})
+	}
+
+	return docs
+}
+
+// formatCodeChunkDocs formats code chunks from tracked files into vector documents.
+// Uses AST-aware chunking to extract semantic code units (functions, classes, methods).
+func (s *Sync) formatCodeChunkDocs(ctx context.Context, obs *models.Observation) []Document {
+	if s.chunkingManager == nil {
+		return nil
+	}
+
+	// Determine scope for metadata
+	scope := string(obs.Scope)
+	if scope == "" {
+		scope = "project"
+	}
+
+	// Collect all tracked files (read + modified)
+	allFiles := make([]string, 0, len(obs.FilesRead)+len(obs.FilesModified))
+	allFiles = append(allFiles, obs.FilesRead...)
+	allFiles = append(allFiles, obs.FilesModified...)
+
+	// Filter to only files supported by chunking manager
+	var supportedFiles []string
+	for _, file := range allFiles {
+		if s.chunkingManager.SupportsFile(file) {
+			supportedFiles = append(supportedFiles, file)
+		}
+	}
+
+	if len(supportedFiles) == 0 {
+		return nil
+	}
+
+	// Chunk all supported files
+	results, errs := s.chunkingManager.ChunkFiles(ctx, supportedFiles)
+	if len(errs) > 0 {
+		// Log errors but don't fail the entire sync
+		for _, err := range errs {
+			log.Warn().Err(err).Msg("Failed to chunk file")
+		}
+	}
+
+	// Convert chunks to vector documents
+	docs := make([]Document, 0)
+	chunkIndex := 0
+
+	for filePath, chunks := range results {
+		for _, chunk := range chunks {
+			doc := Document{
+				ID:      fmt.Sprintf("obs_%d_chunk_%d", obs.ID, chunkIndex),
+				Content: chunk.SearchableContent(),
+				Metadata: map[string]any{
+					"sqlite_id":        obs.ID,
+					"doc_type":         string(DocTypeCodeChunk),
+					"field_type":       "code_chunk",
+					"sdk_session_id":   obs.SDKSessionID,
+					"project":          obs.Project,
+					"scope":            scope,
+					"created_at_epoch": obs.CreatedAtEpoch,
+					// Code chunk specific metadata
+					"file_path":   filePath,
+					"language":    string(chunk.Language),
+					"chunk_type":  string(chunk.Type),
+					"symbol_name": chunk.Name,
+					"start_line":  chunk.StartLine,
+					"end_line":    chunk.EndLine,
+				},
+			}
+
+			// Add parent name if this is a method
+			if chunk.ParentName != "" {
+				doc.Metadata["parent_name"] = chunk.ParentName
+			}
+
+			// Add signature if available
+			if chunk.Signature != "" {
+				doc.Metadata["signature"] = chunk.Signature
+			}
+
+			docs = append(docs, doc)
+			chunkIndex++
+		}
+	}
+
+	if len(docs) > 0 {
+		log.Debug().
+			Int64("observationId", obs.ID).
+			Int("codeChunks", len(docs)).
+			Int("files", len(results)).
+			Msg("Generated code chunk documents")
 	}
 
 	return docs
@@ -191,20 +299,26 @@ func (s *Sync) SyncUserPrompt(ctx context.Context, prompt *models.UserPromptWith
 }
 
 // DeleteObservations removes observation documents from the vector store.
+// Includes both observation fields (narrative, facts) and code chunks.
 func (s *Sync) DeleteObservations(ctx context.Context, observationIDs []int64) error {
 	if len(observationIDs) == 0 {
 		return nil
 	}
 
 	// Generate all possible document IDs for these observations
-	// Pattern: obs_{id}_narrative, obs_{id}_fact_{0..n}
+	// Pattern: obs_{id}_narrative, obs_{id}_fact_{0..n}, obs_{id}_chunk_{0..n}
 	const maxFactsPerObs = 20
-	ids := make([]string, 0, len(observationIDs)*(maxFactsPerObs+1))
+	const maxChunksPerObs = 100 // Reasonable upper bound for code chunks
+	ids := make([]string, 0, len(observationIDs)*(maxFactsPerObs+maxChunksPerObs+1))
 
 	for _, obsID := range observationIDs {
 		ids = append(ids, fmt.Sprintf("obs_%d_narrative", obsID))
 		for i := 0; i < maxFactsPerObs; i++ {
 			ids = append(ids, fmt.Sprintf("obs_%d_fact_%d", obsID, i))
+		}
+		// Include code chunk IDs
+		for i := 0; i < maxChunksPerObs; i++ {
+			ids = append(ids, fmt.Sprintf("obs_%d_chunk_%d", obsID, i))
 		}
 	}
 

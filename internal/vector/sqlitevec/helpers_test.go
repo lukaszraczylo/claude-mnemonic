@@ -42,10 +42,10 @@ func TestQueryResult_Fields(t *testing.T) {
 
 func TestBuildWhereFilter(t *testing.T) {
 	tests := []struct {
+		expected map[string]interface{}
 		name     string
 		docType  DocType
 		project  string
-		expected map[string]interface{}
 	}{
 		{
 			name:     "empty_filters",
@@ -474,9 +474,9 @@ func TestCopyMetadataMulti(t *testing.T) {
 func TestJoinStrings(t *testing.T) {
 	tests := []struct {
 		name     string
-		strs     []string
 		sep      string
 		expected string
+		strs     []string
 	}{
 		{
 			name:     "empty_slice",
@@ -522,8 +522,8 @@ func TestTruncateString(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
 		{
 			name:     "shorter_than_max",

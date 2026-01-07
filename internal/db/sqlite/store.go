@@ -94,8 +94,8 @@ func (s *Store) GetStmt(query string) (*sql.Stmt, error) {
 	defer s.stmtMu.Unlock()
 
 	// Double-check after acquiring write lock
-	if stmt, ok := s.stmtCache[query]; ok {
-		return stmt, nil
+	if cachedStmt, ok := s.stmtCache[query]; ok {
+		return cachedStmt, nil
 	}
 
 	stmt, err := s.db.Prepare(query)

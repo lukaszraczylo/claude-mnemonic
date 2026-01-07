@@ -11,8 +11,8 @@ import (
 
 func TestIsSelfReferentialSummary(t *testing.T) {
 	tests := []struct {
-		name     string
 		summary  *models.ParsedSummary
+		name     string
 		expected bool
 	}{
 		{
@@ -281,8 +281,8 @@ func TestTruncateForLog(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
 		{
 			name:     "shorter_than_max",
@@ -371,11 +371,11 @@ func TestCaptureFileMtimes(t *testing.T) {
 	file1 := filepath.Join(tmpDir, "file1.txt")
 	file2 := filepath.Join(tmpDir, "file2.txt")
 
-	err = os.WriteFile(file1, []byte("content1"), 0644)
+	err = os.WriteFile(file1, []byte("content1"), 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = os.WriteFile(file2, []byte("content2"), 0644)
+	err = os.WriteFile(file2, []byte("content2"), 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestGetFileMtimes(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	testFile := filepath.Join(tmpDir, "test.txt")
-	err = os.WriteFile(testFile, []byte("content"), 0644)
+	err = os.WriteFile(testFile, []byte("content"), 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestGetFileContent(t *testing.T) {
 	t.Run("reads_existing_file", func(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "test.txt")
 		content := "test content"
-		err := os.WriteFile(testFile, []byte(content), 0644)
+		err := os.WriteFile(testFile, []byte(content), 0600)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -459,7 +459,7 @@ func TestGetFileContent(t *testing.T) {
 		for i := 0; i < 3000; i++ {
 			longContent += "x"
 		}
-		err := os.WriteFile(testFile, []byte(longContent), 0644)
+		err := os.WriteFile(testFile, []byte(longContent), 0600)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -473,7 +473,7 @@ func TestGetFileContent(t *testing.T) {
 	t.Run("resolves_relative_path_with_cwd", func(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "relative.txt")
 		content := "relative content"
-		err := os.WriteFile(testFile, []byte(content), 0644)
+		err := os.WriteFile(testFile, []byte(content), 0600)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -719,8 +719,8 @@ func TestShouldSkipTrivialOperation_EdgeCases(t *testing.T) {
 // TestIsSelfReferentialSummary_MoreCases tests additional self-referential detection cases.
 func TestIsSelfReferentialSummary_MoreCases(t *testing.T) {
 	tests := []struct {
-		name     string
 		summary  *models.ParsedSummary
+		name     string
 		expected bool
 	}{
 		{
@@ -932,7 +932,7 @@ func TestCaptureFileMtimes_DuplicatePaths(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	testFile := filepath.Join(tmpDir, "shared.txt")
-	err = os.WriteFile(testFile, []byte("content"), 0644)
+	err = os.WriteFile(testFile, []byte("content"), 0600)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -47,9 +47,9 @@ func (s *ManagerSuite) TestActiveSession() {
 		SDKSessionID:    "sdk-123",
 		Project:         "test-project",
 		UserPrompt:      "Hello",
-		StartTime:       time.Now(),
-		pendingMessages: make([]PendingMessage, 0),
-		notify:          make(chan struct{}, 1),
+		StartTime:       time.Now(),                //nolint:govet
+		pendingMessages: make([]PendingMessage, 0), //nolint:govet
+		notify:          make(chan struct{}, 1),    //nolint:govet
 	}
 
 	s.Equal(int64(1), session.SessionDBID)
@@ -134,7 +134,7 @@ func (s *ManagerSuite) TestDeleteSession() {
 	session := &ActiveSession{
 		SessionDBID:     1,
 		Project:         "test-project",
-		StartTime:       time.Now(),
+		StartTime:       time.Now(), //nolint:govet
 		pendingMessages: []PendingMessage{},
 		ctx:             ctx,
 		cancel:          cancel,
@@ -236,8 +236,8 @@ func TestTimeoutConstants(t *testing.T) {
 func TestObservationData(t *testing.T) {
 	data := ObservationData{
 		ToolName:     "Read",
-		ToolInput:    map[string]string{"path": "/test/file.go"},
-		ToolResponse: "file content",
+		ToolInput:    map[string]string{"path": "/test/file.go"}, //nolint:govet
+		ToolResponse: "file content",                             //nolint:govet
 		PromptNumber: 1,
 		CWD:          "/test",
 	}
@@ -333,7 +333,7 @@ func TestConcurrentSessionAccess(t *testing.T) {
 // TestProcessNotifyChannel tests the process notification channel.
 func TestProcessNotifyChannel(t *testing.T) {
 	manager := &Manager{
-		sessions:      make(map[int64]*ActiveSession),
+		sessions:      make(map[int64]*ActiveSession), //nolint:govet
 		ProcessNotify: make(chan struct{}, 1),
 	}
 
@@ -367,7 +367,7 @@ func TestActiveSessionContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	session := &ActiveSession{
-		SessionDBID: 1,
+		SessionDBID: 1, //nolint:govet
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -438,7 +438,7 @@ func (s *ManagerSuite) TestShutdownAll() {
 		s.manager.sessions[i] = &ActiveSession{
 			SessionDBID:     i,
 			Project:         "test-project",
-			StartTime:       time.Now(),
+			StartTime:       time.Now(), //nolint:govet
 			pendingMessages: []PendingMessage{},
 			ctx:             ctx,
 			cancel:          cancel,
@@ -479,7 +479,7 @@ func (s *ManagerSuite) TestDeleteNonExistentSession() {
 // TestLastPromptNumber tests prompt number tracking.
 func TestLastPromptNumber(t *testing.T) {
 	session := &ActiveSession{
-		SessionDBID:      1,
+		SessionDBID:      1, //nolint:govet
 		LastPromptNumber: 0,
 	}
 
@@ -526,7 +526,7 @@ func TestActiveSessionNotifyChannel(t *testing.T) {
 // TestMessageMutex tests message mutex operations.
 func TestMessageMutex(t *testing.T) {
 	session := &ActiveSession{
-		pendingMessages: make([]PendingMessage, 0),
+		pendingMessages: make([]PendingMessage, 0), //nolint:govet
 	}
 
 	var wg sync.WaitGroup
@@ -559,7 +559,7 @@ func (s *ManagerSuite) TestQueueDepthMultipleSessions() {
 	}
 	s.manager.sessions[2] = &ActiveSession{
 		SessionDBID:     2,
-		pendingMessages: make([]PendingMessage, 0),
+		pendingMessages: make([]PendingMessage, 0), //nolint:govet
 	}
 	s.manager.sessions[3] = &ActiveSession{
 		SessionDBID:     3,
@@ -658,7 +658,7 @@ func TestActiveSessionCWD(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			data := ObservationData{
-				ToolName: "Test",
+				ToolName: "Test", //nolint:govet
 				CWD:      tt.cwd,
 			}
 			assert.Equal(t, tt.cwd, data.CWD)
@@ -669,22 +669,22 @@ func TestActiveSessionCWD(t *testing.T) {
 // TestToolInputResponse tests various tool input/response types.
 func TestToolInputResponse(t *testing.T) {
 	tests := []struct {
-		name     string
 		input    interface{}
 		response interface{}
+		name     string
 	}{
-		{"nil_values", nil, nil},
-		{"string_values", "input string", "response string"},
-		{"map_values", map[string]string{"key": "value"}, map[string]interface{}{"result": true}},
-		{"slice_values", []string{"a", "b"}, []int{1, 2, 3}},
-		{"int_values", 42, 100},
-		{"bool_values", true, false},
+		{name: "nil_values", input: nil, response: nil},
+		{name: "string_values", input: "input string", response: "response string"},
+		{name: "map_values", input: map[string]string{"key": "value"}, response: map[string]interface{}{"result": true}},
+		{name: "slice_values", input: []string{"a", "b"}, response: []int{1, 2, 3}},
+		{name: "int_values", input: 42, response: 100},
+		{name: "bool_values", input: true, response: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			data := ObservationData{
-				ToolName:     "TestTool",
+				ToolName:     "TestTool", //nolint:govet
 				ToolInput:    tt.input,
 				ToolResponse: tt.response,
 			}

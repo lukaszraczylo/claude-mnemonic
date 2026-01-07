@@ -182,13 +182,13 @@ func (s *ConflictStore) CleanupSupersededObservations(ctx context.Context, proje
 	var toDelete []int64
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			return nil, scanErr
 		}
 		toDelete = append(toDelete, id)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	if len(toDelete) == 0 {
@@ -197,8 +197,8 @@ func (s *ConflictStore) CleanupSupersededObservations(ctx context.Context, proje
 
 	// Delete the conflict records first (due to foreign key constraints)
 	for _, obsID := range toDelete {
-		if err := s.DeleteConflictsByObservationID(ctx, obsID); err != nil {
-			return nil, err
+		if delErr := s.DeleteConflictsByObservationID(ctx, obsID); delErr != nil {
+			return nil, delErr
 		}
 	}
 

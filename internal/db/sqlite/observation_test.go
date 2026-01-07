@@ -65,10 +65,10 @@ func (s *ObservationStoreSuite) TestStoreObservation_TableDriven() {
 	ctx := context.Background()
 
 	tests := []struct {
+		obs          *models.ParsedObservation
 		name         string
 		sdkSessionID string
 		project      string
-		obs          *models.ParsedObservation
 		promptNum    int
 		tokens       int64
 		wantErr      bool
@@ -308,8 +308,8 @@ func (s *ObservationStoreSuite) TestGetObservationsByIDs() {
 
 	tests := []struct {
 		name      string
-		queryIDs  []int64
 		orderBy   string
+		queryIDs  []int64
 		limit     int
 		wantCount int
 	}{

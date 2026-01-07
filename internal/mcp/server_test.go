@@ -34,8 +34,8 @@ func (s *ServerSuite) TestNewServer() {
 func TestRequest(t *testing.T) {
 	tests := []struct {
 		name     string
-		req      Request
 		expected string
+		req      Request
 	}{
 		{
 			name: "initialize request",
@@ -137,10 +137,10 @@ func TestResponse(t *testing.T) {
 
 // TestError tests Error struct.
 func TestError(t *testing.T) {
-	tests := []struct {
-		name     string
+	tests := []struct { //nolint:govet
 		err      Error
 		expected string
+		name     string
 	}{
 		{
 			name: "parse error",
@@ -365,11 +365,11 @@ func TestHandleRequest(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name         string
 		req          *Request
-		expectError  bool
-		errorCode    int
+		name         string
 		errorMessage string
+		errorCode    int
+		expectError  bool
 	}{
 		{
 			name: "initialize method",
@@ -683,10 +683,8 @@ func TestRun_MultipleRequests(t *testing.T) {
 func TestHandleTimeline_Defaults(t *testing.T) {
 	// Test that handleTimeline sets default before/after values
 	params := TimelineParams{
-		AnchorID: 0,
-		Query:    "",
-		Before:   0,
-		After:    0,
+		Before: 0,
+		After:  0,
 	}
 
 	// Simulate the default value assignment from handleTimeline
@@ -753,13 +751,13 @@ func TestServerStdinStdoutConfig(t *testing.T) {
 // TestResponseIDTypes tests that response IDs can be various types.
 func TestResponseIDTypes(t *testing.T) {
 	tests := []struct {
-		name string
 		id   any
+		name string
 	}{
-		{"integer id", 1},
-		{"string id", "abc-123"},
-		{"float id", 1.5},
-		{"null id", nil},
+		{name: "integer id", id: 1},
+		{name: "string id", id: "abc-123"},
+		{name: "float id", id: 1.5},
+		{name: "null id", id: nil},
 	}
 
 	for _, tt := range tests {

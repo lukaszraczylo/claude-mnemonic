@@ -261,14 +261,14 @@ func TestPromptStore_SaveMultiplePrompts(t *testing.T) {
 
 	tests := []struct {
 		claudeSessionID string
-		promptNum       int
 		text            string
+		promptNum       int
 		matches         int
 	}{
-		{"claude-1", 1, "First prompt", 5},
-		{"claude-1", 2, "Second prompt", 3},
-		{"claude-2", 1, "Third prompt", 0},
-		{"claude-1", 3, "Fourth prompt", 10},
+		{claudeSessionID: "claude-1", promptNum: 1, text: "First prompt", matches: 5},
+		{claudeSessionID: "claude-1", promptNum: 2, text: "Second prompt", matches: 3},
+		{claudeSessionID: "claude-2", promptNum: 1, text: "Third prompt", matches: 0},
+		{claudeSessionID: "claude-1", promptNum: 3, text: "Fourth prompt", matches: 10},
 	}
 
 	for _, tt := range tests {

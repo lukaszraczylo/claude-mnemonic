@@ -50,8 +50,8 @@ func (s *ObservationSuite) TestGlobalizableConcepts() {
 func (s *ObservationSuite) TestDetermineScope_TableDriven() {
 	tests := []struct {
 		name     string
-		concepts []string
 		expected ObservationScope
+		concepts []string
 	}{
 		{
 			name:     "empty concepts - project scope",
@@ -106,8 +106,8 @@ func (s *ObservationSuite) TestDetermineScope_TableDriven() {
 // TestParsedObservation_FileMtimesJSON tests FileMtimes JSON serialization.
 func (s *ObservationSuite) TestParsedObservation_FileMtimesJSON() {
 	obs := &ParsedObservation{
-		Type:       ObsTypeDiscovery,
-		Title:      "Test",
+		Type:       ObsTypeDiscovery, //nolint:govet
+		Title:      "Test",           //nolint:govet
 		FileMtimes: map[string]int64{"file1.go": 1234567890, "file2.go": 1234567891},
 	}
 
@@ -121,9 +121,9 @@ func (s *ObservationSuite) TestParsedObservation_FileMtimesJSON() {
 // TestObservation_CheckStaleness_TableDriven tests staleness checking.
 func (s *ObservationSuite) TestObservation_CheckStaleness_TableDriven() {
 	tests := []struct {
-		name          string
 		storedMtimes  map[string]int64
 		currentMtimes map[string]int64
+		name          string
 		expectedStale bool
 	}{
 		{
@@ -221,9 +221,9 @@ func (s *ObservationSuite) TestParsedObservation_Fields() {
 func (s *ObservationSuite) TestObservation_NullFields() {
 	// Test with null fields
 	obs := &Observation{
-		ID:        1,
-		Project:   "test",
-		Type:      ObsTypeDiscovery,
+		ID:        1,                //nolint:govet
+		Project:   "test",           //nolint:govet
+		Type:      ObsTypeDiscovery, //nolint:govet
 		Title:     sql.NullString{Valid: false},
 		Subtitle:  sql.NullString{Valid: false},
 		Narrative: sql.NullString{Valid: false},
@@ -235,9 +235,9 @@ func (s *ObservationSuite) TestObservation_NullFields() {
 
 	// Test with valid fields
 	obs2 := &Observation{
-		ID:        2,
-		Project:   "test",
-		Type:      ObsTypeBugfix,
+		ID:        2,             //nolint:govet
+		Project:   "test",        //nolint:govet
+		Type:      ObsTypeBugfix, //nolint:govet
 		Title:     sql.NullString{String: "Fix bug", Valid: true},
 		Subtitle:  sql.NullString{String: "Memory leak", Valid: true},
 		Narrative: sql.NullString{String: "Fixed memory leak in handler", Valid: true},
@@ -300,10 +300,10 @@ func TestParsedObservation_ToStoredObservation(t *testing.T) {
 // TestJSONStringArray tests JSONStringArray scanning.
 func TestJSONStringArray(t *testing.T) {
 	tests := []struct {
-		name     string
 		input    interface{}
-		wantErr  bool
+		name     string
 		expected JSONStringArray
+		wantErr  bool
 	}{
 		{
 			name:     "nil input",
@@ -348,10 +348,10 @@ func TestJSONStringArray(t *testing.T) {
 // TestJSONInt64Map tests JSONInt64Map scanning.
 func TestJSONInt64Map(t *testing.T) {
 	tests := []struct {
-		name     string
 		input    interface{}
-		wantErr  bool
 		expected JSONInt64Map
+		name     string
+		wantErr  bool
 	}{
 		{
 			name:     "nil input",

@@ -12,6 +12,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/chunking"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/chunking/golang"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/chunking/python"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/chunking/typescript"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
@@ -56,80 +60,49 @@ type RetrievalStats struct {
 
 // Service is the main worker service orchestrator.
 type Service struct {
-	// Version of the worker binary
-	version string
-
-	// Configuration
-	config *config.Config
-
-	// Database
-	store            *sqlite.Store
-	sessionStore     *sqlite.SessionStore
-	observationStore *sqlite.ObservationStore
+	startTime        time.Time
+	initError        error
+	ctx              context.Context
+	queryExpander    *expansion.Expander
+	recalculator     *scoring.Recalculator
 	summaryStore     *sqlite.SummaryStore
 	promptStore      *sqlite.PromptStore
 	conflictStore    *sqlite.ConflictStore
 	patternStore     *sqlite.PatternStore
 	relationStore    *sqlite.RelationStore
-
-	// Pattern detection
-	patternDetector *pattern.Detector
-
-	// Domain services
-	sessionManager *session.Manager
-	sseBroadcaster *sse.Broadcaster
-	processor      *sdk.Processor
-
-	// Vector database (sqlite-vec with local embeddings)
-	embedSvc     *embedding.Service
-	vectorClient *sqlitevec.Client
-	vectorSync   *sqlitevec.Sync
-
-	// Cross-encoder reranking (for improved search relevance)
-	reranker *reranking.Service
-
-	// Query expansion (for improved search recall)
-	queryExpander *expansion.Expander
-
-	// Importance scoring
-	scoreCalculator *scoring.Calculator
-	recalculator    *scoring.Recalculator
-
-	// HTTP server
-	router    *chi.Mux
-	server    *http.Server
-	startTime time.Time
-
-	// Retrieval statistics (per-project)
+	patternDetector  *pattern.Detector
+	sessionManager   *session.Manager
+	sseBroadcaster   *sse.Broadcaster
+	router           *chi.Mux
+	embedSvc         *embedding.Service
+	vectorClient     *sqlitevec.Client
+	vectorSync       *sqlitevec.Sync
+	reranker         *reranking.Service
+	updater          *update.Updater
+	observationStore *sqlite.ObservationStore
+	scoreCalculator  *scoring.Calculator
+	processor        *sdk.Processor
+	server           *http.Server
+	sessionStore     *sqlite.SessionStore
 	retrievalStats   map[string]*RetrievalStats
+	configWatcher    *watcher.Watcher
+	store            *sqlite.Store
+	cancel           context.CancelFunc
+	dbWatcher        *watcher.Watcher
+	staleQueue       chan staleVerifyRequest
+	config           *config.Config
+	version          string
+	wg               sync.WaitGroup
+	initMu           sync.RWMutex
 	retrievalStatsMu sync.RWMutex
-
-	// Lifecycle
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-
-	// Initialization state (for deferred init)
-	ready     atomic.Bool
-	initError error
-	initMu    sync.RWMutex
-
-	// Background verification queue for stale observations
-	staleQueue     chan staleVerifyRequest
-	staleQueueOnce sync.Once
-
-	// File watchers for auto-recreation on deletion
-	dbWatcher     *watcher.Watcher
-	configWatcher *watcher.Watcher
-
-	// Self-updater
-	updater *update.Updater
+	staleQueueOnce   sync.Once
+	ready            atomic.Bool
 }
 
 // staleVerifyRequest represents a request to verify a stale observation in background
 type staleVerifyRequest struct {
-	observationID int64
 	cwd           string
+	observationID int64
 }
 
 // NewService creates a new worker service with deferred initialization.
@@ -223,17 +196,29 @@ func (s *Service) initializeAsync() {
 	} else {
 		embedSvc = emb
 		// Create sqlite-vec client using the same DB connection
-		client, err := sqlitevec.NewClient(sqlitevec.Config{
+		client, clientErr := sqlitevec.NewClient(sqlitevec.Config{
 			DB: store.DB(),
 		}, embedSvc)
-		if err != nil {
-			log.Warn().Err(err).Msg("sqlite-vec client creation failed - vector search disabled")
+		if clientErr != nil {
+			log.Warn().Err(clientErr).Msg("sqlite-vec client creation failed - vector search disabled")
 		} else {
 			vectorClient = client
 			vectorSync = sqlitevec.NewSync(client)
+
+			// Initialize AST-aware code chunking
+			chunkOpts := chunking.DefaultChunkOptions()
+			chunkers := []chunking.Chunker{
+				golang.NewChunker(chunkOpts),
+				python.NewChunker(chunkOpts),
+				typescript.NewChunker(chunkOpts),
+			}
+			chunkingManager := chunking.NewManager(chunkers, chunkOpts)
+			vectorSync.SetChunkingManager(chunkingManager)
+
 			log.Info().
 				Str("model", embedSvc.Version()).
-				Msg("sqlite-vec vector search enabled")
+				Strs("chunkers", []string{"go", "python", "typescript"}).
+				Msg("sqlite-vec vector search with AST-aware code chunking enabled")
 		}
 
 		// Create cross-encoder reranking service if enabled
@@ -243,9 +228,9 @@ func (s *Service) initializeAsync() {
 				rerankCfg.Alpha = s.config.RerankingAlpha
 			}
 
-			ranker, err := reranking.NewService(rerankCfg)
-			if err != nil {
-				log.Warn().Err(err).Msg("Cross-encoder reranking service creation failed - reranking disabled")
+			ranker, rankerErr := reranking.NewService(rerankCfg)
+			if rankerErr != nil {
+				log.Warn().Err(rankerErr).Msg("Cross-encoder reranking service creation failed - reranking disabled")
 			} else {
 				reranker = ranker
 				log.Info().
@@ -457,8 +442,8 @@ func (s *Service) startWatchers() {
 		log.Warn().Err(err).Msg("Failed to create database watcher")
 	} else {
 		s.dbWatcher = dbWatcher
-		if err := dbWatcher.Start(); err != nil {
-			log.Warn().Err(err).Msg("Failed to start database watcher")
+		if startErr := dbWatcher.Start(); startErr != nil {
+			log.Warn().Err(startErr).Msg("Failed to start database watcher")
 		} else {
 			log.Info().Str("path", s.config.DBPath).Msg("Database file watcher started")
 		}
@@ -559,15 +544,26 @@ func (s *Service) reinitializeDatabase() {
 		log.Warn().Err(err).Msg("Embedding service creation failed after reinit")
 	} else {
 		embedSvc = emb
-		client, err := sqlitevec.NewClient(sqlitevec.Config{
+		client, clientErr := sqlitevec.NewClient(sqlitevec.Config{
 			DB: store.DB(),
 		}, embedSvc)
-		if err != nil {
-			log.Warn().Err(err).Msg("sqlite-vec client creation failed after reinit")
+		if clientErr != nil {
+			log.Warn().Err(clientErr).Msg("sqlite-vec client creation failed after reinit")
 		} else {
 			vectorClient = client
 			vectorSync = sqlitevec.NewSync(client)
-			log.Info().Msg("sqlite-vec reconnected after reinit")
+
+			// Initialize AST-aware code chunking
+			chunkOpts := chunking.DefaultChunkOptions()
+			chunkers := []chunking.Chunker{
+				golang.NewChunker(chunkOpts),
+				python.NewChunker(chunkOpts),
+				typescript.NewChunker(chunkOpts),
+			}
+			chunkingManager := chunking.NewManager(chunkers, chunkOpts)
+			vectorSync.SetChunkingManager(chunkingManager)
+
+			log.Info().Msg("sqlite-vec with code chunking reconnected after reinit")
 		}
 
 		// Recreate cross-encoder reranking service if enabled
@@ -577,9 +573,9 @@ func (s *Service) reinitializeDatabase() {
 				rerankCfg.Alpha = s.config.RerankingAlpha
 			}
 
-			ranker, err := reranking.NewService(rerankCfg)
-			if err != nil {
-				log.Warn().Err(err).Msg("Cross-encoder reranking service creation failed after reinit")
+			ranker, rankerErr := reranking.NewService(rerankCfg)
+			if rankerErr != nil {
+				log.Warn().Err(rankerErr).Msg("Cross-encoder reranking service creation failed after reinit")
 			} else {
 				reranker = ranker
 				log.Info().Msg("Cross-encoder reranking reconnected after reinit")
@@ -824,8 +820,8 @@ func (s *Service) rebuildAllVectors(
 		log.Error().Err(err).Msg("Failed to fetch observations for vector rebuild")
 	} else {
 		for _, obs := range observations {
-			if err := vectorSync.SyncObservation(s.ctx, obs); err != nil {
-				log.Warn().Err(err).Int64("id", obs.ID).Msg("Failed to sync observation during rebuild")
+			if syncErr := vectorSync.SyncObservation(s.ctx, obs); syncErr != nil {
+				log.Warn().Err(syncErr).Int64("id", obs.ID).Msg("Failed to sync observation during rebuild")
 				syncErrors++
 			} else {
 				totalSynced++
@@ -840,8 +836,8 @@ func (s *Service) rebuildAllVectors(
 		log.Error().Err(err).Msg("Failed to fetch summaries for vector rebuild")
 	} else {
 		for _, summary := range summaries {
-			if err := vectorSync.SyncSummary(s.ctx, summary); err != nil {
-				log.Warn().Err(err).Int64("id", summary.ID).Msg("Failed to sync summary during rebuild")
+			if syncErr := vectorSync.SyncSummary(s.ctx, summary); syncErr != nil {
+				log.Warn().Err(syncErr).Int64("id", summary.ID).Msg("Failed to sync summary during rebuild")
 				syncErrors++
 			} else {
 				totalSynced++

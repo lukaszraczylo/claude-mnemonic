@@ -54,14 +54,14 @@ func TestNullInt(t *testing.T) {
 func TestRepeatPlaceholders(t *testing.T) {
 	tests := []struct {
 		name     string
-		n        int
 		expected string
+		n        int
 	}{
-		{"zero", 0, ""},
-		{"negative", -1, ""},
-		{"one", 1, ", ?"},
-		{"two", 2, ", ?, ?"},
-		{"three", 3, ", ?, ?, ?"},
+		{name: "zero", n: 0, expected: ""},
+		{name: "negative", n: -1, expected: ""},
+		{name: "one", n: 1, expected: ", ?"},
+		{name: "two", n: 2, expected: ", ?, ?"},
+		{name: "three", n: 3, expected: ", ?, ?, ?"},
 	}
 
 	for _, tt := range tests {

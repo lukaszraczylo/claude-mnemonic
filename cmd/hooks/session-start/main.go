@@ -23,12 +23,12 @@ type Input struct {
 
 // Observation represents an observation from the API.
 type Observation struct {
-	ID        int64    `json:"id"`
 	Type      string   `json:"type"`
 	Title     string   `json:"title"`
 	Subtitle  string   `json:"subtitle"`
 	Narrative string   `json:"narrative"`
 	Facts     []string `json:"facts"`
+	ID        int64    `json:"id"`
 }
 
 func main() {
@@ -46,8 +46,8 @@ func main() {
 	}
 
 	var input Input
-	if err := json.Unmarshal(inputData, &input); err != nil {
-		hooks.WriteError("SessionStart", err)
+	if unmarshalErr := json.Unmarshal(inputData, &input); unmarshalErr != nil {
+		hooks.WriteError("SessionStart", unmarshalErr)
 		os.Exit(1)
 	}
 

@@ -51,8 +51,8 @@ func (s *ConflictSuite) TestDetectExplicitCorrection_TableDriven() {
 	tests := []struct {
 		name          string
 		text          string
-		expectMatch   bool
 		expectPattern string
+		expectMatch   bool
 	}{
 		{
 			name:          "actually that was wrong",
@@ -128,9 +128,9 @@ func (s *ConflictSuite) TestDetectExplicitCorrection_TableDriven() {
 // TestDetectOpposingFileChanges_TableDriven tests opposing file change detection.
 func (s *ConflictSuite) TestDetectOpposingFileChanges_TableDriven() {
 	tests := []struct {
-		name           string
 		newerObs       *Observation
 		olderObs       *Observation
+		name           string
 		expectConflict bool
 	}{
 		{
@@ -202,9 +202,9 @@ func (s *ConflictSuite) TestDetectOpposingFileChanges_TableDriven() {
 // TestDetectConceptTagMismatch_TableDriven tests concept tag mismatch detection.
 func (s *ConflictSuite) TestDetectConceptTagMismatch_TableDriven() {
 	tests := []struct {
-		name           string
 		newerObs       *Observation
 		olderObs       *Observation
+		name           string
 		expectConflict bool
 	}{
 		{
@@ -406,9 +406,9 @@ func TestObservationConflict_Fields(t *testing.T) {
 		OlderObsID:      5,
 		ConflictType:    ConflictSuperseded,
 		Resolution:      ResolutionPreferNewer,
-		Reason:          "Test reason",
-		DetectedAt:      "2024-01-01T00:00:00Z",
-		DetectedAtEpoch: 1704067200000,
+		Reason:          "Test reason",          //nolint:govet
+		DetectedAt:      "2024-01-01T00:00:00Z", //nolint:govet
+		DetectedAtEpoch: 1704067200000,          //nolint:govet
 		Resolved:        false,
 	}
 

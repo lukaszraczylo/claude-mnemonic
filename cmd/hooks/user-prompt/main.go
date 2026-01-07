@@ -35,8 +35,8 @@ func main() {
 	}
 
 	var input Input
-	if err := json.Unmarshal(inputData, &input); err != nil {
-		hooks.WriteError("UserPromptSubmit", err)
+	if unmarshalErr := json.Unmarshal(inputData, &input); unmarshalErr != nil {
+		hooks.WriteError("UserPromptSubmit", unmarshalErr)
 		os.Exit(1)
 	}
 

@@ -37,40 +37,29 @@ var CriticalConcepts = []string{
 
 // Config holds the application configuration.
 type Config struct {
-	// Worker settings
-	WorkerPort int `json:"worker_port"`
-
-	// Database settings
-	DBPath   string `json:"db_path"`
-	MaxConns int    `json:"max_conns"`
-
-	// SDK Agent settings
-	Model          string `json:"model"`
-	ClaudeCodePath string `json:"claude_code_path"`
-
-	// Embedding settings
-	EmbeddingModel string `json:"embedding_model"` // e.g., "bge-v1.5"
-
-	// Reranking settings (cross-encoder)
-	RerankingEnabled        bool    `json:"reranking_enabled"`         // Enable cross-encoder reranking
-	RerankingCandidates     int     `json:"reranking_candidates"`      // Number of candidates to retrieve before reranking (default 100)
-	RerankingResults        int     `json:"reranking_results"`         // Number of results to return after reranking (default 10)
-	RerankingAlpha          float64 `json:"reranking_alpha"`           // Weight for combining scores: alpha*rerank + (1-alpha)*original (default 0.7)
-	RerankingMinImprovement float64 `json:"reranking_min_improvement"` // Minimum rank improvement to trigger reranking (default 0, always rerank)
-	RerankingPureMode       bool    `json:"reranking_pure_mode"`       // Use pure cross-encoder scores without combining with bi-encoder (default false)
-
-	// Context injection settings
+	ContextFullField          string   `json:"context_full_field"`
+	DBPath                    string   `json:"db_path"`
+	Model                     string   `json:"model"`
+	ClaudeCodePath            string   `json:"claude_code_path"`
+	EmbeddingModel            string   `json:"embedding_model"`
+	ContextObsConcepts        []string `json:"context_obs_concepts"`
+	ContextObsTypes           []string `json:"context_obs_types"`
+	RerankingMinImprovement   float64  `json:"reranking_min_improvement"`
+	RerankingCandidates       int      `json:"reranking_candidates"`
+	RerankingAlpha            float64  `json:"reranking_alpha"`
+	WorkerPort                int      `json:"worker_port"`
+	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`
 	ContextObservations       int      `json:"context_observations"`
 	ContextFullCount          int      `json:"context_full_count"`
 	ContextSessionCount       int      `json:"context_session_count"`
-	ContextShowReadTokens     bool     `json:"context_show_read_tokens"`
-	ContextShowWorkTokens     bool     `json:"context_show_work_tokens"`
-	ContextFullField          string   `json:"context_full_field"`
+	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"`
+	MaxConns                  int      `json:"max_conns"`
+	RerankingResults          int      `json:"reranking_results"`
 	ContextShowLastSummary    bool     `json:"context_show_last_summary"`
-	ContextObsTypes           []string `json:"context_obs_types"`
-	ContextObsConcepts        []string `json:"context_obs_concepts"`
-	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"` // 0.0-1.0, minimum similarity for inclusion
-	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`  // Max results per prompt (0 = threshold only)
+	RerankingEnabled          bool     `json:"reranking_enabled"`
+	ContextShowWorkTokens     bool     `json:"context_show_work_tokens"`
+	ContextShowReadTokens     bool     `json:"context_show_read_tokens"`
+	RerankingPureMode         bool     `json:"reranking_pure_mode"`
 }
 
 var (

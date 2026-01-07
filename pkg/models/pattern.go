@@ -39,21 +39,21 @@ const (
 // Pattern represents a recurring pattern detected across observations.
 // This enables Claude to reference historical insights: "I've encountered this pattern 12 times."
 type Pattern struct {
-	ID             int64           `db:"id" json:"id"`
-	Name           string          `db:"name" json:"name"`                       // e.g., "State Management Anti-Pattern"
-	Type           PatternType     `db:"type" json:"type"`                       // bug, refactor, architecture, etc.
-	Description    sql.NullString  `db:"description" json:"description"`         // Detailed description
-	Signature      JSONStringArray `db:"signature" json:"signature"`             // Keyword clusters for detection
-	Recommendation sql.NullString  `db:"recommendation" json:"recommendation"`   // What works for this pattern
-	Frequency      int             `db:"frequency" json:"frequency"`             // How many times encountered
-	Projects       JSONStringArray `db:"projects" json:"projects"`               // Projects where this pattern was seen
-	ObservationIDs JSONInt64Array  `db:"observation_ids" json:"observation_ids"` // Source observation IDs
-	Status         PatternStatus   `db:"status" json:"status"`                   // active, deprecated, merged
-	MergedIntoID   sql.NullInt64   `db:"merged_into_id" json:"merged_into_id,omitempty"`
-	Confidence     float64         `db:"confidence" json:"confidence"`     // Detection confidence (0.0-1.0)
-	LastSeenAt     string          `db:"last_seen_at" json:"last_seen_at"` // Last time pattern was detected
-	LastSeenEpoch  int64           `db:"last_seen_at_epoch" json:"last_seen_at_epoch"`
+	Status         PatternStatus   `db:"status" json:"status"`
+	Name           string          `db:"name" json:"name"`
+	Type           PatternType     `db:"type" json:"type"`
 	CreatedAt      string          `db:"created_at" json:"created_at"`
+	LastSeenAt     string          `db:"last_seen_at" json:"last_seen_at"`
+	Signature      JSONStringArray `db:"signature" json:"signature"`
+	Projects       JSONStringArray `db:"projects" json:"projects"`
+	ObservationIDs JSONInt64Array  `db:"observation_ids" json:"observation_ids"`
+	Recommendation sql.NullString  `db:"recommendation" json:"recommendation"`
+	Description    sql.NullString  `db:"description" json:"description"`
+	MergedIntoID   sql.NullInt64   `db:"merged_into_id" json:"merged_into_id,omitempty"`
+	Frequency      int             `db:"frequency" json:"frequency"`
+	Confidence     float64         `db:"confidence" json:"confidence"`
+	ID             int64           `db:"id" json:"id"`
+	LastSeenEpoch  int64           `db:"last_seen_at_epoch" json:"last_seen_at_epoch"`
 	CreatedAtEpoch int64           `db:"created_at_epoch" json:"created_at_epoch"`
 }
 
@@ -95,21 +95,21 @@ func (j JSONInt64Array) Value() (driver.Value, error) {
 
 // PatternJSON is a JSON-friendly representation of Pattern.
 type PatternJSON struct {
-	ID             int64         `json:"id"`
+	Status         PatternStatus `json:"status"`
 	Name           string        `json:"name"`
 	Type           PatternType   `json:"type"`
 	Description    string        `json:"description,omitempty"`
-	Signature      []string      `json:"signature,omitempty"`
+	CreatedAt      string        `json:"created_at"`
 	Recommendation string        `json:"recommendation,omitempty"`
-	Frequency      int           `json:"frequency"`
-	Projects       []string      `json:"projects,omitempty"`
+	LastSeenAt     string        `json:"last_seen_at"`
+	Signature      []string      `json:"signature,omitempty"`
 	ObservationIDs []int64       `json:"observation_ids,omitempty"`
-	Status         PatternStatus `json:"status"`
+	Projects       []string      `json:"projects,omitempty"`
 	MergedIntoID   int64         `json:"merged_into_id,omitempty"`
 	Confidence     float64       `json:"confidence"`
-	LastSeenAt     string        `json:"last_seen_at"`
+	Frequency      int           `json:"frequency"`
 	LastSeenEpoch  int64         `json:"last_seen_at_epoch"`
-	CreatedAt      string        `json:"created_at"`
+	ID             int64         `json:"id"`
 	CreatedAtEpoch int64         `json:"created_at_epoch"`
 }
 
@@ -214,11 +214,11 @@ func (p *Pattern) updateConfidence() {
 
 // PatternMatch represents a match between an observation and a potential pattern.
 type PatternMatch struct {
-	PatternID     int64   `json:"pattern_id"`
-	Score         float64 `json:"score"`      // Match score (0.0-1.0)
-	MatchedOn     string  `json:"matched_on"` // What triggered the match (concept, keyword, type, etc.)
-	IsNew         bool    `json:"is_new"`     // Whether this would create a new pattern
+	MatchedOn     string  `json:"matched_on"`
 	SuggestedName string  `json:"suggested_name,omitempty"`
+	PatternID     int64   `json:"pattern_id"`
+	Score         float64 `json:"score"`
+	IsNew         bool    `json:"is_new"`
 }
 
 // PatternSignatureKeywords are common keywords used in pattern detection.

@@ -71,7 +71,7 @@ func (s *ObservationStore) UpdateImportanceScores(ctx context.Context, scores ma
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	now := time.Now().UnixMilli()
 	stmt, err := tx.PrepareContext(ctx, `
@@ -171,7 +171,7 @@ func (s *ObservationStore) UpdateConceptWeights(ctx context.Context, weights map
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO concept_weights (concept, weight, updated_at)

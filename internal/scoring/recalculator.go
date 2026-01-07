@@ -21,13 +21,13 @@ type ObservationStore interface {
 
 // Recalculator periodically recalculates importance scores for observations.
 type Recalculator struct {
+	log        zerolog.Logger
 	store      ObservationStore
 	calculator *Calculator
-	log        zerolog.Logger
-	interval   time.Duration
-	batchSize  int
 	stopCh     chan struct{}
 	doneCh     chan struct{}
+	interval   time.Duration
+	batchSize  int
 	mu         sync.Mutex
 	running    bool
 }

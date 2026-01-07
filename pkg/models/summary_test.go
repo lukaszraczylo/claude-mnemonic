@@ -184,8 +184,8 @@ func (s *SummarySuite) TestSessionSummaryJSON() {
 		Notes:           "Notes",
 		PromptNumber:    5,
 		DiscoveryTokens: 1000,
-		CreatedAt:       "2024-01-01T00:00:00Z",
-		CreatedAtEpoch:  1704067200000,
+		CreatedAt:       "2024-01-01T00:00:00Z", //nolint:govet
+		CreatedAtEpoch:  1704067200000,          //nolint:govet
 	}
 
 	s.Equal(int64(1), j.ID)

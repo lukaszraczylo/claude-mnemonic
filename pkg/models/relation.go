@@ -60,14 +60,14 @@ const (
 
 // ObservationRelation represents a directed relationship between two observations.
 type ObservationRelation struct {
-	ID              int64                   `db:"id" json:"id"`
-	SourceID        int64                   `db:"source_id" json:"source_id"`
-	TargetID        int64                   `db:"target_id" json:"target_id"`
 	RelationType    RelationType            `db:"relation_type" json:"relation_type"`
-	Confidence      float64                 `db:"confidence" json:"confidence"`
 	DetectionSource RelationDetectionSource `db:"detection_source" json:"detection_source"`
 	Reason          string                  `db:"reason" json:"reason,omitempty"`
 	CreatedAt       string                  `db:"created_at" json:"created_at"`
+	ID              int64                   `db:"id" json:"id"`
+	SourceID        int64                   `db:"source_id" json:"source_id"`
+	TargetID        int64                   `db:"target_id" json:"target_id"`
+	Confidence      float64                 `db:"confidence" json:"confidence"`
 	CreatedAtEpoch  int64                   `db:"created_at_epoch" json:"created_at_epoch"`
 }
 
@@ -88,12 +88,12 @@ func NewObservationRelation(sourceID, targetID int64, relType RelationType, conf
 
 // RelationDetectionResult contains the result of relation detection.
 type RelationDetectionResult struct {
-	SourceID        int64
-	TargetID        int64
 	RelationType    RelationType
-	Confidence      float64
 	DetectionSource RelationDetectionSource
 	Reason          string
+	SourceID        int64
+	TargetID        int64
+	Confidence      float64
 }
 
 // DetectFileOverlapRelation checks if observations share file references and determines relationship type.
@@ -420,21 +420,27 @@ func DetectRelationsWithExisting(newer *Observation, existing []*Observation, mi
 
 		// 1. File overlap detection
 		if result := DetectFileOverlapRelation(newer, older); result != nil && result.Confidence >= minConfidence {
-			if bestResult == nil || result.Confidence > bestResult.Confidence {
+			if bestResult == nil { //nolint:govet
+				bestResult = result
+			} else if result.Confidence > bestResult.Confidence {
 				bestResult = result
 			}
 		}
 
 		// 2. Concept overlap detection
 		if result := DetectConceptOverlapRelation(newer, older); result != nil && result.Confidence >= minConfidence {
-			if bestResult == nil || result.Confidence > bestResult.Confidence {
+			if bestResult == nil {
+				bestResult = result
+			} else if result.Confidence > bestResult.Confidence {
 				bestResult = result
 			}
 		}
 
 		// 3. Type progression detection
 		if result := DetectTypeProgressionRelation(newer, older); result != nil && result.Confidence >= minConfidence {
-			if bestResult == nil || result.Confidence > bestResult.Confidence {
+			if bestResult == nil {
+				bestResult = result
+			} else if result.Confidence > bestResult.Confidence {
 				bestResult = result
 			}
 		}
@@ -449,7 +455,9 @@ func DetectRelationsWithExisting(newer *Observation, existing []*Observation, mi
 
 		// 5. Narrative mention detection (can upgrade relation type)
 		if result := DetectNarrativeMentionRelation(newer, older); result != nil && result.Confidence >= minConfidence {
-			if bestResult == nil || result.Confidence > bestResult.Confidence {
+			if bestResult == nil {
+				bestResult = result
+			} else if result.Confidence > bestResult.Confidence {
 				bestResult = result
 			}
 		}
@@ -484,6 +492,6 @@ type RelationWithDetails struct {
 
 // RelationGraph represents a graph of related observations.
 type RelationGraph struct {
-	CenterID  int64                  `json:"center_id"`
 	Relations []*RelationWithDetails `json:"relations"`
+	CenterID  int64                  `json:"center_id"`
 }

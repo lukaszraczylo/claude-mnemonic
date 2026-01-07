@@ -30,24 +30,24 @@ const (
 
 // Candidate represents a search result candidate for reranking.
 type Candidate struct {
-	ID         string             // Document ID
-	Content    string             // Document text content for scoring
-	Score      float64            // Original bi-encoder similarity score
-	Metadata   map[string]any     // Preserved metadata
-	RerankInfo map[string]float64 // Reranking debug info (optional)
+	Metadata   map[string]any
+	RerankInfo map[string]float64
+	ID         string
+	Content    string
+	Score      float64
 }
 
 // RerankResult represents a reranked search result.
 type RerankResult struct {
-	ID              string         // Document ID
-	Content         string         // Document text content
-	OriginalScore   float64        // Original bi-encoder score
-	RerankScore     float64        // Cross-encoder relevance score
-	CombinedScore   float64        // Weighted combination of scores
-	Metadata        map[string]any // Preserved metadata
-	OriginalRank    int            // Position before reranking (1-indexed)
-	RerankRank      int            // Position after reranking (1-indexed)
-	RankImprovement int            // How much the rank improved (positive = moved up)
+	Metadata        map[string]any
+	ID              string
+	Content         string
+	OriginalScore   float64
+	RerankScore     float64
+	CombinedScore   float64
+	OriginalRank    int
+	RerankRank      int
+	RankImprovement int
 }
 
 // Service provides cross-encoder reranking functionality.
@@ -297,19 +297,19 @@ func (s *Service) scoreAll(query string, candidates []Candidate) ([]float64, err
 	if err != nil {
 		return nil, fmt.Errorf("create input_ids tensor: %w", err)
 	}
-	defer inputIdsTensor.Destroy()
+	defer func() { _ = inputIdsTensor.Destroy() }()
 
 	attentionMaskTensor, err := ort.NewTensor(inputShape, attentionMaskData)
 	if err != nil {
 		return nil, fmt.Errorf("create attention_mask tensor: %w", err)
 	}
-	defer attentionMaskTensor.Destroy()
+	defer func() { _ = attentionMaskTensor.Destroy() }()
 
 	tokenTypeIdsTensor, err := ort.NewTensor(inputShape, tokenTypeIdsData)
 	if err != nil {
 		return nil, fmt.Errorf("create token_type_ids tensor: %w", err)
 	}
-	defer tokenTypeIdsTensor.Destroy()
+	defer func() { _ = tokenTypeIdsTensor.Destroy() }()
 
 	// Cross-encoder outputs [batch, 1] logits
 	outputShape := ort.NewShape(int64(batchSize), 1)
@@ -317,7 +317,7 @@ func (s *Service) scoreAll(query string, candidates []Candidate) ([]float64, err
 	if err != nil {
 		return nil, fmt.Errorf("create output tensor: %w", err)
 	}
-	defer outputTensor.Destroy()
+	defer func() { _ = outputTensor.Destroy() }()
 
 	// Run inference
 	inputTensors := []ort.Value{inputIdsTensor, attentionMaskTensor, tokenTypeIdsTensor}

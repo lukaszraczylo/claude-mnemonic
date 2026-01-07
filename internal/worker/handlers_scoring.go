@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
+	"github.com/rs/zerolog/log"
 )
 
 // FeedbackRequest represents a user feedback submission.
@@ -65,9 +66,10 @@ func (s *Service) handleObservationFeedback(w http.ResponseWriter, r *http.Reque
 		if err == nil && obs != nil {
 			obs.UserFeedback = req.Feedback // Apply the new feedback
 			newScore = scoreCalculator.Calculate(obs, time.Now())
-			if err := observationStore.UpdateImportanceScore(r.Context(), id, newScore); err != nil {
+			if scoreErr := observationStore.UpdateImportanceScore(r.Context(), id, newScore); scoreErr != nil {
 				// Log but don't fail - feedback was recorded
 				// Score will be updated on next recalculation cycle
+				log.Warn().Err(scoreErr).Int64("id", id).Msg("Failed to update importance score after feedback")
 			}
 		}
 	}
@@ -261,8 +263,9 @@ func (s *Service) handleUpdateConceptWeight(w http.ResponseWriter, r *http.Reque
 
 	// Refresh concept weights in recalculator
 	if recalculator != nil {
-		if err := recalculator.RefreshConceptWeights(r.Context()); err != nil {
+		if refreshErr := recalculator.RefreshConceptWeights(r.Context()); refreshErr != nil {
 			// Log but don't fail - weight was saved
+			log.Warn().Err(refreshErr).Str("concept", concept).Msg("Failed to refresh concept weights in recalculator")
 		}
 	}
 
@@ -308,8 +311,9 @@ func (s *Service) handleTriggerRecalculation(w http.ResponseWriter, r *http.Requ
 
 	// Run recalculation in background
 	go func() {
-		if err := recalculator.RecalculateNow(r.Context()); err != nil {
+		if recalcErr := recalculator.RecalculateNow(r.Context()); recalcErr != nil {
 			// Log error but don't block response
+			log.Warn().Err(recalcErr).Msg("Failed to trigger score recalculation")
 		}
 	}()
 
@@ -347,8 +351,9 @@ func (s *Service) incrementRetrievalCounts(ids []int64) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		if err := store.IncrementRetrievalCount(ctx, ids); err != nil {
+		if incrErr := store.IncrementRetrievalCount(ctx, ids); incrErr != nil {
 			// Log but don't fail - this is a background operation
+			log.Warn().Err(incrErr).Msg("Failed to increment retrieval count in background")
 		}
 	}()
 }

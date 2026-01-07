@@ -116,18 +116,18 @@ func TestPattern_ConfidenceCalculation(t *testing.T) {
 
 func TestPatternType_Detection(t *testing.T) {
 	tests := []struct {
-		concepts  []string
 		title     string
 		narrative string
 		expected  PatternType
+		concepts  []string
 	}{
-		{[]string{"anti-pattern"}, "", "", PatternTypeAntiPattern},
-		{[]string{"best-practice"}, "", "", PatternTypeBestPractice},
-		{[]string{"architecture"}, "", "", PatternTypeArchitecture},
-		{[]string{"refactor"}, "", "", PatternTypeRefactor},
-		{[]string{}, "nil pointer bug", "", PatternTypeBug},
-		{[]string{}, "Deadlock in concurrent code", "", PatternTypeBug},
-		{[]string{}, "Extract interface", "", PatternTypeRefactor},
+		{concepts: []string{"anti-pattern"}, title: "", narrative: "", expected: PatternTypeAntiPattern},
+		{concepts: []string{"best-practice"}, title: "", narrative: "", expected: PatternTypeBestPractice},
+		{concepts: []string{"architecture"}, title: "", narrative: "", expected: PatternTypeArchitecture},
+		{concepts: []string{"refactor"}, title: "", narrative: "", expected: PatternTypeRefactor},
+		{concepts: []string{}, title: "nil pointer bug", narrative: "", expected: PatternTypeBug},
+		{concepts: []string{}, title: "Deadlock in concurrent code", narrative: "", expected: PatternTypeBug},
+		{concepts: []string{}, title: "Extract interface", narrative: "", expected: PatternTypeRefactor},
 	}
 
 	for _, tt := range tests {

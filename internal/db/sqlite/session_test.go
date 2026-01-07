@@ -211,8 +211,8 @@ func (s *SessionStoreSuite) TestFindAnySDKSession_Scenarios() {
 	tests := []struct {
 		name            string
 		claudeSessionID string
-		wantFound       bool
 		wantProject     string
+		wantFound       bool
 	}{
 		{
 			name:            "find existing session 1",

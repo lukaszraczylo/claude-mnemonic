@@ -585,13 +585,13 @@ func (s *ObservationStore) CleanupOldObservations(ctx context.Context, project s
 	var toDelete []int64
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			return nil, scanErr
 		}
 		toDelete = append(toDelete, id)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	if len(toDelete) == 0 {
