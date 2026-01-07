@@ -8,20 +8,20 @@ require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-chi/chi/v5 v5.2.3
+	github.com/go-gormigrate/gormigrate/v2 v2.1.5
 	github.com/goccy/go-json v0.10.5
 	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
 	github.com/sugarme/tokenizer v0.3.0
 	github.com/yalue/onnxruntime_go v1.25.0
-	gorm.io/driver/sqlite v1.5.7
-	gorm.io/gorm v1.26.1
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
 )
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
-	github.com/go-gormigrate/gormigrate/v2 v2.1.5 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
