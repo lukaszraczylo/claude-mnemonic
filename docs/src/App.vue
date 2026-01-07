@@ -40,7 +40,7 @@
             class="w-full h-auto"
           />
         </div>
-        <p class="text-center text-slate-500 text-sm mt-4">The dashboard at localhost:37777 - browse, search, and manage your memories</p>
+        <p class="text-center text-slate-500 text-sm mt-4">The dashboard at localhost:37777 - browse, search, and manage your memories. View graph stats, vector metrics, storage savings, and performance analytics.</p>
       </div>
     </section>
 
@@ -304,7 +304,7 @@
     <section class="py-20 lg:py-28 px-4 sm:px-6">
       <div class="max-w-6xl mx-auto">
         <SectionHeader title="Under the hood" subtitle="Built with simplicity and performance in mind" />
-        <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 text-center">
+        <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 text-center">
           <div class="glass rounded-2xl p-6 sm:p-8 hover:border-amber-500/30 transition-colors">
             <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">Go</div>
             <p class="text-slate-400 text-xs sm:text-sm">Single binary. Fast startup, low memory. Zero runtime dependencies.</p>
@@ -315,11 +315,19 @@
           </div>
           <div class="glass rounded-2xl p-6 sm:p-8 hover:border-amber-500/30 transition-colors">
             <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">sqlite-vec</div>
-            <p class="text-slate-400 text-xs sm:text-sm">Embedded vector database. No external services required.</p>
+            <p class="text-slate-400 text-xs sm:text-sm">Hybrid vector storage with LEANN-inspired selective embeddings. 60-80% storage reduction.</p>
           </div>
           <div class="glass rounded-2xl p-6 sm:p-8 hover:border-amber-500/30 transition-colors">
             <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">BGE</div>
             <p class="text-slate-400 text-xs sm:text-sm">Two-stage retrieval: bi-encoder embeddings + cross-encoder reranking for high accuracy.</p>
+          </div>
+          <div class="glass rounded-2xl p-6 sm:p-8 hover:border-amber-500/30 transition-colors">
+            <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">Tree-sitter</div>
+            <p class="text-slate-400 text-xs sm:text-sm">AST-aware code chunking respects function boundaries for Go, Python, and TypeScript.</p>
+          </div>
+          <div class="glass rounded-2xl p-6 sm:p-8 hover:border-amber-500/30 transition-colors">
+            <div class="text-3xl sm:text-4xl font-bold text-amber-500 mb-2">CSR Graph</div>
+            <p class="text-slate-400 text-xs sm:text-sm">Memory-efficient observation relationship graph with edge detection and hub identification.</p>
           </div>
         </div>
       </div>
@@ -417,9 +425,12 @@ const activeTab = ref('macos')
 const features = [
   { icon: 'fas fa-brain', title: 'Learns as you work', description: 'Every bug fix, every architecture decision, every "aha moment" - captured automatically without breaking your flow.' },
   { icon: 'fas fa-search', title: 'Two-stage retrieval', description: 'Cross-encoder reranking delivers highly relevant results. Finds what you need even with vague queries like "that auth thing".' },
-  { icon: 'fas fa-project-diagram', title: 'Knowledge graph', description: 'Automatically discovers relationships between memories. See how concepts connect in the visual graph dashboard.' },
+  { icon: 'fas fa-project-diagram', title: 'Graph-based search', description: 'LEANN Phase 2: Graph relationships between observations (file overlap, semantic similarity, temporal proximity) for smarter context retrieval.' },
+  { icon: 'fas fa-microchip', title: 'AST-aware chunking', description: 'Intelligent code splitting respects function boundaries. Go, Python, and TypeScript code is chunked at semantic boundaries, not arbitrary line counts.' },
+  { icon: 'fas fa-database', title: 'Hybrid vector storage', description: 'LEANN-inspired selective storage: frequently-accessed "hub" observations store embeddings, others recompute on-demand. 60-80% storage savings with <50ms latency.' },
   { icon: 'fas fa-folder-tree', title: 'Project-aware context', description: 'Your React knowledge stays in React projects. Your Go patterns stay in Go projects. No context pollution.' },
   { icon: 'fas fa-chart-line', title: 'Smart scoring', description: 'Importance decay, pattern detection, and conflict resolution ensure the most valuable memories surface first.' },
+  { icon: 'fas fa-gauge-high', title: 'Auto-tuning', description: 'Dynamic hub threshold adjustment based on query performance. Automatically balances storage efficiency with search latency for your workload.' },
   { icon: 'fas fa-lock', title: '100% private', description: 'Your code context never leaves your machine. No telemetry. No cloud sync. Your memories are yours.' },
 ]
 
@@ -447,6 +458,10 @@ const configOptions = [
   { name: 'CLAUDE_MNEMONIC_CONTEXT_OBSERVATIONS', description: 'Maximum observations injected per session (default: 100)', icon: 'fas fa-layer-group' },
   { name: 'CLAUDE_MNEMONIC_RERANKING_ENABLED', description: 'Enable cross-encoder reranking for improved search relevance (default: true)', icon: 'fas fa-sort-amount-down' },
   { name: 'CLAUDE_MNEMONIC_CONTEXT_RELEVANCE_THRESHOLD', description: 'Minimum similarity score for inclusion, 0.0-1.0 (default: 0.3)', icon: 'fas fa-filter' },
+  { name: 'CLAUDE_MNEMONIC_VECTOR_STORAGE_STRATEGY', description: 'Storage strategy: "hub" (default), "always", or "on_demand"', icon: 'fas fa-database' },
+  { name: 'CLAUDE_MNEMONIC_GRAPH_ENABLED', description: 'Enable graph-based search with observation relationships (default: true)', icon: 'fas fa-project-diagram' },
+  { name: 'CLAUDE_MNEMONIC_GRAPH_MAX_HOPS', description: 'Maximum graph traversal depth for search expansion (default: 2)', icon: 'fas fa-route' },
+  { name: 'CLAUDE_MNEMONIC_GRAPH_REBUILD_INTERVAL_MIN', description: 'How often to rebuild the observation graph in minutes (default: 60)', icon: 'fas fa-clock' },
 ]
 
 const requiredDeps = [
@@ -457,9 +472,11 @@ const requiredDeps = [
 const faqs = [
   { question: 'Will it confuse Claude with wrong context?', answer: 'No. Mnemonic uses project isolation and semantic relevance scoring. Only memories from the current project (or global best practices) are injected, and only when they\'re actually relevant to your prompt.' },
   { question: 'What exactly gets saved?', answer: 'Bug fixes with context ("Fixed race condition by adding mutex"), architecture decisions ("Using repository pattern for data access"), conventions ("All API routes prefixed with /api/v1"), and learnings you want to preserve.' },
-  { question: 'Can I delete or edit memories?', answer: 'Yes. The web dashboard at localhost:37777 lets you browse, search, edit, and delete any memory. You\'re always in control.' },
+  { question: 'How does hybrid vector storage work?', answer: 'LEANN-inspired selective storage: frequently-accessed "hub" observations (identified by access patterns and graph centrality) store embeddings. Infrequently-accessed observations recompute embeddings on-demand during search. This reduces storage by 60-80% with minimal latency impact (<50ms).' },
+  { question: 'Can I delete or edit memories?', answer: 'Yes. The web dashboard at localhost:37777 lets you browse, search, edit, and delete any memory. You can also view graph relationships, storage metrics, and performance analytics. You\'re always in control.' },
   { question: 'Does it work with my existing Claude Code setup?', answer: 'Yes. Mnemonic installs as a Claude Code plugin with hooks. Your existing workflows, settings, and shortcuts remain unchanged.' },
   { question: 'What if I switch between projects frequently?', answer: 'That\'s the point. Each project has isolated memories. Switch from your Python ML project to your TypeScript app - context switches automatically.' },
-  { question: 'Is there a performance impact?', answer: 'Minimal. The Go worker is lightweight (typically under 30MB RAM). Context injection at session start takes milliseconds for most projects.' },
+  { question: 'Is there a performance impact?', answer: 'Minimal. The Go worker is lightweight (typically under 30MB RAM). Hybrid storage and auto-tuning optimize for your workload. Context injection at session start takes milliseconds for most projects.' },
+  { question: 'What is AST-aware chunking?', answer: 'When processing code observations, Mnemonic uses Tree-sitter parsers to respect function and class boundaries instead of arbitrary line limits. Go, Python, and TypeScript code is chunked at semantic boundaries for better search accuracy.' },
 ]
 </script>
