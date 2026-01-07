@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
+	_ "github.com/mattn/go-sqlite3" // Import SQLite driver for CGO linking
 	"github.com/stretchr/testify/assert"
 )
 
