@@ -14,7 +14,7 @@ import (
 	json "github.com/goccy/go-json"
 
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/similarity"
 	"github.com/rs/zerolog/log"
@@ -33,8 +33,8 @@ type SyncSummaryFunc func(summary *models.SessionSummary)
 type Processor struct {
 	claudePath          string
 	model               string
-	observationStore    *sqlite.ObservationStore
-	summaryStore        *sqlite.SummaryStore
+	observationStore    *gorm.ObservationStore
+	summaryStore        *gorm.SummaryStore
 	broadcastFunc       BroadcastFunc
 	syncObservationFunc SyncObservationFunc
 	syncSummaryFunc     SyncSummaryFunc
@@ -69,7 +69,7 @@ func (p *Processor) broadcast(event map[string]interface{}) {
 const MaxConcurrentCLICalls = 4
 
 // NewProcessor creates a new SDK processor.
-func NewProcessor(observationStore *sqlite.ObservationStore, summaryStore *sqlite.SummaryStore) (*Processor, error) {
+func NewProcessor(observationStore *gorm.ObservationStore, summaryStore *gorm.SummaryStore) (*Processor, error) {
 	cfg := config.Get()
 
 	// Find Claude Code CLI

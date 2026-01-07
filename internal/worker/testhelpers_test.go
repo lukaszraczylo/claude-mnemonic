@@ -5,14 +5,14 @@ import (
 	"os"
 	"testing"
 
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// testStore creates a sqlite.Store with a temporary database for testing.
-// Uses sqlite.NewStore which runs migrations (requires FTS5).
+// testStore creates a gorm.Store with a temporary database for testing.
+// Uses gorm.NewStore which runs migrations (requires FTS5).
 // Skips the test if FTS5 is not available.
-func testStore(t *testing.T) (*sqlite.Store, func()) {
+func testStore(t *testing.T) (*gorm.Store, func()) {
 	t.Helper()
 
 	// First check if FTS5 is available
@@ -27,10 +27,9 @@ func testStore(t *testing.T) (*sqlite.Store, func()) {
 
 	dbPath := tmpDir + "/test.db"
 
-	store, err := sqlite.NewStore(sqlite.StoreConfig{
+	store, err := gorm.NewStore(gorm.Config{
 		Path:     dbPath,
 		MaxConns: 1,
-		WALMode:  true,
 	})
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)

@@ -2,9 +2,7 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 
@@ -13,53 +11,25 @@ import (
 
 // Input is the hook input from Claude Code.
 type Input struct {
-	SessionID      string `json:"session_id"`
-	CWD            string `json:"cwd"`
-	PermissionMode string `json:"permission_mode"`
-	HookEventName  string `json:"hook_event_name"`
-	Prompt         string `json:"prompt"`
+	hooks.BaseInput
+	Prompt string `json:"prompt"`
 }
 
 func main() {
-	// Skip if this is an internal call (from SDK processor)
-	if os.Getenv("CLAUDE_MNEMONIC_INTERNAL") == "1" {
-		hooks.WriteResponse("UserPromptSubmit", true)
-		return
-	}
+	hooks.RunHook("UserPromptSubmit", handleUserPrompt)
+}
 
-	// Read input from stdin
-	inputData, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		hooks.WriteError("UserPromptSubmit", err)
-		os.Exit(1)
-	}
-
-	var input Input
-	if err := json.Unmarshal(inputData, &input); err != nil {
-		hooks.WriteError("UserPromptSubmit", err)
-		os.Exit(1)
-	}
-
-	// Ensure worker is running
-	port, err := hooks.EnsureWorkerRunning()
-	if err != nil {
-		hooks.WriteError("UserPromptSubmit", err)
-		os.Exit(1)
-	}
-
-	// Generate unique project ID from CWD
-	project := hooks.ProjectIDWithName(input.CWD)
-
+func handleUserPrompt(ctx *hooks.HookContext, input *Input) (string, error) {
 	// Search for relevant observations based on the prompt
 	searchURL := fmt.Sprintf("/api/context/search?project=%s&query=%s&cwd=%s",
-		url.QueryEscape(project),
+		url.QueryEscape(ctx.Project),
 		url.QueryEscape(input.Prompt),
-		url.QueryEscape(input.CWD))
+		url.QueryEscape(ctx.CWD))
 
 	var contextToInject string
 	var observationCount int
 
-	searchResult, _ := hooks.GET(port, searchURL)
+	searchResult, _ := hooks.GET(ctx.Port, searchURL)
 	if observations, ok := searchResult["observations"].([]interface{}); ok && len(observations) > 0 {
 		// Results are already filtered by relevance threshold and capped by max_results
 		// from the server-side config (ContextRelevanceThreshold, ContextMaxPromptResults)
@@ -104,27 +74,24 @@ func main() {
 		}
 
 		contextBuilder += "</relevant-memory>\n"
-
 		contextToInject = contextBuilder
 	}
 
 	// Initialize session with matched observations count
-	result, err := hooks.POST(port, "/api/sessions/init", map[string]interface{}{
-		"claudeSessionId":     input.SessionID,
-		"project":             project,
+	result, err := hooks.POST(ctx.Port, "/api/sessions/init", map[string]interface{}{
+		"claudeSessionId":     ctx.SessionID,
+		"project":             ctx.Project,
 		"prompt":              input.Prompt,
 		"matchedObservations": observationCount,
 	})
 	if err != nil {
-		hooks.WriteError("UserPromptSubmit", err)
-		os.Exit(1)
+		return "", err
 	}
 
 	// Check if skipped due to privacy
 	if skipped, ok := result["skipped"].(bool); ok && skipped {
 		fmt.Fprintf(os.Stderr, "[user-prompt] Session skipped (private)\n")
-		hooks.WriteResponse("UserPromptSubmit", true)
-		return
+		return "", nil
 	}
 
 	sessionID := int64(result["sessionDbId"].(float64))
@@ -133,30 +100,20 @@ func main() {
 	fmt.Fprintf(os.Stderr, "[user-prompt] Session %d, prompt #%d\n", sessionID, promptNumber)
 
 	// Start SDK agent
-	_, err = hooks.POST(port, fmt.Sprintf("/sessions/%d/init", sessionID), map[string]interface{}{
+	_, err = hooks.POST(ctx.Port, fmt.Sprintf("/sessions/%d/init", sessionID), map[string]interface{}{
 		"userPrompt":   input.Prompt,
 		"promptNumber": promptNumber,
 	})
 	if err != nil {
-		hooks.WriteError("UserPromptSubmit", err)
-		os.Exit(1)
+		return "", err
 	}
 
-	// Output results - stdout with exit 0 adds context to Claude's prompt
+	// Return context if we found relevant observations
 	if observationCount > 0 {
 		// Show match count to user via stderr
 		fmt.Fprintf(os.Stderr, "[claude-mnemonic] Found %d relevant memories for this prompt\n", observationCount)
-		// Output context as JSON with additionalContext field
-		response := map[string]interface{}{
-			"continue": true,
-			"hookSpecificOutput": map[string]interface{}{
-				"hookEventName":     "UserPromptSubmit",
-				"additionalContext": contextToInject,
-			},
-		}
-		_ = json.NewEncoder(os.Stdout).Encode(response)
-		os.Exit(0)
-	} else {
-		hooks.WriteResponse("UserPromptSubmit", true)
+		return contextToInject, nil
 	}
+
+	return "", nil
 }

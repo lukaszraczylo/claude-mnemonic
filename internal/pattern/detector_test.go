@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 )
 
@@ -15,8 +15,8 @@ func TestNewDetector(t *testing.T) {
 	store := setupTestStore(t)
 	defer store.Close()
 
-	patternStore := sqlite.NewPatternStore(store)
-	observationStore := sqlite.NewObservationStore(store)
+	patternStore := gorm.NewPatternStore(store)
+	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
 	config := DefaultConfig()
 
 	detector := NewDetector(patternStore, observationStore, config)
@@ -34,8 +34,8 @@ func TestDetector_StartStop(t *testing.T) {
 	store := setupTestStore(t)
 	defer store.Close()
 
-	patternStore := sqlite.NewPatternStore(store)
-	observationStore := sqlite.NewObservationStore(store)
+	patternStore := gorm.NewPatternStore(store)
+	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
 	config := DefaultConfig()
 	config.AnalysisInterval = 100 * time.Millisecond // Short interval for testing
 
@@ -58,8 +58,8 @@ func TestDetector_AnalyzeObservation_NewCandidate(t *testing.T) {
 	store := setupTestStore(t)
 	defer store.Close()
 
-	patternStore := sqlite.NewPatternStore(store)
-	observationStore := sqlite.NewObservationStore(store)
+	patternStore := gorm.NewPatternStore(store)
+	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
 	config := DefaultConfig()
 	config.MinFrequencyForPattern = 2
 
@@ -88,8 +88,8 @@ func TestDetector_AnalyzeObservation_PromoteToPattern(t *testing.T) {
 	store := setupTestStore(t)
 	defer store.Close()
 
-	patternStore := sqlite.NewPatternStore(store)
-	observationStore := sqlite.NewObservationStore(store)
+	patternStore := gorm.NewPatternStore(store)
+	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
 	config := DefaultConfig()
 	config.MinFrequencyForPattern = 2
 
@@ -127,8 +127,8 @@ func TestDetector_AnalyzeObservation_MatchExisting(t *testing.T) {
 	store := setupTestStore(t)
 	defer store.Close()
 
-	patternStore := sqlite.NewPatternStore(store)
-	observationStore := sqlite.NewObservationStore(store)
+	patternStore := gorm.NewPatternStore(store)
+	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
 	config := DefaultConfig()
 
 	detector := NewDetector(patternStore, observationStore, config)
@@ -149,7 +149,7 @@ func TestDetector_AnalyzeObservation_MatchExisting(t *testing.T) {
 		CreatedAt:      time.Now().Format(time.RFC3339),
 		CreatedAtEpoch: time.Now().UnixMilli(),
 	}
-	patternStore.StorePattern(ctx, pattern)
+	_, _ = patternStore.StorePattern(ctx, pattern)
 
 	// Create observation with similar signature
 	obs := createTestObservation(10, "Nil check", []string{"nil", "error-handling"})
@@ -175,8 +175,8 @@ func TestDetector_AnalyzeObservation_NoMatch(t *testing.T) {
 	store := setupTestStore(t)
 	defer store.Close()
 
-	patternStore := sqlite.NewPatternStore(store)
-	observationStore := sqlite.NewObservationStore(store)
+	patternStore := gorm.NewPatternStore(store)
+	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
 	config := DefaultConfig()
 	config.MinMatchScore = 0.5 // Higher threshold
 
@@ -198,7 +198,7 @@ func TestDetector_AnalyzeObservation_NoMatch(t *testing.T) {
 		CreatedAt:      time.Now().Format(time.RFC3339),
 		CreatedAtEpoch: time.Now().UnixMilli(),
 	}
-	patternStore.StorePattern(ctx, pattern)
+	_, _ = patternStore.StorePattern(ctx, pattern)
 
 	// Create observation with completely different signature
 	obs := createTestObservation(10, "UI Component", []string{"frontend", "react", "component"})
@@ -218,8 +218,8 @@ func TestDetector_CandidateCleanup(t *testing.T) {
 	store := setupTestStore(t)
 	defer store.Close()
 
-	patternStore := sqlite.NewPatternStore(store)
-	observationStore := sqlite.NewObservationStore(store)
+	patternStore := gorm.NewPatternStore(store)
+	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
 	config := DefaultConfig()
 	config.MinFrequencyForPattern = 3 // Higher threshold
 
@@ -265,8 +265,8 @@ func TestDetector_GetPatternInsight(t *testing.T) {
 	store := setupTestStore(t)
 	defer store.Close()
 
-	patternStore := sqlite.NewPatternStore(store)
-	observationStore := sqlite.NewObservationStore(store)
+	patternStore := gorm.NewPatternStore(store)
+	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
 	config := DefaultConfig()
 
 	detector := NewDetector(patternStore, observationStore, config)
@@ -388,7 +388,7 @@ func TestFormatPatternInsight(t *testing.T) {
 
 // Helper functions
 
-func setupTestStore(t *testing.T) *sqlite.Store {
+func setupTestStore(t *testing.T) *gorm.Store {
 	t.Helper()
 
 	// Create temp database file
@@ -402,10 +402,9 @@ func setupTestStore(t *testing.T) *sqlite.Store {
 		os.Remove(tmpFile.Name())
 	})
 
-	store, err := sqlite.NewStore(sqlite.StoreConfig{
+	store, err := gorm.NewStore(gorm.Config{
 		Path:     tmpFile.Name(),
 		MaxConns: 1,
-		WALMode:  true,
 	})
 	if err != nil {
 		// Check if this is an FTS5 related error

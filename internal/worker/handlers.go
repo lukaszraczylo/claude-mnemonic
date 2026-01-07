@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/privacy"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/reranking"
@@ -486,7 +486,7 @@ func (s *Service) handleSummarize(w http.ResponseWriter, r *http.Request) {
 // handleGetObservations returns recent observations.
 // Supports optional query parameter for semantic search via sqlite-vec.
 func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) {
-	limit := sqlite.ParseLimitParam(r, DefaultObservationsLimit)
+	limit := gorm.ParseLimitParam(r, DefaultObservationsLimit)
 	project := r.URL.Query().Get("project")
 	query := r.URL.Query().Get("query")
 
@@ -535,7 +535,7 @@ func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) 
 // handleGetSummaries returns recent summaries.
 // Supports optional query parameter for semantic search via sqlite-vec.
 func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
-	limit := sqlite.ParseLimitParam(r, DefaultSummariesLimit)
+	limit := gorm.ParseLimitParam(r, DefaultSummariesLimit)
 	project := r.URL.Query().Get("project")
 	query := r.URL.Query().Get("query")
 
@@ -582,7 +582,7 @@ func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
 // handleGetPrompts returns recent user prompts.
 // Supports optional query parameter for semantic search via sqlite-vec.
 func (s *Service) handleGetPrompts(w http.ResponseWriter, r *http.Request) {
-	limit := sqlite.ParseLimitParam(r, DefaultPromptsLimit)
+	limit := gorm.ParseLimitParam(r, DefaultPromptsLimit)
 	project := r.URL.Query().Get("project")
 	query := r.URL.Query().Get("query")
 
@@ -743,7 +743,7 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := sqlite.ParseLimitParam(r, DefaultSearchLimit)
+	limit := gorm.ParseLimitParam(r, DefaultSearchLimit)
 
 	var observations []*models.Observation
 	var err error

@@ -292,19 +292,19 @@ func (m *bgeModel) computeBatch(sentences []string) ([][]float32, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create input_ids tensor: %w", err)
 	}
-	defer inputIdsTensor.Destroy()
+	defer func() { _ = inputIdsTensor.Destroy() }()
 
 	attentionMaskTensor, err := ort.NewTensor(inputShape, attentionMaskData)
 	if err != nil {
 		return nil, fmt.Errorf("create attention_mask tensor: %w", err)
 	}
-	defer attentionMaskTensor.Destroy()
+	defer func() { _ = attentionMaskTensor.Destroy() }()
 
 	tokenTypeIdsTensor, err := ort.NewTensor(inputShape, tokenTypeIdsData)
 	if err != nil {
 		return nil, fmt.Errorf("create token_type_ids tensor: %w", err)
 	}
-	defer tokenTypeIdsTensor.Destroy()
+	defer func() { _ = tokenTypeIdsTensor.Destroy() }()
 
 	// Create output tensor based on pooling strategy
 	var outputShape ort.Shape
@@ -324,7 +324,7 @@ func (m *bgeModel) computeBatch(sentences []string) ([][]float32, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create output tensor: %w", err)
 	}
-	defer outputTensor.Destroy()
+	defer func() { _ = outputTensor.Destroy() }()
 
 	// Run inference
 	inputTensors := []ort.Value{inputIdsTensor, attentionMaskTensor, tokenTypeIdsTensor}

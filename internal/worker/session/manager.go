@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/rs/zerolog/log"
 )
 
@@ -70,7 +70,7 @@ const CleanupInterval = 5 * time.Minute
 
 // Manager manages active session lifecycles.
 type Manager struct {
-	sessionStore *sqlite.SessionStore
+	sessionStore *gorm.SessionStore
 	sessions     map[int64]*ActiveSession
 	mu           sync.RWMutex
 	onCreated    func(int64)
@@ -82,7 +82,7 @@ type Manager struct {
 }
 
 // NewManager creates a new session manager.
-func NewManager(sessionStore *sqlite.SessionStore) *Manager {
+func NewManager(sessionStore *gorm.SessionStore) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
 		sessionStore:  sessionStore,

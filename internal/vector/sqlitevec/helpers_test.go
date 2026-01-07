@@ -572,3 +572,119 @@ func TestExtractedIDs_Empty(t *testing.T) {
 	assert.Nil(t, ids.SummaryIDs)
 	assert.Nil(t, ids.PromptIDs)
 }
+
+func TestFilterByThreshold(t *testing.T) {
+	tests := []struct {
+		name        string
+		results     []QueryResult
+		threshold   float64
+		maxResults  int
+		expectedLen int
+		expectedIDs []string
+	}{
+		{
+			name:        "empty_results",
+			results:     []QueryResult{},
+			threshold:   0.5,
+			maxResults:  0,
+			expectedLen: 0,
+		},
+		{
+			name: "all_above_threshold",
+			results: []QueryResult{
+				{ID: "doc-1", Similarity: 0.9},
+				{ID: "doc-2", Similarity: 0.8},
+				{ID: "doc-3", Similarity: 0.7},
+			},
+			threshold:   0.5,
+			maxResults:  0,
+			expectedLen: 3,
+			expectedIDs: []string{"doc-1", "doc-2", "doc-3"},
+		},
+		{
+			name: "some_below_threshold",
+			results: []QueryResult{
+				{ID: "doc-1", Similarity: 0.9},
+				{ID: "doc-2", Similarity: 0.4},
+				{ID: "doc-3", Similarity: 0.7},
+				{ID: "doc-4", Similarity: 0.3},
+			},
+			threshold:   0.5,
+			maxResults:  0,
+			expectedLen: 2,
+			expectedIDs: []string{"doc-1", "doc-3"},
+		},
+		{
+			name: "all_below_threshold",
+			results: []QueryResult{
+				{ID: "doc-1", Similarity: 0.3},
+				{ID: "doc-2", Similarity: 0.2},
+			},
+			threshold:   0.5,
+			maxResults:  0,
+			expectedLen: 0,
+		},
+		{
+			name: "max_results_limit",
+			results: []QueryResult{
+				{ID: "doc-1", Similarity: 0.9},
+				{ID: "doc-2", Similarity: 0.8},
+				{ID: "doc-3", Similarity: 0.7},
+				{ID: "doc-4", Similarity: 0.6},
+			},
+			threshold:   0.5,
+			maxResults:  2,
+			expectedLen: 2,
+			expectedIDs: []string{"doc-1", "doc-2"},
+		},
+		{
+			name: "max_results_with_threshold",
+			results: []QueryResult{
+				{ID: "doc-1", Similarity: 0.9},
+				{ID: "doc-2", Similarity: 0.3},
+				{ID: "doc-3", Similarity: 0.8},
+				{ID: "doc-4", Similarity: 0.2},
+				{ID: "doc-5", Similarity: 0.7},
+			},
+			threshold:   0.5,
+			maxResults:  2,
+			expectedLen: 2,
+			expectedIDs: []string{"doc-1", "doc-3"},
+		},
+		{
+			name: "exact_threshold_included",
+			results: []QueryResult{
+				{ID: "doc-1", Similarity: 0.5},
+				{ID: "doc-2", Similarity: 0.4},
+			},
+			threshold:   0.5,
+			maxResults:  0,
+			expectedLen: 1,
+			expectedIDs: []string{"doc-1"},
+		},
+		{
+			name: "zero_threshold",
+			results: []QueryResult{
+				{ID: "doc-1", Similarity: 0.1},
+				{ID: "doc-2", Similarity: 0.0},
+			},
+			threshold:   0.0,
+			maxResults:  0,
+			expectedLen: 2,
+			expectedIDs: []string{"doc-1", "doc-2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filtered := FilterByThreshold(tt.results, tt.threshold, tt.maxResults)
+			assert.Len(t, filtered, tt.expectedLen)
+
+			if tt.expectedLen > 0 {
+				for i, id := range tt.expectedIDs {
+					assert.Equal(t, id, filtered[i].ID)
+				}
+			}
+		})
+	}
+}

@@ -15,7 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/update"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/session"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/worker/sse"
@@ -32,10 +32,10 @@ func testService(t *testing.T) (*Service, func()) {
 	store, dbCleanup := testStore(t)
 
 	// Create store wrappers
-	sessionStore := sqlite.NewSessionStore(store)
-	observationStore := sqlite.NewObservationStore(store)
-	summaryStore := sqlite.NewSummaryStore(store)
-	promptStore := sqlite.NewPromptStore(store)
+	sessionStore := gorm.NewSessionStore(store)
+	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
+	summaryStore := gorm.NewSummaryStore(store)
+	promptStore := gorm.NewPromptStore(store, nil)
 
 	// Create domain services
 	sessionManager := session.NewManager(sessionStore)
@@ -83,7 +83,7 @@ func testService(t *testing.T) (*Service, func()) {
 }
 
 // createTestObservation creates a test observation in the database.
-func createTestObservation(t *testing.T, store *sqlite.ObservationStore, project, title, narrative string, concepts []string) int64 {
+func createTestObservation(t *testing.T, store *gorm.ObservationStore, project, title, narrative string, concepts []string) int64 {
 	t.Helper()
 
 	obs := &models.ParsedObservation{
@@ -530,7 +530,7 @@ func TestRequireReadyMiddleware_Blocks(t *testing.T) {
 
 	handler := svc.requireReady(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("success"))
+		_, _ = w.Write([]byte("success"))
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -549,7 +549,7 @@ func TestRequireReadyMiddleware_Allows(t *testing.T) {
 
 	handler := svc.requireReady(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("success"))
+		_, _ = w.Write([]byte("success"))
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -669,9 +669,9 @@ func TestHandleGetProjects(t *testing.T) {
 
 	// Create sessions for different projects
 	ctx := context.Background()
-	svc.sessionStore.CreateSDKSession(ctx, "session-1", "project-alpha", "")
-	svc.sessionStore.CreateSDKSession(ctx, "session-2", "project-beta", "")
-	svc.sessionStore.CreateSDKSession(ctx, "session-3", "project-gamma", "")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "session-1", "project-alpha", "")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "session-2", "project-beta", "")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "session-3", "project-gamma", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
 	rec := httptest.NewRecorder()
@@ -761,7 +761,7 @@ func TestHandleGetPrompts(t *testing.T) {
 
 	// Create sessions and prompts
 	ctx := context.Background()
-	svc.sessionStore.CreateSDKSession(ctx, "claude-test", "project-x", "")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "claude-test", "project-x", "")
 
 	// Save prompts
 	for i := 0; i < 5; i++ {
@@ -958,7 +958,7 @@ func TestHandleSessionInit_DuplicatePrompt(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec1.Code)
 	var resp1 SessionInitResponse
-	json.Unmarshal(rec1.Body.Bytes(), &resp1)
+	_ = json.Unmarshal(rec1.Body.Bytes(), &resp1)
 
 	// Second request with same prompt (duplicate)
 	body2, _ := json.Marshal(reqBody)
@@ -969,7 +969,7 @@ func TestHandleSessionInit_DuplicatePrompt(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec2.Code)
 	var resp2 SessionInitResponse
-	json.Unmarshal(rec2.Body.Bytes(), &resp2)
+	_ = json.Unmarshal(rec2.Body.Bytes(), &resp2)
 
 	// Should return same prompt number (duplicate detected)
 	assert.Equal(t, resp1.PromptNumber, resp2.PromptNumber)
@@ -1095,7 +1095,7 @@ func TestHandleObservation_WithExistingSession(t *testing.T) {
 
 	// Create a session first
 	ctx := context.Background()
-	svc.sessionStore.CreateSDKSession(ctx, "claude-obs-test", "test-project", "test prompt")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "claude-obs-test", "test-project", "test prompt")
 
 	reqBody := ObservationRequest{
 		ClaudeSessionID: "claude-obs-test",
@@ -1190,7 +1190,7 @@ func TestHandleGetSummaries_DefaultLimit(t *testing.T) {
 	// Create more than default limit
 	for i := 0; i < 60; i++ {
 		parsed := &models.ParsedSummary{Request: "Request " + strconv.Itoa(i)}
-		svc.summaryStore.StoreSummary(ctx, "sdk-"+strconv.Itoa(i), "project-sum", parsed, i+1, 100)
+		_, _, _ = svc.summaryStore.StoreSummary(ctx, "sdk-"+strconv.Itoa(i), "project-sum", parsed, i+1, 100)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/summaries", nil)
@@ -1212,11 +1212,11 @@ func TestHandleGetPrompts_DefaultLimit(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	svc.sessionStore.CreateSDKSession(ctx, "claude-prompts", "project-prompts", "")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "claude-prompts", "project-prompts", "")
 
 	// Create more than default limit
 	for i := 0; i < 120; i++ {
-		svc.promptStore.SaveUserPromptWithMatches(ctx, "claude-prompts", i+1, "Prompt "+strconv.Itoa(i), 0)
+		_, _ = svc.promptStore.SaveUserPromptWithMatches(ctx, "claude-prompts", i+1, "Prompt "+strconv.Itoa(i), 0)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/prompts", nil)
@@ -1475,7 +1475,7 @@ func TestHandleGetSessionByClaudeID(t *testing.T) {
 
 	// Create a session
 	ctx := context.Background()
-	svc.sessionStore.CreateSDKSession(ctx, "claude-test-123", "project-a", "prompt 1")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "claude-test-123", "project-a", "prompt 1")
 
 	// Test with valid claudeSessionId
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions?claudeSessionId=claude-test-123", nil)
@@ -1870,7 +1870,7 @@ func TestHandleSubagentComplete_WithSession(t *testing.T) {
 
 	// Create a session first
 	ctx := context.Background()
-	svc.sessionStore.CreateSDKSession(ctx, "subagent-claude-123", "test-project", "test prompt")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "subagent-claude-123", "test-project", "test prompt")
 
 	reqBody := SubagentCompleteRequest{
 		ClaudeSessionID: "subagent-claude-123",
@@ -2063,7 +2063,7 @@ func TestHandleObservation_WithFullData(t *testing.T) {
 
 	// Create a session first
 	ctx := context.Background()
-	svc.sessionStore.CreateSDKSession(ctx, "obs-full-test", "test-project", "test prompt")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "obs-full-test", "test-project", "test prompt")
 
 	reqBody := ObservationRequest{
 		ClaudeSessionID: "obs-full-test",
@@ -2118,7 +2118,7 @@ func TestHandleGetSummaries_NoProject(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
 		parsed := &models.ParsedSummary{Request: "Request " + string(rune('A'+i))}
-		svc.summaryStore.StoreSummary(ctx, "sdk-"+string(rune('a'+i)), "project-"+string(rune('a'+i)), parsed, i+1, 100)
+		_, _, _ = svc.summaryStore.StoreSummary(ctx, "sdk-"+string(rune('a'+i)), "project-"+string(rune('a'+i)), parsed, i+1, 100)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/summaries", nil)
@@ -2143,11 +2143,11 @@ func TestHandleGetPrompts_NoProject(t *testing.T) {
 
 	// Create sessions and prompts in different projects
 	ctx := context.Background()
-	svc.sessionStore.CreateSDKSession(ctx, "claude-prompts-a", "project-a", "")
-	svc.sessionStore.CreateSDKSession(ctx, "claude-prompts-b", "project-b", "")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "claude-prompts-a", "project-a", "")
+	_, _ = svc.sessionStore.CreateSDKSession(ctx, "claude-prompts-b", "project-b", "")
 
-	svc.promptStore.SaveUserPromptWithMatches(ctx, "claude-prompts-a", 1, "Prompt A", 0)
-	svc.promptStore.SaveUserPromptWithMatches(ctx, "claude-prompts-b", 1, "Prompt B", 0)
+	_, _ = svc.promptStore.SaveUserPromptWithMatches(ctx, "claude-prompts-a", 1, "Prompt A", 0)
+	_, _ = svc.promptStore.SaveUserPromptWithMatches(ctx, "claude-prompts-b", 1, "Prompt B", 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/prompts", nil)
 	rec := httptest.NewRecorder()
@@ -2798,13 +2798,17 @@ func TestHandleUpdateApply_NoUpdateAvailable(t *testing.T) {
 
 	svc.router.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var response map[string]interface{}
-	err := json.Unmarshal(rec.Body.Bytes(), &response)
-	require.NoError(t, err)
-	// Update check may succeed or fail - both are valid behaviors
-	assert.NotNil(t, response)
+	// Update check may succeed (200) or fail (500) depending on network/GitHub availability
+	// Both are valid in test environment
+	if rec.Code == http.StatusOK {
+		var response map[string]interface{}
+		err := json.Unmarshal(rec.Body.Bytes(), &response)
+		require.NoError(t, err)
+		assert.NotNil(t, response)
+	} else {
+		// If it fails, that's also acceptable in test environment (no network/GitHub access)
+		assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	}
 }
 
 // TestHandleGetObservations_WithQuery tests observations with query parameter.

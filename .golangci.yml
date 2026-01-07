@@ -1,0 +1,24 @@
+# Project-specific golangci-lint configuration for claude-mnemonic
+# Inherits from global ~/.golangci.yml and adds project-specific exclusions
+
+issues:
+  exclude-rules:
+    # Project-specific: Exclude unused warnings for public API functions in pkg/models
+    # These detection functions are part of the public API
+    - path: pkg/models/(conflict|relation)\.go
+      linters:
+        - unused
+      text: "(Detect|New)"
+
+    # Project-specific: Test helper method used only in tests
+    - path: internal/db/gorm/store\.go
+      linters:
+        - unused
+      text: "GetDB"
+
+  exclude-dirs:
+    - vendor
+
+run:
+  timeout: 5m
+  tests: true

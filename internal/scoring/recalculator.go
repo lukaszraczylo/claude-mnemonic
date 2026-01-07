@@ -8,7 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 )
 
@@ -183,4 +183,4 @@ func (r *Recalculator) GetStats() Stats {
 }
 
 // Ensure ObservationStore satisfies the interface
-var _ ObservationStore = (*sqlite.ObservationStore)(nil)
+var _ ObservationStore = (*gorm.ObservationStore)(nil)

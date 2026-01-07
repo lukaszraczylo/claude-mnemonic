@@ -5,7 +5,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -72,18 +71,13 @@ const (
 )
 
 func main() {
-	// Read input from stdin
-	inputData, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		// On error, output minimal status
-		fmt.Println(formatOffline())
-		return
-	}
+	hooks.RunStatuslineHook(handleStatusline)
+}
 
-	var input StatusInput
-	if err := json.Unmarshal(inputData, &input); err != nil {
-		fmt.Println(formatOffline())
-		return
+func handleStatusline(input *StatusInput, port int) string {
+	// Handle error cases (nil input)
+	if input == nil {
+		return formatOffline()
 	}
 
 	// Determine project directory
@@ -102,16 +96,14 @@ func main() {
 	}
 
 	// Get worker stats
-	stats := getWorkerStats(project)
+	stats := getWorkerStats(port, project)
 
-	// Format and output statusline
-	fmt.Println(formatStatusLine(stats, input))
+	// Format and return statusline
+	return formatStatusLine(stats, *input)
 }
 
 // getWorkerStats fetches stats from the worker service.
-func getWorkerStats(project string) *WorkerStats {
-	port := hooks.GetWorkerPort()
-
+func getWorkerStats(port int, project string) *WorkerStats {
 	// Build URL with optional project parameter
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d/api/stats", port)
 	if project != "" {
@@ -187,54 +179,45 @@ func formatDefault(stats *WorkerStats, useColors bool) string {
 	}
 
 	// Build status parts with clear labels
-	parts := []string{}
+	parts := []string{
+		prefix,
+		indicator,
+	}
 
-	// Total memories served to Claude this session
-	parts = append(parts, fmt.Sprintf("served:%d", stats.Retrieval.ObservationsServed))
-
-	// Context injections (memories auto-loaded at session start)
+	// Add retrieval stats if available
+	if stats.Retrieval.ObservationsServed > 0 {
+		parts = append(parts, fmt.Sprintf("served:%d", stats.Retrieval.ObservationsServed))
+	}
 	if stats.Retrieval.ContextInjections > 0 {
 		parts = append(parts, fmt.Sprintf("injected:%d", stats.Retrieval.ContextInjections))
 	}
-
-	// Semantic searches performed
 	if stats.Retrieval.SearchRequests > 0 {
 		parts = append(parts, fmt.Sprintf("searches:%d", stats.Retrieval.SearchRequests))
 	}
 
-	// Project-specific memory count
+	// Add project-specific observation count if available
 	if stats.ProjectObservations > 0 {
-		if useColors {
-			parts = append(parts, fmt.Sprintf("%sproject:%d memories%s", colorYellow, stats.ProjectObservations, reset))
-		} else {
-			parts = append(parts, fmt.Sprintf("project:%d memories", stats.ProjectObservations))
-		}
+		parts = append(parts, fmt.Sprintf("project:%d memories", stats.ProjectObservations))
 	}
 
-	// Processing indicator
-	if stats.IsProcessing || stats.QueueDepth > 0 {
-		if useColors {
-			parts = append(parts, colorYellow+"processing..."+colorReset)
-		} else {
-			parts = append(parts, "processing...")
-		}
-	}
-
-	result := prefix + " " + indicator
-	for i, part := range parts {
-		if i == 0 {
-			result += " " + part
-		} else {
-			result += " | " + part
+	// Join with separators
+	result := parts[0] + " " + parts[1]
+	if len(parts) > 2 {
+		for i := 2; i < len(parts); i++ {
+			if useColors {
+				result += colorGray + " | " + reset + parts[i]
+			} else {
+				result += " | " + parts[i]
+			}
 		}
 	}
 
 	return result
 }
 
-// formatCompact returns a compact status line.
+// formatCompact returns a compact status line format.
 func formatCompact(stats *WorkerStats, useColors bool) string {
-	// [m] ● 42/5/3 (28)
+	// [m] ● 42/5/3
 	var prefix, indicator string
 	if useColors {
 		prefix = colorCyan + "[m]" + colorReset
@@ -244,31 +227,16 @@ func formatCompact(stats *WorkerStats, useColors bool) string {
 		indicator = "●"
 	}
 
-	result := fmt.Sprintf("%s %s %d/%d/%d",
+	return fmt.Sprintf("%s %s %d/%d/%d",
 		prefix, indicator,
 		stats.Retrieval.ObservationsServed,
 		stats.Retrieval.ContextInjections,
-		stats.Retrieval.SearchRequests,
-	)
-
-	if stats.ProjectObservations > 0 {
-		result += fmt.Sprintf(" (%d)", stats.ProjectObservations)
-	}
-
-	if stats.IsProcessing || stats.QueueDepth > 0 {
-		if useColors {
-			result += " " + colorYellow + "⚙" + colorReset
-		} else {
-			result += " ⚙"
-		}
-	}
-
-	return result
+		stats.Retrieval.SearchRequests)
 }
 
-// formatMinimal returns a minimal status line.
+// formatMinimal returns a minimal status line format.
 func formatMinimal(stats *WorkerStats, useColors bool) string {
-	// ● 42 obs
+	// ● 28 memories
 	var indicator string
 	if useColors {
 		indicator = colorGreen + "●" + colorReset
@@ -276,32 +244,31 @@ func formatMinimal(stats *WorkerStats, useColors bool) string {
 		indicator = "●"
 	}
 
-	result := fmt.Sprintf("%s %d", indicator, stats.Retrieval.ObservationsServed)
-
 	if stats.ProjectObservations > 0 {
-		result += fmt.Sprintf("/%d", stats.ProjectObservations)
+		return fmt.Sprintf("%s %d memories", indicator, stats.ProjectObservations)
 	}
 
-	return result
+	return fmt.Sprintf("%s mnemonic ready", indicator)
 }
 
-// formatOffline returns the offline status.
+// formatOffline returns status for when worker is offline.
 func formatOffline() string {
-	return formatOfflineColored(true)
+	useColors := os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+	return formatOfflineColored(useColors)
 }
 
-// formatOfflineColored returns the offline status with optional colors.
+// formatOfflineColored returns colored offline status.
 func formatOfflineColored(useColors bool) string {
 	if useColors {
-		return colorCyan + "[mnemonic]" + colorReset + " " + colorGray + "○" + colorReset
+		return colorGray + "[mnemonic]" + colorReset + " " + colorGray + "○" + colorReset + " offline"
 	}
-	return "[mnemonic] ○"
+	return "[mnemonic] ○ offline"
 }
 
-// formatStartingColored returns the starting status with optional colors.
+// formatStartingColored returns colored starting status.
 func formatStartingColored(useColors bool) string {
 	if useColors {
-		return colorCyan + "[mnemonic]" + colorReset + " " + colorYellow + "◐" + colorReset + " starting"
+		return colorYellow + "[mnemonic]" + colorReset + " " + colorYellow + "○" + colorReset + " starting..."
 	}
-	return "[mnemonic] ◐ starting"
+	return "[mnemonic] ○ starting..."
 }

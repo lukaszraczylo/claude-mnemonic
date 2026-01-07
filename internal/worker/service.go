@@ -13,7 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/pattern"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/reranking"
@@ -63,14 +63,14 @@ type Service struct {
 	config *config.Config
 
 	// Database
-	store            *sqlite.Store
-	sessionStore     *sqlite.SessionStore
-	observationStore *sqlite.ObservationStore
-	summaryStore     *sqlite.SummaryStore
-	promptStore      *sqlite.PromptStore
-	conflictStore    *sqlite.ConflictStore
-	patternStore     *sqlite.PatternStore
-	relationStore    *sqlite.RelationStore
+	store            *gorm.Store
+	sessionStore     *gorm.SessionStore
+	observationStore *gorm.ObservationStore
+	summaryStore     *gorm.SummaryStore
+	promptStore      *gorm.PromptStore
+	conflictStore    *gorm.ConflictStore
+	patternStore     *gorm.PatternStore
+	relationStore    *gorm.RelationStore
 
 	// Pattern detection
 	patternDetector *pattern.Detector
@@ -182,10 +182,10 @@ func (s *Service) initializeAsync() {
 	}
 
 	// Initialize database (this includes migrations - can be slow)
-	store, err := sqlite.NewStore(sqlite.StoreConfig{
+	store, err := gorm.NewStore(gorm.Config{
 		Path:     s.config.DBPath,
 		MaxConns: s.config.MaxConns,
-		WALMode:  true,
+		// WALMode is enabled automatically by GORM
 	})
 	if err != nil {
 		s.setInitError(fmt.Errorf("init database: %w", err))
@@ -193,19 +193,15 @@ func (s *Service) initializeAsync() {
 	}
 
 	// Create store wrappers
-	sessionStore := sqlite.NewSessionStore(store)
-	observationStore := sqlite.NewObservationStore(store)
-	summaryStore := sqlite.NewSummaryStore(store)
-	promptStore := sqlite.NewPromptStore(store)
-	conflictStore := sqlite.NewConflictStore(store)
-	patternStore := sqlite.NewPatternStore(store)
-	relationStore := sqlite.NewRelationStore(store)
+	sessionStore := gorm.NewSessionStore(store)
+	summaryStore := gorm.NewSummaryStore(store)
+	promptStore := gorm.NewPromptStore(store, nil)
+	conflictStore := gorm.NewConflictStore(store)
+	patternStore := gorm.NewPatternStore(store)
+	relationStore := gorm.NewRelationStore(store)
 
-	// Enable conflict detection by linking stores
-	observationStore.SetConflictStore(conflictStore)
-
-	// Enable relation detection by linking stores
-	observationStore.SetRelationStore(relationStore)
+	// Create observation store with conflict and relation stores for automatic detection
+	observationStore := gorm.NewObservationStore(store, nil, conflictStore, relationStore)
 
 	// Create session manager
 	sessionManager := session.NewManager(sessionStore)
@@ -224,7 +220,7 @@ func (s *Service) initializeAsync() {
 		embedSvc = emb
 		// Create sqlite-vec client using the same DB connection
 		client, err := sqlitevec.NewClient(sqlitevec.Config{
-			DB: store.DB(),
+			DB: store.GetRawDB(),
 		}, embedSvc)
 		if err != nil {
 			log.Warn().Err(err).Msg("sqlite-vec client creation failed - vector search disabled")
@@ -519,10 +515,10 @@ func (s *Service) reinitializeDatabase() {
 	}
 
 	// Create new database
-	store, err := sqlite.NewStore(sqlite.StoreConfig{
+	store, err := gorm.NewStore(gorm.Config{
 		Path:     s.config.DBPath,
 		MaxConns: s.config.MaxConns,
-		WALMode:  true,
+		// WALMode is enabled automatically by GORM
 	})
 	if err != nil {
 		s.setInitError(fmt.Errorf("reinit database: %w", err))
@@ -530,19 +526,15 @@ func (s *Service) reinitializeDatabase() {
 	}
 
 	// Create new store wrappers
-	sessionStore := sqlite.NewSessionStore(store)
-	observationStore := sqlite.NewObservationStore(store)
-	summaryStore := sqlite.NewSummaryStore(store)
-	promptStore := sqlite.NewPromptStore(store)
-	conflictStore := sqlite.NewConflictStore(store)
-	patternStore := sqlite.NewPatternStore(store)
-	relationStore := sqlite.NewRelationStore(store)
+	sessionStore := gorm.NewSessionStore(store)
+	summaryStore := gorm.NewSummaryStore(store)
+	promptStore := gorm.NewPromptStore(store, nil)
+	conflictStore := gorm.NewConflictStore(store)
+	patternStore := gorm.NewPatternStore(store)
+	relationStore := gorm.NewRelationStore(store)
 
-	// Enable conflict detection by linking stores
-	observationStore.SetConflictStore(conflictStore)
-
-	// Enable relation detection by linking stores
-	observationStore.SetRelationStore(relationStore)
+	// Create observation store with conflict and relation stores for automatic detection
+	observationStore := gorm.NewObservationStore(store, nil, conflictStore, relationStore)
 
 	// Create new session manager
 	sessionManager := session.NewManager(sessionStore)
@@ -560,7 +552,7 @@ func (s *Service) reinitializeDatabase() {
 	} else {
 		embedSvc = emb
 		client, err := sqlitevec.NewClient(sqlitevec.Config{
-			DB: store.DB(),
+			DB: store.GetRawDB(),
 		}, embedSvc)
 		if err != nil {
 			log.Warn().Err(err).Msg("sqlite-vec client creation failed after reinit")
@@ -805,9 +797,9 @@ func (s *Service) processStaleQueue() {
 // rebuildAllVectors rebuilds all vectors from observations, summaries, and prompts.
 // Called when the vectors table is empty (e.g., after migration 20 drops all vectors).
 func (s *Service) rebuildAllVectors(
-	observationStore *sqlite.ObservationStore,
-	summaryStore *sqlite.SummaryStore,
-	promptStore *sqlite.PromptStore,
+	observationStore *gorm.ObservationStore,
+	summaryStore *gorm.SummaryStore,
+	promptStore *gorm.PromptStore,
 	vectorSync *sqlitevec.Sync,
 ) {
 	defer s.wg.Done()
@@ -877,9 +869,9 @@ func (s *Service) rebuildAllVectors(
 // rebuildStaleVectors rebuilds only vectors with mismatched or unknown model versions.
 // This is more efficient than rebuilding all vectors when only some need updating.
 func (s *Service) rebuildStaleVectors(
-	observationStore *sqlite.ObservationStore,
-	summaryStore *sqlite.SummaryStore,
-	promptStore *sqlite.PromptStore,
+	observationStore *gorm.ObservationStore,
+	summaryStore *gorm.SummaryStore,
+	promptStore *gorm.PromptStore,
 	vectorClient *sqlitevec.Client,
 	vectorSync *sqlitevec.Sync,
 ) {

@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/sqlite"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,8 +45,8 @@ func hasFTS5(t *testing.T) bool {
 	return true
 }
 
-// testStore creates a sqlite.Store with a temporary database for testing.
-func testStore(t *testing.T) (*sqlite.Store, func()) {
+// testStore creates a gorm.Store with a temporary database for testing.
+func testStore(t *testing.T) (*gorm.Store, func()) {
 	t.Helper()
 
 	if !hasFTS5(t) {
@@ -58,10 +58,9 @@ func testStore(t *testing.T) (*sqlite.Store, func()) {
 
 	dbPath := tmpDir + "/test.db"
 
-	store, err := sqlite.NewStore(sqlite.StoreConfig{
+	store, err := gorm.NewStore(gorm.Config{
 		Path:     dbPath,
 		MaxConns: 1,
-		WALMode:  true,
 	})
 	require.NoError(t, err)
 
@@ -76,12 +75,12 @@ func testStore(t *testing.T) (*sqlite.Store, func()) {
 // SearchIntegrationSuite tests search with real SQLite stores.
 type SearchIntegrationSuite struct {
 	suite.Suite
-	store    *sqlite.Store
+	store    *gorm.Store
 	cleanup  func()
 	manager  *Manager
-	obsStore *sqlite.ObservationStore
-	sumStore *sqlite.SummaryStore
-	prmStore *sqlite.PromptStore
+	obsStore *gorm.ObservationStore
+	sumStore *gorm.SummaryStore
+	prmStore *gorm.PromptStore
 }
 
 func (s *SearchIntegrationSuite) SetupTest() {
@@ -92,9 +91,9 @@ func (s *SearchIntegrationSuite) SetupTest() {
 	s.store, s.cleanup = testStore(s.T())
 
 	// Create real stores backed by SQLite
-	s.obsStore = sqlite.NewObservationStore(s.store)
-	s.sumStore = sqlite.NewSummaryStore(s.store)
-	s.prmStore = sqlite.NewPromptStore(s.store)
+	s.obsStore = gorm.NewObservationStore(s.store, nil, nil, nil)
+	s.sumStore = gorm.NewSummaryStore(s.store)
+	s.prmStore = gorm.NewPromptStore(s.store, nil)
 
 	// Create search manager with real stores (no vector client for now)
 	s.manager = NewManager(s.obsStore, s.sumStore, s.prmStore, nil)
@@ -491,7 +490,7 @@ func (s *SearchIntegrationSuite) TestSummaryToResult_FullFormat() {
 func (s *SearchIntegrationSuite) TestPromptToResult_FullFormat() {
 	// First create a session
 	ctx := context.Background()
-	sessionStore := sqlite.NewSessionStore(s.store)
+	sessionStore := gorm.NewSessionStore(s.store)
 	_, err := sessionStore.CreateSDKSession(ctx, "sdk-prompt-test", "test-project", "initial prompt")
 	s.Require().NoError(err)
 
