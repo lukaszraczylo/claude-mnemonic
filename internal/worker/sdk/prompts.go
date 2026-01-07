@@ -24,12 +24,12 @@ var ObservationConcepts = []string{
 
 // ToolExecution represents a tool execution for observation.
 type ToolExecution struct {
-	ID             int64
 	ToolName       string
 	ToolInput      string
 	ToolOutput     string
-	CreatedAtEpoch int64
 	CWD            string
+	ID             int64
+	CreatedAtEpoch int64
 }
 
 // BuildObservationPrompt builds a prompt for processing a tool observation.
@@ -67,12 +67,12 @@ func BuildObservationPrompt(exec ToolExecution) string {
 
 // SummaryRequest contains data for building a summary prompt.
 type SummaryRequest struct {
-	SessionDBID          int64
 	SDKSessionID         string
 	Project              string
 	UserPrompt           string
 	LastUserMessage      string
 	LastAssistantMessage string
+	SessionDBID          int64
 }
 
 // BuildSummaryPrompt builds a prompt requesting a session summary.

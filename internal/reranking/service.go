@@ -30,24 +30,24 @@ const (
 
 // Candidate represents a search result candidate for reranking.
 type Candidate struct {
-	ID         string             // Document ID
-	Content    string             // Document text content for scoring
-	Score      float64            // Original bi-encoder similarity score
-	Metadata   map[string]any     // Preserved metadata
-	RerankInfo map[string]float64 // Reranking debug info (optional)
+	Metadata   map[string]any
+	RerankInfo map[string]float64
+	ID         string
+	Content    string
+	Score      float64
 }
 
 // RerankResult represents a reranked search result.
 type RerankResult struct {
-	ID              string         // Document ID
-	Content         string         // Document text content
-	OriginalScore   float64        // Original bi-encoder score
-	RerankScore     float64        // Cross-encoder relevance score
-	CombinedScore   float64        // Weighted combination of scores
-	Metadata        map[string]any // Preserved metadata
-	OriginalRank    int            // Position before reranking (1-indexed)
-	RerankRank      int            // Position after reranking (1-indexed)
-	RankImprovement int            // How much the rank improved (positive = moved up)
+	Metadata        map[string]any
+	ID              string
+	Content         string
+	OriginalScore   float64
+	RerankScore     float64
+	CombinedScore   float64
+	OriginalRank    int
+	RerankRank      int
+	RankImprovement int
 }
 
 // Service provides cross-encoder reranking functionality.

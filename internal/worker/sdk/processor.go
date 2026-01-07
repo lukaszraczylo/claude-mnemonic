@@ -31,15 +31,14 @@ type SyncSummaryFunc func(summary *models.SessionSummary)
 
 // Processor handles SDK agent processing of observations and summaries using Claude Code CLI.
 type Processor struct {
-	claudePath          string
-	model               string
 	observationStore    *gorm.ObservationStore
 	summaryStore        *gorm.SummaryStore
 	broadcastFunc       BroadcastFunc
 	syncObservationFunc SyncObservationFunc
 	syncSummaryFunc     SyncSummaryFunc
-	// Semaphore to limit concurrent Claude CLI calls (prevents API overload)
-	sem chan struct{}
+	sem                 chan struct{}
+	claudePath          string
+	model               string
 }
 
 // SetBroadcastFunc sets the broadcast callback for SSE events.

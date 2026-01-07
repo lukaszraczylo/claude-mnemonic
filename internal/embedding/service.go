@@ -46,9 +46,9 @@ var bgeONNXConfig = ONNXConfig{
 type bgeModel struct {
 	tk      *tokenizer.Tokenizer
 	session *ort.DynamicAdvancedSession
+	libDir  string
+	config  ONNXConfig
 	mu      sync.Mutex
-	libDir  string     // temp directory containing extracted libraries
-	config  ONNXConfig // ONNX configuration for this model
 }
 
 // Compile-time check that bgeModel implements EmbeddingModel

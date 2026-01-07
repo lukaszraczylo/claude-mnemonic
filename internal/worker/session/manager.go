@@ -21,11 +21,11 @@ const (
 
 // ObservationData contains data for a tool observation.
 type ObservationData struct {
-	ToolName     string
 	ToolInput    interface{}
 	ToolResponse interface{}
-	PromptNumber int
+	ToolName     string
 	CWD          string
+	PromptNumber int
 }
 
 // SummarizeData contains data for a summarize request.
@@ -36,30 +36,28 @@ type SummarizeData struct {
 
 // PendingMessage represents a message queued for SDK processing.
 type PendingMessage struct {
-	Type        MessageType
 	Observation *ObservationData
 	Summarize   *SummarizeData
+	Type        MessageType
 }
 
 // ActiveSession represents an in-memory active session being processed.
 type ActiveSession struct {
-	SessionDBID            int64
-	ClaudeSessionID        string
-	SDKSessionID           string
+	StartTime              time.Time
+	ctx                    context.Context
+	cancel                 context.CancelFunc
+	notify                 chan struct{}
 	Project                string
 	UserPrompt             string
+	SDKSessionID           string
+	ClaudeSessionID        string
+	pendingMessages        []PendingMessage
 	LastPromptNumber       int
-	StartTime              time.Time
 	CumulativeInputTokens  int64
 	CumulativeOutputTokens int64
-
-	// Concurrency control
-	pendingMessages []PendingMessage
-	messageMu       sync.Mutex
-	notify          chan struct{}
-	ctx             context.Context
-	cancel          context.CancelFunc
-	generatorActive atomic.Bool
+	SessionDBID            int64
+	messageMu              sync.Mutex
+	generatorActive        atomic.Bool
 }
 
 // SessionTimeout is how long an inactive session can exist before cleanup.
@@ -70,15 +68,14 @@ const CleanupInterval = 5 * time.Minute
 
 // Manager manages active session lifecycles.
 type Manager struct {
-	sessionStore *gorm.SessionStore
-	sessions     map[int64]*ActiveSession
-	mu           sync.RWMutex
-	onCreated    func(int64)
-	onDeleted    func(int64)
-	ctx          context.Context
-	cancel       context.CancelFunc
-	// Global notification channel for immediate processing
+	ctx           context.Context
+	sessionStore  *gorm.SessionStore
+	sessions      map[int64]*ActiveSession
+	onCreated     func(int64)
+	onDeleted     func(int64)
+	cancel        context.CancelFunc
 	ProcessNotify chan struct{}
+	mu            sync.RWMutex
 }
 
 // NewManager creates a new session manager.

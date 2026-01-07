@@ -145,9 +145,9 @@ func (s *PromptStore) GetPromptsByIDs(ctx context.Context, ids []int64, orderBy 
 	}
 
 	var results []struct {
-		UserPrompt
 		Project      sql.NullString `gorm:"column:project"`
 		SDKSessionID sql.NullString `gorm:"column:sdk_session_id"`
+		UserPrompt
 	}
 
 	query := s.db.WithContext(ctx).
@@ -184,9 +184,9 @@ func (s *PromptStore) GetPromptsByIDs(ctx context.Context, ids []int64, orderBy 
 // GetAllRecentUserPrompts retrieves recent user prompts across all projects.
 func (s *PromptStore) GetAllRecentUserPrompts(ctx context.Context, limit int) ([]*models.UserPromptWithSession, error) {
 	var results []struct {
-		UserPrompt
 		Project      sql.NullString `gorm:"column:project"`
 		SDKSessionID sql.NullString `gorm:"column:sdk_session_id"`
+		UserPrompt
 	}
 
 	query := s.db.WithContext(ctx).
@@ -211,9 +211,9 @@ func (s *PromptStore) GetAllRecentUserPrompts(ctx context.Context, limit int) ([
 // GetAllPrompts retrieves all user prompts (for vector rebuild).
 func (s *PromptStore) GetAllPrompts(ctx context.Context) ([]*models.UserPromptWithSession, error) {
 	var results []struct {
-		UserPrompt
 		Project      sql.NullString `gorm:"column:project"`
 		SDKSessionID sql.NullString `gorm:"column:sdk_session_id"`
+		UserPrompt
 	}
 
 	query := s.db.WithContext(ctx).
@@ -256,9 +256,9 @@ func (s *PromptStore) FindRecentPromptByText(ctx context.Context, claudeSessionI
 // GetRecentUserPromptsByProject retrieves recent user prompts for a specific project.
 func (s *PromptStore) GetRecentUserPromptsByProject(ctx context.Context, project string, limit int) ([]*models.UserPromptWithSession, error) {
 	var results []struct {
-		UserPrompt
 		Project      sql.NullString `gorm:"column:project"`
 		SDKSessionID sql.NullString `gorm:"column:sdk_session_id"`
+		UserPrompt
 	}
 
 	query := s.db.WithContext(ctx).
@@ -283,9 +283,9 @@ func (s *PromptStore) GetRecentUserPromptsByProject(ctx context.Context, project
 
 // toModelUserPromptsWithSession converts query results to pkg/models.UserPromptWithSession.
 func toModelUserPromptsWithSession(results []struct {
-	UserPrompt
 	Project      sql.NullString `gorm:"column:project"`
 	SDKSessionID sql.NullString `gorm:"column:sdk_session_id"`
+	UserPrompt
 }) []*models.UserPromptWithSession {
 	prompts := make([]*models.UserPromptWithSession, len(results))
 	for i, r := range results {

@@ -319,11 +319,11 @@ func (c *Client) NeedsRebuild(ctx context.Context) (bool, string) {
 // StaleVectorInfo contains information about a vector that needs rebuilding.
 type StaleVectorInfo struct {
 	DocID     string
-	SQLiteID  int64
 	DocType   string
 	FieldType string
 	Project   string
 	Scope     string
+	SQLiteID  int64
 }
 
 // GetStaleVectors returns doc_ids of vectors with mismatched or null model versions.

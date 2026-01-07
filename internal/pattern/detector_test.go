@@ -331,16 +331,16 @@ func TestDefaultConfig(t *testing.T) {
 func TestGeneratePatternName(t *testing.T) {
 	tests := []struct {
 		patternType models.PatternType
-		signature   []string
 		title       string
 		wantPrefix  string
+		signature   []string
 	}{
-		{models.PatternTypeBug, []string{"nil", "error"}, "", "Bug Pattern:"},
-		{models.PatternTypeRefactor, []string{"extract"}, "", "Refactor Pattern:"},
-		{models.PatternTypeArchitecture, []string{"service"}, "", "Architecture Pattern:"},
-		{models.PatternTypeAntiPattern, []string{"god-class"}, "", "Anti-Pattern:"},
-		{models.PatternTypeBestPractice, []string{"testing"}, "", "Best Practice:"},
-		{models.PatternTypeBug, []string{}, "Short Title", "Short Title"}, // Use title directly
+		{patternType: models.PatternTypeBug, title: "", wantPrefix: "Bug Pattern:", signature: []string{"nil", "error"}},
+		{patternType: models.PatternTypeRefactor, title: "", wantPrefix: "Refactor Pattern:", signature: []string{"extract"}},
+		{patternType: models.PatternTypeArchitecture, title: "", wantPrefix: "Architecture Pattern:", signature: []string{"service"}},
+		{patternType: models.PatternTypeAntiPattern, title: "", wantPrefix: "Anti-Pattern:", signature: []string{"god-class"}},
+		{patternType: models.PatternTypeBestPractice, title: "", wantPrefix: "Best Practice:", signature: []string{"testing"}},
+		{patternType: models.PatternTypeBug, title: "Short Title", wantPrefix: "Short Title", signature: []string{}}, // Use title directly
 	}
 
 	for _, tt := range tests {

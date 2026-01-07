@@ -77,10 +77,10 @@ func TestParseObservations_TableDriven(t *testing.T) {
 	tests := []struct {
 		name          string
 		input         string
-		expectedCount int
 		expectedType  models.ObservationType
 		expectedTitle string
 		checkConcepts []string
+		expectedCount int
 	}{
 		{
 			name: "valid_bugfix_observation",
@@ -300,9 +300,9 @@ func TestParseSummary_TableDriven(t *testing.T) {
 	tests := []struct {
 		name            string
 		input           string
+		expectedRequest string
 		sessionID       int64
 		expectNil       bool
-		expectedRequest string
 	}{
 		{
 			name:      "empty_input",

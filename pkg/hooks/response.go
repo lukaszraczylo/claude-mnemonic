@@ -62,11 +62,11 @@ type BaseInput struct {
 // HookContext provides common context for hook handlers.
 type HookContext struct {
 	HookName  string
-	Port      int
 	Project   string
 	SessionID string
 	CWD       string
 	RawInput  []byte
+	Port      int
 }
 
 // HookHandler is a function that handles hook-specific logic.
