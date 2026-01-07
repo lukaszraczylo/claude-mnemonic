@@ -47,6 +47,7 @@ type Config struct {
 	RerankingMinImprovement   float64  `json:"reranking_min_improvement"`
 	RerankingCandidates       int      `json:"reranking_candidates"`
 	RerankingAlpha            float64  `json:"reranking_alpha"`
+	GraphEdgeWeight           float64  `json:"graph_edge_weight"`
 	WorkerPort                int      `json:"worker_port"`
 	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`
 	ContextObservations       int      `json:"context_observations"`
@@ -55,11 +56,15 @@ type Config struct {
 	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"`
 	MaxConns                  int      `json:"max_conns"`
 	RerankingResults          int      `json:"reranking_results"`
+	GraphMaxHops              int      `json:"graph_max_hops"`
+	GraphBranchFactor         int      `json:"graph_branch_factor"`
+	GraphRebuildIntervalMin   int      `json:"graph_rebuild_interval_min"`
 	ContextShowLastSummary    bool     `json:"context_show_last_summary"`
 	RerankingEnabled          bool     `json:"reranking_enabled"`
 	ContextShowWorkTokens     bool     `json:"context_show_work_tokens"`
 	ContextShowReadTokens     bool     `json:"context_show_read_tokens"`
 	RerankingPureMode         bool     `json:"reranking_pure_mode"`
+	GraphEnabled              bool     `json:"graph_enabled"`
 }
 
 var (
@@ -137,6 +142,11 @@ func Default() *Config {
 		RerankingResults:          10,   // Return top 10 after reranking
 		RerankingAlpha:            0.7,  // Favor cross-encoder score
 		RerankingMinImprovement:   0,    // Always apply reranking
+		GraphEnabled:              true, // Enable graph-aware search by default
+		GraphMaxHops:              2,    // Two-hop traversal
+		GraphBranchFactor:         5,    // Expand top 5 neighbors per node
+		GraphEdgeWeight:           0.3,  // Minimum edge weight to follow
+		GraphRebuildIntervalMin:   60,   // Rebuild graph every 60 minutes
 		ContextObservations:       100,
 		ContextFullCount:          25,
 		ContextSessionCount:       10,
@@ -221,6 +231,22 @@ func Load() (*Config, error) {
 	}
 	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_MAX_PROMPT_RESULTS"].(float64); ok && v >= 0 {
 		cfg.ContextMaxPromptResults = int(v)
+	}
+	// Graph settings
+	if v, ok := settings["CLAUDE_MNEMONIC_GRAPH_ENABLED"].(bool); ok {
+		cfg.GraphEnabled = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_GRAPH_MAX_HOPS"].(float64); ok && v > 0 {
+		cfg.GraphMaxHops = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_GRAPH_BRANCH_FACTOR"].(float64); ok && v > 0 {
+		cfg.GraphBranchFactor = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_GRAPH_EDGE_WEIGHT"].(float64); ok && v >= 0 && v <= 1 {
+		cfg.GraphEdgeWeight = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_GRAPH_REBUILD_INTERVAL_MIN"].(float64); ok && v > 0 {
+		cfg.GraphRebuildIntervalMin = int(v)
 	}
 
 	return cfg, nil

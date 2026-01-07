@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import type { Stats, SelfCheckResponse } from '@/types'
 import ProjectFilter from './ProjectFilter.vue'
+import { useGraphMetrics } from '@/composables'
 
 const props = defineProps<{
   stats: Stats | null
@@ -18,10 +19,19 @@ defineEmits<{
 
 // Collapse state - persisted in localStorage
 const isCollapsed = ref(localStorage.getItem('sidebar-collapsed') === 'true')
+const metricsExpanded = ref(localStorage.getItem('metrics-expanded') === 'true')
+
+// Graph metrics composable
+const { graphStats, vectorMetrics, loading: metricsLoading, refresh: refreshMetrics } = useGraphMetrics()
 
 function toggleCollapse() {
   isCollapsed.value = !isCollapsed.value
   localStorage.setItem('sidebar-collapsed', String(isCollapsed.value))
+}
+
+function toggleMetrics() {
+  metricsExpanded.value = !metricsExpanded.value
+  localStorage.setItem('metrics-expanded', String(metricsExpanded.value))
 }
 
 function formatNumber(n: number): string {
@@ -205,6 +215,99 @@ function getStatusColor(status: string): string {
         </div>
       </div>
 
+      <!-- Advanced Metrics -->
+      <div class="bg-slate-800/50 rounded-lg border border-slate-700/50">
+        <button
+          @click="toggleMetrics"
+          class="w-full flex items-center justify-between p-4 hover:bg-slate-700/30 transition-colors rounded-lg"
+        >
+          <div class="flex items-center gap-2">
+            <i class="fas fa-chart-line text-violet-400" />
+            <h3 class="text-sm font-semibold text-white">Advanced Metrics</h3>
+          </div>
+          <i
+            :class="[
+              'fas text-slate-400 transition-transform duration-200',
+              metricsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'
+            ]"
+          />
+        </button>
+
+        <Transition name="expand">
+          <div v-show="metricsExpanded" class="px-4 pb-4 space-y-4">
+            <!-- Loading State -->
+            <div v-if="metricsLoading" class="text-center py-4">
+              <i class="fas fa-spinner fa-spin text-slate-400" />
+              <p class="text-slate-500 text-sm mt-2">Loading metrics...</p>
+            </div>
+
+            <!-- Graph Stats -->
+            <div v-else-if="graphStats?.enabled">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-slate-400 uppercase tracking-wide">Graph</span>
+                <button
+                  @click="refreshMetrics"
+                  class="text-xs text-violet-400 hover:text-violet-300 transition-colors"
+                  title="Refresh metrics"
+                >
+                  <i class="fas fa-sync-alt" />
+                </button>
+              </div>
+              <div class="space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-slate-400 text-sm">Nodes</span>
+                  <span class="text-white font-medium">{{ formatNumber(graphStats.nodeCount) }}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-slate-400 text-sm">Edges</span>
+                  <span class="text-white font-medium">{{ formatNumber(graphStats.edgeCount) }}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-slate-400 text-sm">Avg Degree</span>
+                  <span class="text-white font-medium">{{ graphStats.avgDegree.toFixed(1) }}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-slate-400 text-sm">Max Degree</span>
+                  <span class="text-white font-medium">{{ graphStats.maxDegree }}</span>
+                </div>
+              </div>
+
+              <!-- Vector Metrics -->
+              <div v-if="vectorMetrics?.enabled" class="mt-4 pt-4 border-t border-slate-700/50">
+                <div class="text-xs text-slate-400 uppercase tracking-wide mb-2">Vector Storage</div>
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-400 text-sm">Savings</span>
+                    <span class="text-green-400 font-medium">
+                      {{ vectorMetrics.storage.savingsPercent.toFixed(1) }}%
+                    </span>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-400 text-sm">Queries</span>
+                    <span class="text-white font-medium">{{ formatNumber(vectorMetrics.queries.total) }}</span>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-400 text-sm">Cache Hit</span>
+                    <span class="text-cyan-400 font-medium">
+                      {{ (vectorMetrics.cache.hitRate * 100).toFixed(1) }}%
+                    </span>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-400 text-sm">Avg Latency</span>
+                    <span class="text-white font-medium text-xs">{{ vectorMetrics.latency.avg }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Disabled State -->
+            <div v-else class="text-slate-500 text-sm py-2">
+              {{ graphStats?.message || 'Metrics not available' }}
+            </div>
+          </div>
+        </Transition>
+      </div>
+
       <!-- Session Info -->
       <div v-if="stats" class="bg-slate-800/50 rounded-lg p-4 border border-slate-700/50">
         <div class="flex items-center gap-2 mb-3">
@@ -260,6 +363,30 @@ function getStatusColor(status: string): string {
       >
         <i class="fas fa-search text-cyan-400" />
       </div>
+
+      <!-- Metrics indicator -->
+      <div
+        v-if="graphStats?.enabled"
+        class="bg-slate-800/50 rounded-lg p-3 border border-slate-700/50 flex justify-center"
+        :title="`${graphStats.nodeCount} nodes, ${graphStats.edgeCount} edges`"
+      >
+        <i class="fas fa-chart-line text-violet-400" />
+      </div>
     </div>
   </aside>
 </template>
+
+<style scoped>
+.expand-enter-active,
+.expand-leave-active {
+  transition: all 0.3s ease;
+  overflow: hidden;
+  max-height: 500px;
+}
+
+.expand-enter-from,
+.expand-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+</style>
