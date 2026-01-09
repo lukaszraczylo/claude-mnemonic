@@ -774,7 +774,7 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 
 	// Try vector search first if available
 	if s.vectorClient != nil && s.vectorClient.IsConnected() {
-		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeObservation, "")
+		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeObservation, project)
 
 		// Search with each expanded query and merge results
 		allVectorResults := make([]sqlitevec.QueryResult, 0)

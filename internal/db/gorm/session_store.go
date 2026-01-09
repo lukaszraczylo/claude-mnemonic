@@ -4,6 +4,7 @@ package gorm
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -67,10 +68,12 @@ func (s *SessionStore) CreateSDKSession(ctx context.Context, claudeSessionID, pr
 			if userPrompt != "" {
 				updates["user_prompt"] = userPrompt
 			}
-			s.db.WithContext(ctx).
+			if err := s.db.WithContext(ctx).
 				Model(&SDKSession{}).
 				Where("claude_session_id = ?", claudeSessionID).
-				Updates(updates)
+				Updates(updates).Error; err != nil {
+				return 0, fmt.Errorf("failed to update session: %w", err)
+			}
 		}
 
 		// Fetch existing session

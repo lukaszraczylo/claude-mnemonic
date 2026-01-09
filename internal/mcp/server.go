@@ -164,7 +164,7 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	tools := []Tool{
 		{
 			Name:        "search",
-			Description: "Unified search across all memory types (observations, sessions, and user prompts) using vector-first semantic search (ChromaDB).",
+			Description: "Unified search across all memory types (observations, sessions, and user prompts) using vector-first semantic search (sqlite-vec).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -599,7 +599,8 @@ func (s *Server) handleFindRelatedObservations(ctx context.Context, args json.Ra
 		return "", fmt.Errorf("id is required")
 	}
 
-	if params.MinConfidence == 0 {
+	// Use -1 as sentinel for "not provided" since 0.0 is a valid threshold
+	if params.MinConfidence < 0 {
 		params.MinConfidence = 0.5
 	}
 
