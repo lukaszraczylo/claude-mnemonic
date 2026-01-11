@@ -340,8 +340,8 @@ func (d *Detector) cleanupOldCandidates() {
 	if d.config.MaxCandidates > 0 && len(d.candidates) > d.config.MaxCandidates {
 		// Find oldest candidates to evict using O(n log n) sort instead of O(n²) selection sort
 		type keyAge struct {
-			key  string
-			age  int64
+			key string
+			age int64
 		}
 		candidates := make([]keyAge, 0, len(d.candidates))
 		for k, c := range d.candidates {

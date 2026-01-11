@@ -46,34 +46,32 @@ type Config struct {
 	VectorStorageStrategy     string   `json:"vector_storage_strategy"`
 	ContextObsConcepts        []string `json:"context_obs_concepts"`
 	ContextObsTypes           []string `json:"context_obs_types"`
-	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`
-	RerankingResults          int      `json:"reranking_results"`
+	ContextFullCount          int      `json:"context_full_count"`
+	GraphBranchFactor         int      `json:"graph_branch_factor"`
 	GraphEdgeWeight           float64  `json:"graph_edge_weight"`
 	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"`
 	RerankingCandidates       int      `json:"reranking_candidates"`
 	WorkerPort                int      `json:"worker_port"`
 	RerankingMinImprovement   float64  `json:"reranking_min_improvement"`
 	ContextObservations       int      `json:"context_observations"`
-	ContextFullCount          int      `json:"context_full_count"`
+	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`
 	ContextSessionCount       int      `json:"context_session_count"`
 	MaxConns                  int      `json:"max_conns"`
 	RerankingAlpha            float64  `json:"reranking_alpha"`
 	GraphMaxHops              int      `json:"graph_max_hops"`
-	GraphBranchFactor         int      `json:"graph_branch_factor"`
+	RerankingResults          int      `json:"reranking_results"`
 	GraphRebuildIntervalMin   int      `json:"graph_rebuild_interval_min"`
 	HubThreshold              int      `json:"hub_threshold"`
-	ContextShowLastSummary    bool     `json:"context_show_last_summary"`
-	RerankingEnabled          bool     `json:"reranking_enabled"`
+	ObservationRetentionDays  int      `json:"observation_retention_days"`
+	MaintenanceIntervalHours  int      `json:"maintenance_interval_hours"`
 	ContextShowWorkTokens     bool     `json:"context_show_work_tokens"`
 	ContextShowReadTokens     bool     `json:"context_show_read_tokens"`
 	RerankingPureMode         bool     `json:"reranking_pure_mode"`
 	GraphEnabled              bool     `json:"graph_enabled"`
-
-	// Maintenance settings
-	MaintenanceEnabled       bool `json:"maintenance_enabled"`        // Enable scheduled maintenance
-	MaintenanceIntervalHours int  `json:"maintenance_interval_hours"` // How often to run maintenance (default 6 hours)
-	ObservationRetentionDays int  `json:"observation_retention_days"` // Delete observations older than N days (0 = no age-based deletion)
-	CleanupStaleObservations bool `json:"cleanup_stale_observations"` // Auto-cleanup stale observations during maintenance
+	MaintenanceEnabled        bool     `json:"maintenance_enabled"`
+	RerankingEnabled          bool     `json:"reranking_enabled"`
+	ContextShowLastSummary    bool     `json:"context_show_last_summary"`
+	CleanupStaleObservations  bool     `json:"cleanup_stale_observations"`
 }
 
 var (

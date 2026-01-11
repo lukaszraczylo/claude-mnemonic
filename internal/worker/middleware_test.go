@@ -42,8 +42,8 @@ func TestSecurityHeaders_CORS(t *testing.T) {
 	tests := []struct {
 		name           string
 		origin         string
-		expectCORS     bool
 		expectedOrigin string
+		expectCORS     bool
 	}{
 		{
 			name:           "localhost:37778 origin allowed",

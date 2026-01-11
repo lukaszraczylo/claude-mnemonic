@@ -25,51 +25,39 @@ type embeddingCacheEntry struct {
 
 // resultCacheEntry stores cached query results.
 type resultCacheEntry struct {
+	queryHash string
 	results   []QueryResult
-	timestamp int64  // Unix nano
-	queryHash string // Hash of query + filters for validation
+	timestamp int64
 }
 
 // Client provides vector operations via sqlite-vec.
 type Client struct {
-	db       *sql.DB
-	embedSvc *embedding.Service
-
-	// Separate mutexes for read and write operations to reduce contention
-	writeMu sync.Mutex   // Protects write operations (AddDocuments, DeleteDocuments)
-	readMu  sync.RWMutex // Protects read operations (Query, Count)
-
-	// Embedding cache for query deduplication
-	queryCache   map[string]embeddingCacheEntry
-	queryCacheMu sync.RWMutex
-	cacheMaxSize int
-	cacheTTLNano int64 // Cache TTL in nanoseconds
-
-	// Result cache for repeated searches
-	resultCache       map[string]resultCacheEntry
-	resultCacheMu     sync.RWMutex
+	embeddingGroup     singleflight.Group
+	resultCache        map[string]resultCacheEntry
+	db                 *sql.DB
+	embedSvc           *embedding.Service
+	queryCache         map[string]embeddingCacheEntry
+	stopCleanup        chan struct{}
+	stats              CacheStats
+	cleanupWg          sync.WaitGroup
+	resultCacheTTLNano int64
+	cacheTTLNano       int64
 	resultCacheMaxSize int
-	resultCacheTTLNano int64 // Shorter TTL for results (data changes more often)
-
-	// Cache statistics
-	stats CacheStats
-
-	// Background cleanup control
-	stopCleanup chan struct{}
-	cleanupWg   sync.WaitGroup
-
-	// Singleflight to deduplicate concurrent embedding computations
-	embeddingGroup singleflight.Group
+	cacheMaxSize       int
+	resultCacheMu      sync.RWMutex
+	queryCacheMu       sync.RWMutex
+	readMu             sync.RWMutex
+	writeMu            sync.Mutex
 }
 
 // CacheStats tracks cache performance metrics using atomic counters for lock-free updates.
 type CacheStats struct {
-	embeddingHits     atomic.Int64
-	embeddingMisses   atomic.Int64
-	resultHits        atomic.Int64
-	resultMisses      atomic.Int64
+	embeddingHits      atomic.Int64
+	embeddingMisses    atomic.Int64
+	resultHits         atomic.Int64
+	resultMisses       atomic.Int64
 	embeddingEvictions atomic.Int64
-	resultEvictions   atomic.Int64
+	resultEvictions    atomic.Int64
 }
 
 // CacheStatsSnapshot is the exported version of CacheStats for JSON marshaling.
@@ -139,8 +127,8 @@ func NewClient(cfg Config, embedSvc *embedding.Service) (*Client, error) {
 		cacheMaxSize:       500,          // Cache up to 500 query embeddings
 		cacheTTLNano:       5 * 60 * 1e9, // 5 minute TTL for embeddings
 		resultCache:        make(map[string]resultCacheEntry),
-		resultCacheMaxSize: 200,          // Cache up to 200 search results
-		resultCacheTTLNano: 60 * 1e9,     // 1 minute TTL for results (shorter since data changes)
+		resultCacheMaxSize: 200,      // Cache up to 200 search results
+		resultCacheTTLNano: 60 * 1e9, // 1 minute TTL for results (shorter since data changes)
 		stopCleanup:        make(chan struct{}),
 	}
 
@@ -442,9 +430,9 @@ func (c *Client) cleanupExpiredCaches() {
 
 // BatchQueryResult holds results from a batch query operation.
 type BatchQueryResult struct {
-	Query   string        // Original query string
-	Results []QueryResult // Results for this query
-	Error   error         // Error if query failed
+	Error   error
+	Query   string
+	Results []QueryResult
 }
 
 // QueryBatch performs multiple vector searches concurrently.
@@ -691,15 +679,15 @@ func (c *Client) GetStaleVectors(ctx context.Context) ([]StaleVectorInfo, error)
 
 // VectorHealthStats contains comprehensive health information about the vector store.
 type VectorHealthStats struct {
-	TotalVectors     int64              `json:"total_vectors"`
-	StaleVectors     int64              `json:"stale_vectors"`
-	CurrentModel     string             `json:"current_model"`
-	NeedsRebuild     bool               `json:"needs_rebuild"`
-	RebuildReason    string             `json:"rebuild_reason,omitempty"`
-	CoverageByType   map[string]int64   `json:"coverage_by_type"`
-	ModelVersions    map[string]int64   `json:"model_versions"`
-	ProjectCounts    map[string]int64   `json:"project_counts"`
-	EmbeddingCache   CacheStatsSnapshot `json:"embedding_cache"`
+	CoverageByType map[string]int64   `json:"coverage_by_type"`
+	ModelVersions  map[string]int64   `json:"model_versions"`
+	ProjectCounts  map[string]int64   `json:"project_counts"`
+	CurrentModel   string             `json:"current_model"`
+	RebuildReason  string             `json:"rebuild_reason,omitempty"`
+	EmbeddingCache CacheStatsSnapshot `json:"embedding_cache"`
+	TotalVectors   int64              `json:"total_vectors"`
+	StaleVectors   int64              `json:"stale_vectors"`
+	NeedsRebuild   bool               `json:"needs_rebuild"`
 }
 
 // GetHealthStats returns comprehensive health statistics about the vector store.

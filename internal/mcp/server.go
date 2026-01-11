@@ -1585,15 +1585,15 @@ func (s *Server) handleGetObservation(ctx context.Context, args json.RawMessage)
 // handleEditObservation updates an existing observation with provided fields.
 func (s *Server) handleEditObservation(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
-		ID            int64    `json:"id"`
 		Title         *string  `json:"title,omitempty"`
 		Subtitle      *string  `json:"subtitle,omitempty"`
 		Narrative     *string  `json:"narrative,omitempty"`
+		Scope         *string  `json:"scope,omitempty"`
 		Facts         []string `json:"facts,omitempty"`
 		Concepts      []string `json:"concepts,omitempty"`
 		FilesRead     []string `json:"files_read,omitempty"`
 		FilesModified []string `json:"files_modified,omitempty"`
-		Scope         *string  `json:"scope,omitempty"`
+		ID            int64    `json:"id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
@@ -1808,9 +1808,9 @@ func (s *Server) handleSuggestConsolidations(ctx context.Context, args json.RawM
 	// Find similar pairs using vector search if available
 	type consolidationGroup struct {
 		Primary    *models.Observation   `json:"primary"`
+		Reason     string                `json:"reason"`
 		Similar    []*models.Observation `json:"similar"`
 		Similarity float64               `json:"avg_similarity"`
-		Reason     string                `json:"reason"`
 	}
 
 	groups := []consolidationGroup{}
@@ -1920,9 +1920,9 @@ func (s *Server) handleSuggestConsolidations(ctx context.Context, args json.RawM
 // handleTagObservation adds, removes, or sets tags on an observation.
 func (s *Server) handleTagObservation(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
-		ID   int64    `json:"id"`
-		Tags []string `json:"tags"`
 		Mode string   `json:"mode"`
+		Tags []string `json:"tags"`
+		ID   int64    `json:"id"`
 	}
 	params.Mode = "add" // default
 
@@ -2073,8 +2073,8 @@ func (s *Server) handleGetObservationsByTag(ctx context.Context, args json.RawMe
 func (s *Server) handleGetTemporalTrends(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Project string `json:"project"`
-		Days    int    `json:"days"`
 		GroupBy string `json:"group_by"`
+		Days    int    `json:"days"`
 	}
 	params.Days = 30
 	params.GroupBy = "day"
@@ -2347,10 +2347,10 @@ func (s *Server) handleGetDataQualityReport(ctx context.Context, args json.RawMe
 func (s *Server) handleBatchTagByPattern(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Pattern    string   `json:"pattern"`
-		Tags       []string `json:"tags"`
 		Project    string   `json:"project"`
-		DryRun     bool     `json:"dry_run"`
+		Tags       []string `json:"tags"`
 		MaxMatches int      `json:"max_matches"`
+		DryRun     bool     `json:"dry_run"`
 	}
 	params.DryRun = true
 	params.MaxMatches = 100
@@ -2485,14 +2485,14 @@ func (s *Server) handleExplainSearchRanking(ctx context.Context, args json.RawMe
 
 	// Build detailed explanations for each result
 	type RankExplanation struct {
-		Rank           int                `json:"rank"`
-		ID             int64              `json:"id"`
+		ScoreBreakdown map[string]float64 `json:"score_breakdown"`
+		Metadata       map[string]any     `json:"metadata,omitempty"`
 		Title          string             `json:"title"`
 		Type           string             `json:"type"`
-		Score          float64            `json:"score"`
-		ScoreBreakdown map[string]float64 `json:"score_breakdown"`
 		MatchedFields  []string           `json:"matched_fields"`
-		Metadata       map[string]any     `json:"metadata,omitempty"`
+		Rank           int                `json:"rank"`
+		ID             int64              `json:"id"`
+		Score          float64            `json:"score"`
 	}
 
 	explanations := make([]RankExplanation, 0, len(result.Results))
@@ -2562,10 +2562,10 @@ func (s *Server) handleExportObservations(ctx context.Context, args json.RawMess
 	var params struct {
 		Format    string `json:"format"`
 		Project   string `json:"project"`
+		ObsType   string `json:"obs_type"`
 		Limit     int    `json:"limit"`
 		DateStart int64  `json:"date_start"`
 		DateEnd   int64  `json:"date_end"`
-		ObsType   string `json:"obs_type"`
 	}
 	params.Format = "json"
 	params.Limit = 100
@@ -2705,11 +2705,11 @@ func (s *Server) handleCheckSystemHealth(ctx context.Context) (string, error) {
 	}
 
 	type HealthReport struct {
-		OverallStatus string                      `json:"overall_status"`
-		HealthScore   int                         `json:"health_score"`
 		Timestamp     time.Time                   `json:"timestamp"`
 		Subsystems    map[string]*SubsystemHealth `json:"subsystems"`
+		OverallStatus string                      `json:"overall_status"`
 		Actions       []string                    `json:"recommended_actions,omitempty"`
+		HealthScore   int                         `json:"health_score"`
 	}
 
 	report := &HealthReport{
@@ -2902,19 +2902,19 @@ func (s *Server) handleAnalyzeSearchPatterns(ctx context.Context, args json.RawM
 
 	type QueryPattern struct {
 		Query       string  `json:"query"`
+		LastUsed    string  `json:"last_used"`
 		Count       int     `json:"count"`
 		AvgResults  float64 `json:"avg_results"`
 		ZeroResults int     `json:"zero_result_count"`
-		LastUsed    string  `json:"last_used"`
 	}
 
 	type PatternAnalysis struct {
 		Period            string         `json:"period"`
-		TotalSearches     int            `json:"total_searches"`
-		UniqueQueries     int            `json:"unique_queries"`
 		TopQueries        []QueryPattern `json:"top_queries"`
 		ZeroResultQueries []string       `json:"zero_result_queries,omitempty"`
 		Insights          []string       `json:"insights,omitempty"`
+		TotalSearches     int            `json:"total_searches"`
+		UniqueQueries     int            `json:"unique_queries"`
 	}
 
 	analysis := &PatternAnalysis{
@@ -3033,23 +3033,23 @@ func (s *Server) handleGetObservationRelationships(ctx context.Context, args jso
 
 	// Build response with additional context
 	type RelationInfo struct {
-		ID          int64   `json:"id"`
-		SourceID    int64   `json:"source_id"`
-		TargetID    int64   `json:"target_id"`
 		Type        string  `json:"type"`
-		Confidence  float64 `json:"confidence"`
 		SourceTitle string  `json:"source_title,omitempty"`
 		TargetTitle string  `json:"target_title,omitempty"`
 		SourceType  string  `json:"source_type,omitempty"`
 		TargetType  string  `json:"target_type,omitempty"`
+		ID          int64   `json:"id"`
+		SourceID    int64   `json:"source_id"`
+		TargetID    int64   `json:"target_id"`
+		Confidence  float64 `json:"confidence"`
 	}
 
 	type GraphResponse struct {
+		Relations      []RelationInfo `json:"relations"`
+		UniqueNodes    []int64        `json:"unique_nodes"`
 		CenterID       int64          `json:"center_id"`
 		MaxDepth       int            `json:"max_depth"`
 		TotalRelations int            `json:"total_relations"`
-		Relations      []RelationInfo `json:"relations"`
-		UniqueNodes    []int64        `json:"unique_nodes"`
 	}
 
 	// Collect unique node IDs
@@ -3162,10 +3162,10 @@ func (s *Server) handleGetObservationScoringBreakdown(ctx context.Context, args 
 // handleAnalyzeObservationImportance returns importance analysis for a project's observations.
 func (s *Server) handleAnalyzeObservationImportance(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
-		Project               string `json:"project"`
 		IncludeTopScored      *bool  `json:"include_top_scored"`
 		IncludeMostRetrieved  *bool  `json:"include_most_retrieved"`
 		IncludeConceptWeights *bool  `json:"include_concept_weights"`
+		Project               string `json:"project"`
 		Limit                 int    `json:"limit"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {

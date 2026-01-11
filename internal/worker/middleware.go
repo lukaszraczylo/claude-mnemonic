@@ -91,12 +91,10 @@ func MaxBodySize(maxBytes int64) func(http.Handler) http.Handler {
 // TokenAuth provides simple token-based authentication for localhost services.
 // The token is generated at startup and must be provided in the X-Auth-Token header.
 type TokenAuth struct {
-	token   string
-	enabled bool
-	mu      sync.RWMutex
-
-	// ExemptPaths are paths that don't require authentication (e.g., health checks)
 	ExemptPaths map[string]bool
+	token       string
+	mu          sync.RWMutex
+	enabled     bool
 }
 
 // NewTokenAuth creates a new TokenAuth with a randomly generated token.
@@ -176,7 +174,7 @@ func (ta *TokenAuth) Middleware(next http.Handler) http.Handler {
 // It wraps the base per-client rate limiter with additional per-operation limits.
 type ExpensiveOperationLimiter struct {
 	// Track last execution time per operation type
-	lastRebuild   int64 // Unix timestamp
+	lastRebuild     int64 // Unix timestamp
 	rebuildCooldown int64 // Minimum seconds between rebuilds
 
 	mu sync.Mutex

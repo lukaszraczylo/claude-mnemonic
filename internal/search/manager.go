@@ -26,20 +26,20 @@ var multiSpaceRegex = regexp.MustCompile(`\s+`)
 // Search configuration constants.
 const (
 	// Cache configuration
-	defaultCacheTTL      = 30 * time.Second // Short TTL for freshness
-	defaultCacheMaxSize  = 200              // Max cached results
-	cacheEvictionPercent = 10               // Evict 10% when cache is full
-	cacheEvictionThreshold = 80             // Start eviction scan at 80% capacity
+	defaultCacheTTL        = 30 * time.Second // Short TTL for freshness
+	defaultCacheMaxSize    = 200              // Max cached results
+	cacheEvictionPercent   = 10               // Evict 10% when cache is full
+	cacheEvictionThreshold = 80               // Start eviction scan at 80% capacity
 
 	// Latency tracking
-	latencyHistogramCap = 1000          // Max latency samples for histogram
-	slowQueryThresholdNs = 100 * 1e6    // 100ms threshold for slow query logging
+	latencyHistogramCap  = 1000      // Max latency samples for histogram
+	slowQueryThresholdNs = 100 * 1e6 // 100ms threshold for slow query logging
 
 	// Query frequency tracking
-	maxFrequencyEntries     = 1000              // Max queries to track for warming
-	frequencyEvictionBatch  = 100               // Remove 10% when frequency map is full
-	staleQueryThreshold     = 24 * time.Hour    // Remove queries older than 24 hours
-	recentQueryWindow       = time.Hour         // Only consider queries from last hour for warming
+	maxFrequencyEntries    = 1000           // Max queries to track for warming
+	frequencyEvictionBatch = 100            // Remove 10% when frequency map is full
+	staleQueryThreshold    = 24 * time.Hour // Remove queries older than 24 hours
+	recentQueryWindow      = time.Hour      // Only consider queries from last hour for warming
 
 	// Cache warming configuration
 	cacheWarmingInitDelay    = 30 * time.Second // Delay before starting warming
@@ -63,19 +63,17 @@ const (
 
 // SearchMetrics tracks search performance statistics.
 type SearchMetrics struct {
-	TotalSearches     int64 // Total number of searches performed
-	VectorSearches    int64 // Searches using vector search
-	FilterSearches    int64 // Searches using filter/FTS search
-	TotalLatencyNs    int64 // Cumulative latency in nanoseconds
-	VectorLatencyNs   int64 // Cumulative vector search latency
-	FilterLatencyNs   int64 // Cumulative filter search latency
-	CacheHits         int64 // Number of result cache hits
-	CoalescedRequests int64 // Number of requests served via singleflight coalescing
-	SearchErrors      int64 // Number of search errors
-
-	// Percentile tracking (approximate using reservoir sampling)
-	latencyHistogram []int64 // Recent latency samples
-	histogramMu      sync.Mutex
+	latencyHistogram  []int64
+	TotalSearches     int64
+	VectorSearches    int64
+	FilterSearches    int64
+	TotalLatencyNs    int64
+	VectorLatencyNs   int64
+	FilterLatencyNs   int64
+	CacheHits         int64
+	CoalescedRequests int64
+	SearchErrors      int64
+	histogramMu       sync.Mutex
 }
 
 // GetStats returns the current search statistics.
@@ -117,36 +115,28 @@ func (m *SearchMetrics) GetStats() map[string]any {
 
 // Manager provides unified search across SQLite and sqlite-vec.
 type Manager struct {
-	observationStore *gorm.ObservationStore
-	summaryStore     *gorm.SummaryStore
-	promptStore      *gorm.PromptStore
+	ctx              context.Context
+	searchGroup      singleflight.Group
+	cancel           context.CancelFunc
 	vectorClient     *sqlitevec.Client
 	metrics          *SearchMetrics
-
-	// Context for graceful shutdown of background goroutines
-	ctx    context.Context
-	cancel context.CancelFunc
-
-	// Request coalescing for concurrent identical queries
-	searchGroup singleflight.Group
-
-	// Result cache for repeated queries (short TTL)
-	resultCache   map[string]*cachedResult
-	resultCacheMu sync.RWMutex
-	cacheTTL      time.Duration
-	cacheMaxSize  int
-
-	// Query frequency tracking for cache warming
+	promptStore      *gorm.PromptStore
+	observationStore *gorm.ObservationStore
+	summaryStore     *gorm.SummaryStore
+	resultCache      map[string]*cachedResult
 	queryFrequency   map[string]*queryFrequencyInfo
+	cacheTTL         time.Duration
+	cacheMaxSize     int
+	resultCacheMu    sync.RWMutex
 	queryFrequencyMu sync.RWMutex
 }
 
 // queryFrequencyInfo tracks how often a query is used.
 type queryFrequencyInfo struct {
-	params    SearchParams
-	count     int64
-	lastUsed  time.Time
+	lastUsed   time.Time
 	lastCached time.Time
+	params     SearchParams
+	count      int64
 }
 
 // cachedResult stores a cached search result with expiry.
@@ -270,8 +260,8 @@ func (m *Manager) warmFrequentQueries() {
 	m.queryFrequencyMu.RLock()
 	// Find top N most frequent queries that aren't recently cached
 	type queryScore struct {
-		key   string
 		info  *queryFrequencyInfo
+		key   string
 		score float64
 	}
 	candidates := make([]queryScore, 0, len(m.queryFrequency))
@@ -359,8 +349,8 @@ func (m *Manager) trackQueryFrequency(params SearchParams) {
 
 	// Collect keys and times for eviction (still under lock, but fast)
 	type entry struct {
-		key      string
 		lastUsed time.Time
+		key      string
 	}
 	entries := make([]entry, 0, mapLen)
 	for k, v := range m.queryFrequency {
@@ -390,11 +380,11 @@ func (m *Manager) trackQueryFrequency(params SearchParams) {
 
 // RecentQuery represents a recently executed search query.
 type RecentQuery struct {
+	LastUsed time.Time `json:"last_used"`
 	Query    string    `json:"query"`
 	Project  string    `json:"project,omitempty"`
-	Type     string    `json:"type,omitempty"` // observations, sessions, prompts
-	Count    int64     `json:"count"`          // Number of times executed
-	LastUsed time.Time `json:"last_used"`
+	Type     string    `json:"type,omitempty"`
+	Count    int64     `json:"count"`
 }
 
 // GetRecentQueries returns the most recent search queries, sorted by last used time.

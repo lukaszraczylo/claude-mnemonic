@@ -78,16 +78,16 @@ func retryWithBackoff(ctx context.Context, maxRetries int, initialBackoff time.D
 
 // RetrievalStats tracks observation retrieval metrics.
 type RetrievalStats struct {
-	TotalRequests       int64 // Total retrieval requests (inject + search)
-	ObservationsServed  int64 // Observations returned to clients
-	VerifiedStale       int64 // Stale observations that passed verification
-	DeletedInvalid      int64 // Invalid observations deleted
-	SearchRequests      int64 // Semantic search requests
-	ContextInjections   int64 // Session-start context injections
-	StaleExcluded       int64 // Observations excluded due to staleness check
-	FreshCount          int64 // Observations that passed staleness check
-	DuplicatesRemoved   int64 // Observations removed by clustering
-	LastUpdated         int64 // Unix timestamp of last update (atomic)
+	TotalRequests      int64 // Total retrieval requests (inject + search)
+	ObservationsServed int64 // Observations returned to clients
+	VerifiedStale      int64 // Stale observations that passed verification
+	DeletedInvalid     int64 // Invalid observations deleted
+	SearchRequests     int64 // Semantic search requests
+	ContextInjections  int64 // Session-start context injections
+	StaleExcluded      int64 // Observations excluded due to staleness check
+	FreshCount         int64 // Observations that passed staleness check
+	DuplicatesRemoved  int64 // Observations removed by clustering
+	LastUpdated        int64 // Unix timestamp of last update (atomic)
 }
 
 // maxRetrievalStatsProjects limits the number of projects tracked to prevent unbounded memory growth.
@@ -101,132 +101,91 @@ const maxRecentQueries = 100
 
 // Service is the main worker service orchestrator.
 type Service struct {
-	// Version of the worker binary
-	version string
-
-	// Configuration
-	config *config.Config
-
-	// Database
-	store            *gorm.Store
-	sessionStore     *gorm.SessionStore
-	observationStore *gorm.ObservationStore
-	summaryStore     *gorm.SummaryStore
-	promptStore      *gorm.PromptStore
-	conflictStore    *gorm.ConflictStore
-	patternStore     *gorm.PatternStore
-	relationStore    *gorm.RelationStore
-
-	// Pattern detection
-	patternDetector *pattern.Detector
-
-	// Domain services
-	sessionManager *session.Manager
-	sseBroadcaster *sse.Broadcaster
-	processor      *sdk.Processor
-
-	// Vector database (sqlite-vec with local embeddings)
-	embedSvc     *embedding.Service
-	vectorClient *sqlitevec.Client
-	vectorSync   *sqlitevec.Sync
-
-	// Cross-encoder reranking (for improved search relevance)
-	reranker *reranking.Service
-
-	// Query expansion (for improved search recall)
-	queryExpander *expansion.Expander
-
-	// Importance scoring
-	scoreCalculator *scoring.Calculator
-	recalculator    *scoring.Recalculator
-
-	// HTTP server
-	router    *chi.Mux
-	server    *http.Server
-	startTime time.Time
-
-	// Retrieval statistics (per-project)
-	retrievalStats   map[string]*RetrievalStats
-	retrievalStatsMu sync.RWMutex
-
-	// Lifecycle
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-
-	// Initialization state (for deferred init)
-	ready     atomic.Bool
-	initError error
-	initMu    sync.RWMutex
-
-	// Background verification queue for stale observations
-	staleQueue     chan staleVerifyRequest
-	staleQueueOnce sync.Once
-
-	// File watchers for auto-recreation on deletion
-	dbWatcher     *watcher.Watcher
-	configWatcher *watcher.Watcher
-
-	// Self-updater
-	updater *update.Updater
-
-	// Rate limiting
-	rateLimiter             *PerClientRateLimiter
-	expensiveOpLimiter      *ExpensiveOperationLimiter
-	bulkOpLimiter           *BulkOperationLimiter
-
-	// Rebuild status tracking
-	rebuildStatus   *RebuildStatus
-	rebuildStatusMu sync.RWMutex
-
-	// Recent search query tracking (circular buffer for O(1) insertion)
-	recentQueriesBuf  [maxRecentQueries]RecentSearchQuery // fixed-size circular buffer
-	recentQueriesHead int                                 // index of most recent (newest)
-	recentQueriesLen  int                                 // current number of items
-	recentQueriesMu   sync.RWMutex
-
-	// Stats caching to reduce database load
-	cachedObsCounts   map[string]cachedCount // per-project observation counts
-	cachedObsCountsMu sync.RWMutex
-	statsCacheTTL     time.Duration
-
-	// Vector sync worker pool - limits concurrent vector sync goroutines
-	vectorSyncSem chan struct{} // semaphore for rate limiting
+	startTime          time.Time
+	ctx                context.Context
+	initError          error
+	server             *http.Server
+	reranker           *reranking.Service
+	observationStore   *gorm.ObservationStore
+	summaryStore       *gorm.SummaryStore
+	promptStore        *gorm.PromptStore
+	conflictStore      *gorm.ConflictStore
+	patternStore       *gorm.PatternStore
+	relationStore      *gorm.RelationStore
+	patternDetector    *pattern.Detector
+	sessionManager     *session.Manager
+	sseBroadcaster     *sse.Broadcaster
+	processor          *sdk.Processor
+	embedSvc           *embedding.Service
+	vectorClient       *sqlitevec.Client
+	vectorSync         *sqlitevec.Sync
+	vectorSyncSem      chan struct{}
+	queryExpander      *expansion.Expander
+	scoreCalculator    *scoring.Calculator
+	recalculator       *scoring.Recalculator
+	router             *chi.Mux
+	store              *gorm.Store
+	retrievalStats     map[string]*RetrievalStats
+	sessionStore       *gorm.SessionStore
+	cancel             context.CancelFunc
+	cachedObsCounts    map[string]cachedCount
+	config             *config.Config
+	rebuildStatus      *RebuildStatus
+	staleQueue         chan staleVerifyRequest
+	bulkOpLimiter      *BulkOperationLimiter
+	dbWatcher          *watcher.Watcher
+	configWatcher      *watcher.Watcher
+	updater            *update.Updater
+	rateLimiter        *PerClientRateLimiter
+	expensiveOpLimiter *ExpensiveOperationLimiter
+	version            string
+	recentQueriesBuf   [maxRecentQueries]RecentSearchQuery
+	wg                 sync.WaitGroup
+	recentQueriesLen   int
+	recentQueriesHead  int
+	statsCacheTTL      time.Duration
+	initMu             sync.RWMutex
+	rebuildStatusMu    sync.RWMutex
+	retrievalStatsMu   sync.RWMutex
+	recentQueriesMu    sync.RWMutex
+	cachedObsCountsMu  sync.RWMutex
+	staleQueueOnce     sync.Once
+	ready              atomic.Bool
 }
 
 // cachedCount stores a cached count value with expiration.
 type cachedCount struct {
-	count     int
 	timestamp time.Time
+	count     int
 }
 
 // RebuildStatus tracks the progress of vector rebuild operations.
 type RebuildStatus struct {
-	InProgress    bool      `json:"in_progress"`
-	StartTime     time.Time `json:"start_time,omitempty"`
-	Phase         string    `json:"phase,omitempty"`          // "observations", "summaries", "prompts", "complete"
-	TotalSynced   int       `json:"total_synced"`
-	TotalErrors   int       `json:"total_errors"`
-	CurrentPhase  int       `json:"current_phase"`            // 1, 2, 3 for the three phases
-	TotalPhases   int       `json:"total_phases"`             // 3
-	ElapsedMs     int64     `json:"elapsed_ms,omitempty"`
-	EstimatedPct  float64   `json:"estimated_pct,omitempty"`  // 0-100
+	StartTime    time.Time `json:"start_time,omitempty"`
+	Phase        string    `json:"phase,omitempty"`
+	TotalSynced  int       `json:"total_synced"`
+	TotalErrors  int       `json:"total_errors"`
+	CurrentPhase int       `json:"current_phase"`
+	TotalPhases  int       `json:"total_phases"`
+	ElapsedMs    int64     `json:"elapsed_ms,omitempty"`
+	EstimatedPct float64   `json:"estimated_pct,omitempty"`
+	InProgress   bool      `json:"in_progress"`
 }
 
 // staleVerifyRequest represents a request to verify a stale observation in background
 type staleVerifyRequest struct {
-	observationID int64
 	cwd           string
+	observationID int64
 }
 
 // RecentSearchQuery tracks a search query for analytics.
 type RecentSearchQuery struct {
-	Query     string    `json:"query"`
-	Project   string    `json:"project,omitempty"`
-	Type      string    `json:"type,omitempty"` // observations, summaries, prompts
-	Results   int       `json:"results"`
-	UsedVector bool     `json:"used_vector"`
-	Timestamp time.Time `json:"timestamp"`
+	Timestamp  time.Time `json:"timestamp"`
+	Query      string    `json:"query"`
+	Project    string    `json:"project,omitempty"`
+	Type       string    `json:"type,omitempty"`
+	Results    int       `json:"results"`
+	UsedVector bool      `json:"used_vector"`
 }
 
 // asyncVectorSync executes a vector sync operation with rate limiting.

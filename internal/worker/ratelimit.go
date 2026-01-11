@@ -9,13 +9,13 @@ import (
 
 // RateLimiter implements a token bucket rate limiter.
 type RateLimiter struct {
-	rate       float64       // tokens per second
-	burst      int           // maximum burst size
-	mu         sync.Mutex    // protects following fields
-	tokens     float64       // current tokens
-	lastUpdate time.Time     // last token update time
-	requests   int64         // total requests
-	rejected   int64         // rejected requests
+	lastUpdate time.Time
+	rate       float64
+	burst      int
+	tokens     float64
+	requests   int64
+	rejected   int64
+	mu         sync.Mutex
 }
 
 // LastUpdateTime returns the last update time.
@@ -77,12 +77,12 @@ func (rl *RateLimiter) Stats() map[string]any {
 	defer rl.mu.Unlock()
 
 	return map[string]any{
-		"rate":             rl.rate,
-		"burst":            rl.burst,
-		"current_tokens":   rl.tokens,
-		"total_requests":   rl.requests,
-		"rejected":         rl.rejected,
-		"rejection_rate":   float64(rl.rejected) / max(float64(rl.requests), 1),
+		"rate":           rl.rate,
+		"burst":          rl.burst,
+		"current_tokens": rl.tokens,
+		"total_requests": rl.requests,
+		"rejected":       rl.rejected,
+		"rejection_rate": float64(rl.rejected) / max(float64(rl.requests), 1),
 	}
 }
 
@@ -102,14 +102,13 @@ func RateLimitMiddleware(limiter *RateLimiter) func(http.Handler) http.Handler {
 
 // PerClientRateLimiter implements per-client rate limiting.
 type PerClientRateLimiter struct {
-	rate    float64
-	burst   int
-	clients map[string]*RateLimiter
-	mu      sync.Mutex
-	// Cleanup settings
+	lastCleanup     time.Time
+	clients         map[string]*RateLimiter
+	rate            float64
+	burst           int
 	cleanupInterval time.Duration
 	maxIdleTime     time.Duration
-	lastCleanup     time.Time
+	mu              sync.Mutex
 }
 
 // NewPerClientRateLimiter creates a new per-client rate limiter.

@@ -13,23 +13,21 @@ import (
 
 // Service handles scheduled maintenance tasks.
 type Service struct {
-	store            *gorm.Store
-	observationStore *gorm.ObservationStore
-	summaryStore     *gorm.SummaryStore
+	log              zerolog.Logger
+	lastRunTime      time.Time
 	promptStore      *gorm.PromptStore
+	store            *gorm.Store
 	vectorCleanupFn  func(ctx context.Context, deletedIDs []int64)
 	config           *config.Config
-	log              zerolog.Logger
+	summaryStore     *gorm.SummaryStore
 	stopCh           chan struct{}
 	doneCh           chan struct{}
-	mu               sync.Mutex
-	running          bool
-
-	// Metrics
-	lastRunTime      time.Time
+	observationStore *gorm.ObservationStore
 	lastRunDuration  time.Duration
 	totalCleanedObs  int64
 	totalOptimizeRun int64
+	mu               sync.Mutex
+	running          bool
 }
 
 // NewService creates a new maintenance service.

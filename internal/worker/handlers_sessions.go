@@ -25,10 +25,10 @@ type SessionInitRequest struct {
 
 // SessionInitResponse is the response for session initialization.
 type SessionInitResponse struct {
+	Reason       string `json:"reason,omitempty"`
 	SessionDBID  int64  `json:"sessionDbId"`
 	PromptNumber int    `json:"promptNumber"`
 	Skipped      bool   `json:"skipped,omitempty"`
-	Reason       string `json:"reason,omitempty"`
 }
 
 // DuplicatePromptWindowSeconds is the time window for detecting duplicate prompt submissions.

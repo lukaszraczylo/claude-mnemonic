@@ -66,6 +66,7 @@ func testService(t *testing.T) (*Service, func()) {
 		cancel:           cancel,
 		startTime:        time.Now(),
 		retrievalStats:   make(map[string]*RetrievalStats),
+		cachedObsCounts:  make(map[string]cachedCount),
 	}
 
 	svc.setupRoutes()
@@ -345,11 +346,13 @@ func TestHandleGetObservations_Limit(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	// Parse as generic JSON array since the model uses custom marshaling
-	var observations []map[string]interface{}
-	err := json.Unmarshal(rec.Body.Bytes(), &observations)
+	// Parse as object with observations key (API returns wrapped response)
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
 	require.NoError(t, err)
 
+	observations, ok := response["observations"].([]interface{})
+	require.True(t, ok, "expected observations array in response")
 	assert.Len(t, observations, 10)
 }
 
@@ -1135,9 +1138,12 @@ func TestHandleGetObservations_DefaultLimit(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	var observations []map[string]interface{}
-	err := json.Unmarshal(rec.Body.Bytes(), &observations)
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
 	require.NoError(t, err)
+
+	observations, ok := response["observations"].([]interface{})
+	require.True(t, ok, "expected observations array in response")
 
 	// Should return default limit (100)
 	assert.LessOrEqual(t, len(observations), DefaultObservationsLimit)
@@ -1159,10 +1165,12 @@ func TestHandleGetObservations_FilterByProject(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	var observations []map[string]interface{}
-	err := json.Unmarshal(rec.Body.Bytes(), &observations)
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
 	require.NoError(t, err)
 
+	observations, ok := response["observations"].([]interface{})
+	require.True(t, ok, "expected observations array in response")
 	assert.Len(t, observations, 2)
 }
 
@@ -1412,10 +1420,12 @@ func TestHandleGetObservations(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	var observations []map[string]interface{}
-	err := json.Unmarshal(rec.Body.Bytes(), &observations)
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
 	require.NoError(t, err)
 
+	observations, ok := response["observations"].([]interface{})
+	require.True(t, ok, "expected observations array in response")
 	assert.GreaterOrEqual(t, len(observations), 2)
 }
 
@@ -2697,10 +2707,13 @@ func TestHandleGetObservations_EmptyResult(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	// Should return empty array, not null
-	var obs []interface{}
-	err := json.Unmarshal(rec.Body.Bytes(), &obs)
+	// Should return empty array within observations key, not null
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
 	require.NoError(t, err)
+
+	obs, ok := response["observations"].([]interface{})
+	require.True(t, ok, "expected observations array in response")
 	assert.NotNil(t, obs)
 }
 

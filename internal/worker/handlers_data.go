@@ -484,11 +484,11 @@ type UpdateObservationRequest struct {
 	Title         *string  `json:"title,omitempty"`
 	Subtitle      *string  `json:"subtitle,omitempty"`
 	Narrative     *string  `json:"narrative,omitempty"`
+	Scope         *string  `json:"scope,omitempty"`
 	Facts         []string `json:"facts,omitempty"`
 	Concepts      []string `json:"concepts,omitempty"`
 	FilesRead     []string `json:"files_read,omitempty"`
 	FilesModified []string `json:"files_modified,omitempty"`
-	Scope         *string  `json:"scope,omitempty"`
 }
 
 // handleUpdateObservation updates an existing observation.
@@ -562,8 +562,8 @@ func (s *Service) handleUpdateObservation(w http.ResponseWriter, r *http.Request
 
 	// Broadcast update event
 	s.sseBroadcaster.Broadcast(map[string]any{
-		"type":   "observation_updated",
-		"id":     id,
+		"type": "observation_updated",
+		"id":   id,
 	})
 
 	writeJSON(w, map[string]any{

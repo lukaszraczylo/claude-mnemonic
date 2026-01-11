@@ -41,18 +41,16 @@ type CleanupFunc func(ctx context.Context, deletedIDs []int64)
 
 // ObservationStore provides observation-related database operations using GORM.
 type ObservationStore struct {
-	db            *gorm.DB
-	rawDB         *sql.DB
-	cleanupFunc   CleanupFunc
-	conflictStore any // Placeholder for ConflictStore (Phase 4)
-	relationStore any // Placeholder for RelationStore (Phase 4)
-
-	// Cleanup queue for async observation cleanup with proper error handling
+	conflictStore  any
+	relationStore  any
+	db             *gorm.DB
+	rawDB          *sql.DB
+	cleanupFunc    CleanupFunc
 	cleanupQueue   chan string
+	stopCleanup    chan struct{}
 	cleanupWg      sync.WaitGroup
 	cleanupOnce    sync.Once
-	cleanupStarted atomic.Bool // tracks if cleanup worker was started
-	stopCleanup    chan struct{}
+	cleanupStarted atomic.Bool
 }
 
 // NewObservationStore creates a new observation store.
@@ -854,10 +852,10 @@ func (s *ObservationStore) GetArchivalStats(ctx context.Context, project string)
 	// Use a single query with conditional aggregation to get all stats at once.
 	// This is much faster than 4 separate queries (saves 3 round trips).
 	type statsResult struct {
+		OldestEpoch   *int64
+		NewestEpoch   *int64
 		TotalCount    int64
 		ArchivedCount int64
-		OldestEpoch   *int64 // Pointer to handle NULL
-		NewestEpoch   *int64
 	}
 
 	var result statsResult

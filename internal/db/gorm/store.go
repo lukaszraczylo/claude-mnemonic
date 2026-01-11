@@ -19,15 +19,13 @@ import (
 
 // Store represents the GORM database connection with sqlite-vec support.
 type Store struct {
-	DB      *gorm.DB
-	sqlDB   *sql.DB // For FTS5 and sqlite-vec operations that require raw SQL
-	metrics *PoolMetrics
-
-	// Health check caching to reduce database load from frequent monitoring
-	healthCacheMu   sync.RWMutex
-	cachedHealth    *HealthInfo
 	healthCacheTime time.Time
-	healthCacheTTL  time.Duration // Default: 5 seconds
+	DB              *gorm.DB
+	sqlDB           *sql.DB
+	metrics         *PoolMetrics
+	cachedHealth    *HealthInfo
+	healthCacheTTL  time.Duration
+	healthCacheMu   sync.RWMutex
 }
 
 // Config holds database configuration.
@@ -313,13 +311,13 @@ func (s *Store) performHealthCheck(ctx context.Context) *HealthInfo {
 
 // HealthInfo contains database health check results.
 type HealthInfo struct {
-	Status            string         `json:"status"` // healthy, degraded, unhealthy
 	Timestamp         time.Time      `json:"timestamp"`
-	QueryLatency      time.Duration  `json:"query_latency_ns"`
-	PoolStats         PoolStats      `json:"pool_stats"`
-	HistoricalMetrics MetricsSummary `json:"historical_metrics,omitempty"`
+	Status            string         `json:"status"`
 	Error             string         `json:"error,omitempty"`
 	Warning           string         `json:"warning,omitempty"`
+	HistoricalMetrics MetricsSummary `json:"historical_metrics,omitempty"`
+	PoolStats         PoolStats      `json:"pool_stats"`
+	QueryLatency      time.Duration  `json:"query_latency_ns"`
 }
 
 // PoolStats contains connection pool statistics.
@@ -345,16 +343,16 @@ const (
 
 // PoolMetrics tracks historical connection pool metrics with a sliding window.
 type PoolMetrics struct {
+	lastSampleTime time.Time
+	latencySamples []time.Duration
+	latencyIdx     int
+	latencyCount   int
+	totalQueries   int64
+	totalWaitTime  time.Duration
+	peakInUse      int
+	peakWaitCount  int64
+	windowSize     int
 	mu             sync.RWMutex
-	latencySamples []time.Duration // Circular buffer of latency samples
-	latencyIdx     int             // Current index in circular buffer
-	latencyCount   int             // Number of samples collected
-	totalQueries   int64           // Total queries executed
-	totalWaitTime  time.Duration   // Cumulative wait time for connections
-	peakInUse      int             // Peak concurrent connections in use
-	peakWaitCount  int64           // Peak wait count observed
-	lastSampleTime time.Time       // Last time a sample was recorded
-	windowSize     int             // Size of sliding window
 }
 
 // NewPoolMetrics creates a new pool metrics collector with the given window size.
@@ -450,6 +448,7 @@ func (m *PoolMetrics) GetMetricsSummary() MetricsSummary {
 
 // MetricsSummary contains aggregated pool metrics.
 type MetricsSummary struct {
+	LastSampleTime time.Time     `json:"last_sample_time"`
 	TotalQueries   int64         `json:"total_queries"`
 	SampleCount    int           `json:"sample_count"`
 	AvgLatency     time.Duration `json:"avg_latency_ns"`
@@ -459,7 +458,6 @@ type MetricsSummary struct {
 	PeakInUse      int           `json:"peak_in_use"`
 	PeakWaitCount  int64         `json:"peak_wait_count"`
 	TotalWaitTime  time.Duration `json:"total_wait_time_ns"`
-	LastSampleTime time.Time     `json:"last_sample_time"`
 }
 
 // GetMetrics returns the current metrics without performing a health check.

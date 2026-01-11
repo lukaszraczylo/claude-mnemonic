@@ -26,11 +26,11 @@ import (
 
 // CircuitBreaker implements a simple circuit breaker pattern for CLI calls.
 type CircuitBreaker struct {
-	failures     int64         // Current failure count
-	lastFailure  int64         // Unix timestamp of last failure
-	threshold    int64         // Number of failures before opening
-	resetTimeout int64         // Seconds to wait before trying again
-	state        int32         // 0=closed, 1=open, 2=half-open
+	failures     int64 // Current failure count
+	lastFailure  int64 // Unix timestamp of last failure
+	threshold    int64 // Number of failures before opening
+	resetTimeout int64 // Seconds to wait before trying again
+	state        int32 // 0=closed, 1=open, 2=half-open
 }
 
 const (
@@ -100,12 +100,12 @@ func (cb *CircuitBreaker) State() string {
 
 // CircuitBreakerMetrics contains metrics about the circuit breaker state.
 type CircuitBreakerMetrics struct {
-	State            string `json:"state"`
-	Failures         int64  `json:"failures"`
-	Threshold        int64  `json:"threshold"`
-	ResetTimeoutSecs int64  `json:"reset_timeout_secs"`
-	LastFailureUnix  int64  `json:"last_failure_unix,omitempty"`
-	SecondsUntilReset int64 `json:"seconds_until_reset,omitempty"`
+	State             string `json:"state"`
+	Failures          int64  `json:"failures"`
+	Threshold         int64  `json:"threshold"`
+	ResetTimeoutSecs  int64  `json:"reset_timeout_secs"`
+	LastFailureUnix   int64  `json:"last_failure_unix,omitempty"`
+	SecondsUntilReset int64  `json:"seconds_until_reset,omitempty"`
 }
 
 // Metrics returns the current metrics of the circuit breaker.
@@ -277,8 +277,8 @@ func NewProcessor(observationStore *gorm.ObservationStore, summaryStore *gorm.Su
 		observationStore: observationStore,
 		summaryStore:     summaryStore,
 		sem:              make(chan struct{}, MaxConcurrentCLICalls),
-		circuitBreaker:   NewCircuitBreaker(5, 60),           // Open after 5 failures, reset after 60s
-		deduplicator:     NewRequestDeduplicator(300, 1000),  // 5-minute TTL, 1000 max entries
+		circuitBreaker:   NewCircuitBreaker(5, 60),                               // Open after 5 failures, reset after 60s
+		deduplicator:     NewRequestDeduplicator(300, 1000),                      // 5-minute TTL, 1000 max entries
 		vectorSyncChan:   make(chan *models.Observation, MaxVectorSyncWorkers*2), // Buffered channel
 		vectorSyncDone:   make(chan struct{}),
 	}, nil

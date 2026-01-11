@@ -29,23 +29,23 @@ type BulkImportRequest struct {
 
 // BulkObservationInput represents a single observation in bulk import.
 type BulkObservationInput struct {
-	Type          string   `json:"type"` // bugfix, feature, refactor, etc.
+	Type          string   `json:"type"`
 	Title         string   `json:"title"`
 	Subtitle      string   `json:"subtitle,omitempty"`
-	Facts         []string `json:"facts,omitempty"`
 	Narrative     string   `json:"narrative,omitempty"`
+	Scope         string   `json:"scope,omitempty"`
+	Facts         []string `json:"facts,omitempty"`
 	Concepts      []string `json:"concepts,omitempty"`
 	FilesRead     []string `json:"files_read,omitempty"`
 	FilesModified []string `json:"files_modified,omitempty"`
-	Scope         string   `json:"scope,omitempty"` // project or global
 }
 
 // BulkImportResponse contains the result of a bulk import operation.
 type BulkImportResponse struct {
+	Errors            []string `json:"errors,omitempty"`
 	Imported          int      `json:"imported"`
 	Failed            int      `json:"failed"`
 	SkippedDuplicates int      `json:"skipped_duplicates,omitempty"`
-	Errors            []string `json:"errors,omitempty"`
 }
 
 // handleBulkImport handles bulk import of observations.
@@ -208,10 +208,10 @@ func (s *Service) handleBulkImport(w http.ResponseWriter, r *http.Request) {
 
 // ArchiveRequest is the request body for archiving observations.
 type ArchiveRequest struct {
-	IDs        []int64 `json:"ids,omitempty"`         // Specific IDs to archive
-	Project    string  `json:"project,omitempty"`     // Archive all in project older than max_age_days
-	MaxAgeDays int     `json:"max_age_days,omitempty"` // Only used with project
-	Reason     string  `json:"reason,omitempty"`      // Optional reason for archival
+	Project    string  `json:"project,omitempty"`
+	Reason     string  `json:"reason,omitempty"`
+	IDs        []int64 `json:"ids,omitempty"`
+	MaxAgeDays int     `json:"max_age_days,omitempty"`
 }
 
 // handleArchiveObservations archives observations by ID or by age.
@@ -233,8 +233,8 @@ func (s *Service) handleArchiveObservations(w http.ResponseWriter, r *http.Reque
 		if len(req.IDs) > 5 {
 			// Use parallel archival for batches larger than 5
 			type archiveResult struct {
-				id  int64
 				err error
+				id  int64
 			}
 			results := make(chan archiveResult, len(req.IDs))
 
@@ -384,8 +384,8 @@ func (s *Service) handleExportObservations(w http.ResponseWriter, r *http.Reques
 	if format == "" {
 		format = "json"
 	}
-	scope := r.URL.Query().Get("scope")                         // project, global, or empty for all
-	obsType := r.URL.Query().Get("type")                        // bugfix, feature, etc.
+	scope := r.URL.Query().Get("scope")                 // project, global, or empty for all
+	obsType := r.URL.Query().Get("type")                // bugfix, feature, etc.
 	limit := gorm.ParseLimitParamWithMax(r, 1000, 5000) // Higher limit for exports, capped at 5000
 
 	// Validate format
@@ -491,10 +491,10 @@ func escapeCsvField(s string) string {
 
 // BulkStatusRequest represents a request to update status for multiple observations.
 type BulkStatusRequest struct {
-	IDs      []int64 `json:"ids"`
-	Action   string  `json:"action"` // "supersede", "archive", "set_feedback"
+	Action   string  `json:"action"`
 	Reason   string  `json:"reason,omitempty"`
-	Feedback int     `json:"feedback,omitempty"` // -1, 0, 1 for set_feedback action
+	IDs      []int64 `json:"ids"`
+	Feedback int     `json:"feedback,omitempty"`
 }
 
 // handleBulkStatusUpdate updates status for multiple observations in one request.
