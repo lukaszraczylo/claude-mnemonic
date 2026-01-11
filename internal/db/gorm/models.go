@@ -45,30 +45,34 @@ func (s *SDKSession) BeforeCreate(tx *gorm.DB) error {
 }
 
 // Observation represents a stored observation (learning).
+// Field order optimized for memory alignment (fieldalignment).
 type Observation struct {
 	FileMtimes      models.JSONInt64Map     `gorm:"type:text"`
 	SDKSessionID    string                  `gorm:"index;not null"`
-	Project         string                  `gorm:"index;not null"`
+	Project         string                  `gorm:"index:idx_observations_project;index:idx_observations_project_created,priority:1;not null"`
 	Scope           models.ObservationScope `gorm:"type:text;default:'project';check:scope IN ('project', 'global');index:idx_observations_scope;index:idx_observations_project_scope,priority:2"`
 	Type            models.ObservationType  `gorm:"type:text;check:type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change');index;not null"`
 	CreatedAt       string                  `gorm:"not null"`
-	Title           sql.NullString          `gorm:"type:text"`
+	Facts           models.JSONStringArray  `gorm:"type:text"`
 	Narrative       sql.NullString          `gorm:"type:text"`
 	Concepts        models.JSONStringArray  `gorm:"type:text"`
 	FilesRead       models.JSONStringArray  `gorm:"type:text"`
 	FilesModified   models.JSONStringArray  `gorm:"type:text"`
 	Subtitle        sql.NullString          `gorm:"type:text"`
-	Facts           models.JSONStringArray  `gorm:"type:text"`
-	LastRetrievedAt sql.NullInt64           `gorm:"column:last_retrieved_at_epoch"`
-	PromptNumber    sql.NullInt64
+	Title           sql.NullString          `gorm:"type:text"`
+	ArchivedReason  sql.NullString
 	ScoreUpdatedAt  sql.NullInt64 `gorm:"column:score_updated_at_epoch;index:idx_observations_score_updated"`
+	PromptNumber    sql.NullInt64
+	ArchivedAt      sql.NullInt64 `gorm:"column:archived_at_epoch"`
+	LastRetrievedAt sql.NullInt64 `gorm:"column:last_retrieved_at_epoch"`
 	ID              int64         `gorm:"primaryKey;autoIncrement"`
 	ImportanceScore float64       `gorm:"type:real;default:1.0;index:idx_observations_importance,priority:1,sort:desc"`
 	UserFeedback    int           `gorm:"default:0"`
 	RetrievalCount  int           `gorm:"default:0"`
-	CreatedAtEpoch  int64         `gorm:"index:idx_observations_created,sort:desc;not null"`
+	CreatedAtEpoch  int64         `gorm:"index:idx_observations_created,sort:desc;index:idx_observations_project_created,priority:2,sort:desc;not null"`
 	DiscoveryTokens int64         `gorm:"default:0"`
-	IsSuperseded    int           `gorm:"default:0;index:idx_observations_superseded,priority:1"`
+	IsSuperseded    int           `gorm:"default:0;index:idx_observations_superseded;index:idx_observations_active,priority:2"`
+	IsArchived      int           `gorm:"default:0;index:idx_observations_archived;index:idx_observations_active,priority:1"`
 }
 
 func (Observation) TableName() string { return "observations" }

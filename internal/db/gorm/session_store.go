@@ -119,26 +119,44 @@ func (s *SessionStore) FindAnySDKSession(ctx context.Context, claudeSessionID st
 }
 
 // IncrementPromptCounter increments the prompt counter and returns the new value.
+// Uses a single SQL query with RETURNING clause for optimal performance.
 func (s *SessionStore) IncrementPromptCounter(ctx context.Context, id int64) (int, error) {
-	// Atomic increment using GORM expression
-	err := s.db.WithContext(ctx).
-		Model(&SDKSession{}).
-		Where("id = ?", id).
-		Update("prompt_counter", gorm.Expr("COALESCE(prompt_counter, 0) + 1")).Error
+	// Use raw SQL with RETURNING to get updated value in single query
+	// SQLite supports RETURNING since version 3.35.0 (2021-03-12)
+	var newCounter int
+	err := s.db.WithContext(ctx).Raw(`
+		UPDATE sdk_sessions
+		SET prompt_counter = COALESCE(prompt_counter, 0) + 1
+		WHERE id = ?
+		RETURNING prompt_counter
+	`, id).Scan(&newCounter).Error
+
 	if err != nil {
+		// Fallback for older SQLite versions without RETURNING support
+		if err.Error() == "near \"RETURNING\": syntax error" || newCounter == 0 {
+			// Atomic increment
+			updateErr := s.db.WithContext(ctx).
+				Model(&SDKSession{}).
+				Where("id = ?", id).
+				Update("prompt_counter", gorm.Expr("COALESCE(prompt_counter, 0) + 1")).Error
+			if updateErr != nil {
+				return 0, updateErr
+			}
+
+			// Fetch updated value
+			var sess SDKSession
+			fetchErr := s.db.WithContext(ctx).
+				Select("prompt_counter").
+				First(&sess, id).Error
+			if fetchErr != nil {
+				return 0, fetchErr
+			}
+			return sess.PromptCounter, nil
+		}
 		return 0, err
 	}
 
-	// Fetch updated value
-	var sess SDKSession
-	err = s.db.WithContext(ctx).
-		Select("prompt_counter").
-		First(&sess, id).Error
-	if err != nil {
-		return 0, err
-	}
-
-	return sess.PromptCounter, nil
+	return newCounter, nil
 }
 
 // GetPromptCounter returns the current prompt counter for a session.

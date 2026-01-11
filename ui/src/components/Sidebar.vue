@@ -2,6 +2,9 @@
 import { ref, computed } from 'vue'
 import type { Stats, SelfCheckResponse } from '@/types'
 import ProjectFilter from './ProjectFilter.vue'
+import SearchAnalytics from './SearchAnalytics.vue'
+import SystemHealthDetails from './SystemHealthDetails.vue'
+import TopObservations from './TopObservations.vue'
 import { useGraphMetrics } from '@/composables'
 
 const props = defineProps<{
@@ -23,6 +26,15 @@ const metricsExpanded = ref(localStorage.getItem('metrics-expanded') === 'true')
 
 // Graph metrics composable
 const { graphStats, vectorMetrics, loading: metricsLoading, refresh: refreshMetrics } = useGraphMetrics()
+
+// Search Analytics modal state
+const showSearchAnalytics = ref(false)
+
+// System Health Details modal state
+const showHealthDetails = ref(false)
+
+// Top Observations modal state
+const showTopObservations = ref(false)
 
 function toggleCollapse() {
   isCollapsed.value = !isCollapsed.value
@@ -106,9 +118,18 @@ function getStatusColor(status: string): string {
 
       <!-- Component Health -->
       <div class="bg-slate-800/50 rounded-lg p-4 border border-slate-700/50">
-        <div class="flex items-center gap-2 mb-3">
-          <i :class="['fas', overallHealthIcon, overallHealthColor]" />
-          <h3 class="text-sm font-semibold text-white">System Health</h3>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <i :class="['fas', overallHealthIcon, overallHealthColor]" />
+            <h3 class="text-sm font-semibold text-white">System Health</h3>
+          </div>
+          <button
+            @click="showHealthDetails = true"
+            class="text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
+            title="View detailed health status"
+          >
+            <i class="fas fa-expand" />
+          </button>
         </div>
 
         <div v-if="health" class="space-y-2">
@@ -134,9 +155,18 @@ function getStatusColor(status: string): string {
 
       <!-- Memory Stats -->
       <div class="bg-slate-800/50 rounded-lg p-4 border border-slate-700/50">
-        <div class="flex items-center gap-2 mb-3">
-          <i class="fas fa-brain text-purple-400" />
-          <h3 class="text-sm font-semibold text-white">Memory Contents</h3>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <i class="fas fa-brain text-purple-400" />
+            <h3 class="text-sm font-semibold text-white">Memory Contents</h3>
+          </div>
+          <button
+            @click="showTopObservations = true"
+            class="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+            title="View top observations"
+          >
+            <i class="fas fa-trophy" />
+          </button>
         </div>
 
         <div class="space-y-3">
@@ -171,9 +201,18 @@ function getStatusColor(status: string): string {
 
       <!-- Retrieval Stats -->
       <div v-if="stats?.retrieval" class="bg-slate-800/50 rounded-lg p-4 border border-slate-700/50">
-        <div class="flex items-center gap-2 mb-3">
-          <i class="fas fa-search text-cyan-400" />
-          <h3 class="text-sm font-semibold text-white">Retrieval Stats</h3>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <i class="fas fa-search text-cyan-400" />
+            <h3 class="text-sm font-semibold text-white">Retrieval Stats</h3>
+          </div>
+          <button
+            @click="showSearchAnalytics = true"
+            class="text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+            title="View detailed analytics"
+          >
+            <i class="fas fa-chart-line" />
+          </button>
         </div>
 
         <div class="space-y-3">
@@ -373,6 +412,26 @@ function getStatusColor(status: string): string {
         <i class="fas fa-chart-line text-violet-400" />
       </div>
     </div>
+
+    <!-- Search Analytics Modal -->
+    <SearchAnalytics
+      :show="showSearchAnalytics"
+      @close="showSearchAnalytics = false"
+    />
+
+    <!-- System Health Details Modal -->
+    <SystemHealthDetails
+      :show="showHealthDetails"
+      @close="showHealthDetails = false"
+    />
+
+    <!-- Top Observations Modal -->
+    <TopObservations
+      :show="showTopObservations"
+      :current-project="currentProject"
+      @close="showTopObservations = false"
+      @navigate-to-observation="$emit('update:project', null)"
+    />
   </aside>
 </template>
 

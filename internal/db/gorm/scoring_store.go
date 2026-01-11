@@ -3,6 +3,8 @@ package gorm
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -59,12 +61,23 @@ func (s *ObservationStore) UpdateImportanceScore(ctx context.Context, id int64, 
 }
 
 // UpdateImportanceScores bulk updates importance scores for multiple observations.
-// This is more efficient than individual updates for batch recalculation.
+// Uses a single SQL statement with CASE/WHEN for efficient batch updates.
 func (s *ObservationStore) UpdateImportanceScores(ctx context.Context, scores map[int64]float64) error {
 	if len(scores) == 0 {
 		return nil
 	}
 
+	// For small batches, use simple individual updates
+	if len(scores) <= 5 {
+		return s.updateScoresIndividually(ctx, scores)
+	}
+
+	// For larger batches, use CASE/WHEN SQL for single-query update
+	return s.updateScoresBatch(ctx, scores)
+}
+
+// updateScoresIndividually updates scores one at a time (efficient for small batches).
+func (s *ObservationStore) updateScoresIndividually(ctx context.Context, scores map[int64]float64) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UnixMilli()
 
@@ -83,6 +96,36 @@ func (s *ObservationStore) UpdateImportanceScores(ctx context.Context, scores ma
 
 		return nil
 	})
+}
+
+// updateScoresBatch updates multiple scores in a single SQL statement using CASE/WHEN.
+// This is much more efficient for large batches (O(1) queries instead of O(n)).
+func (s *ObservationStore) updateScoresBatch(ctx context.Context, scores map[int64]float64) error {
+	now := time.Now().UnixMilli()
+
+	// Build CASE/WHEN clause for importance_score
+	// UPDATE observations SET
+	//   importance_score = CASE id WHEN 1 THEN 0.5 WHEN 2 THEN 0.8 ... END,
+	//   score_updated_at_epoch = ?
+	// WHERE id IN (1, 2, ...)
+
+	ids := make([]int64, 0, len(scores))
+	caseBuilder := strings.Builder{}
+	caseBuilder.WriteString("CASE id ")
+
+	for id, score := range scores {
+		ids = append(ids, id)
+		caseBuilder.WriteString(fmt.Sprintf("WHEN %d THEN %f ", id, score))
+	}
+	caseBuilder.WriteString("END")
+
+	// Use raw SQL for the batch update
+	sql := fmt.Sprintf(
+		"UPDATE observations SET importance_score = %s, score_updated_at_epoch = ? WHERE id IN ?",
+		caseBuilder.String(),
+	)
+
+	return s.db.WithContext(ctx).Exec(sql, now, ids).Error
 }
 
 // GetObservationsNeedingScoreUpdate returns observations that need their importance score recalculated.

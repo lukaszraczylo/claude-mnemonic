@@ -974,3 +974,207 @@ func TestSyncSummaryFuncType(t *testing.T) {
 	}
 	assert.NotNil(t, fn)
 }
+
+// TestSanitizePrompt tests prompt sanitization for CLI safety.
+func TestSanitizePrompt(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "normal text",
+			input:    "Hello, world!",
+			expected: "Hello, world!",
+		},
+		{
+			name:     "text with newlines",
+			input:    "Line 1\nLine 2\nLine 3",
+			expected: "Line 1\nLine 2\nLine 3",
+		},
+		{
+			name:     "text with tabs",
+			input:    "Key:\tValue",
+			expected: "Key:\tValue",
+		},
+		{
+			name:     "text with carriage return",
+			input:    "Line 1\r\nLine 2",
+			expected: "Line 1\r\nLine 2",
+		},
+		{
+			name:     "text with null bytes",
+			input:    "Hello\x00World",
+			expected: "HelloWorld",
+		},
+		{
+			name:     "text with control characters",
+			input:    "Hello\x01\x02\x03World",
+			expected: "HelloWorld",
+		},
+		{
+			name:     "text with bell character",
+			input:    "Hello\x07World",
+			expected: "HelloWorld",
+		},
+		{
+			name:     "text with backspace",
+			input:    "Hello\x08World",
+			expected: "HelloWorld",
+		},
+		{
+			name:     "text with form feed",
+			input:    "Hello\x0cWorld",
+			expected: "HelloWorld",
+		},
+		{
+			name:     "text with escape",
+			input:    "Hello\x1bWorld",
+			expected: "HelloWorld",
+		},
+		{
+			name:     "unicode text",
+			input:    "Hello 世界 🌍",
+			expected: "Hello 世界 🌍",
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "only control characters",
+			input:    "\x00\x01\x02\x03",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizePrompt(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestMaxPromptSize tests that MaxPromptSize is reasonable.
+func TestMaxPromptSize(t *testing.T) {
+	assert.Equal(t, 100*1024, MaxPromptSize)
+}
+
+// BenchmarkSanitizePrompt benchmarks the sanitize function.
+func BenchmarkSanitizePrompt(b *testing.B) {
+	prompt := "Analyze the following code:\n```go\nfunc main() {\n\tfmt.Println(\"Hello, World!\")\n}\n```\n\nPlease identify any issues."
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sanitizePrompt(prompt)
+	}
+}
+
+// BenchmarkSanitizePromptWithControlChars benchmarks sanitization with control characters.
+func BenchmarkSanitizePromptWithControlChars(b *testing.B) {
+	prompt := "Hello\x00World\x01Test\x02Data\x03End"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sanitizePrompt(prompt)
+	}
+}
+
+// TestSafeResolvePath tests the path traversal protection.
+func TestSafeResolvePath(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name     string
+		path     string
+		cwd      string
+		wantPath string
+		wantOk   bool
+	}{
+		{
+			name:     "simple relative path",
+			path:     "file.txt",
+			cwd:      tmpDir,
+			wantOk:   true,
+			wantPath: filepath.Join(tmpDir, "file.txt"),
+		},
+		{
+			name:     "nested relative path",
+			path:     "subdir/file.txt",
+			cwd:      tmpDir,
+			wantOk:   true,
+			wantPath: filepath.Join(tmpDir, "subdir", "file.txt"),
+		},
+		{
+			name:   "path traversal with ..",
+			path:   "../etc/passwd",
+			cwd:    tmpDir,
+			wantOk: false,
+		},
+		{
+			name:   "path traversal with multiple ..",
+			path:   "../../etc/passwd",
+			cwd:    tmpDir,
+			wantOk: false,
+		},
+		{
+			name:   "path traversal hidden in middle",
+			path:   "subdir/../../../etc/passwd",
+			cwd:    tmpDir,
+			wantOk: false,
+		},
+		{
+			name:   "just parent directory",
+			path:   "..",
+			cwd:    tmpDir,
+			wantOk: false,
+		},
+		{
+			name:     "absolute path without cwd",
+			path:     "/some/absolute/path",
+			cwd:      "",
+			wantOk:   true,
+			wantPath: "/some/absolute/path",
+		},
+		{
+			name:     "relative path without cwd",
+			path:     "relative/path",
+			cwd:      "",
+			wantOk:   true,
+			wantPath: "relative/path",
+		},
+		{
+			name:     "current directory reference",
+			path:     "./file.txt",
+			cwd:      tmpDir,
+			wantOk:   true,
+			wantPath: filepath.Join(tmpDir, "file.txt"),
+		},
+		{
+			name:   "absolute path outside cwd",
+			path:   "/etc/passwd",
+			cwd:    tmpDir,
+			wantOk: false,
+		},
+		{
+			name:     "absolute path inside cwd",
+			path:     filepath.Join(tmpDir, "inside.txt"),
+			cwd:      tmpDir,
+			wantOk:   true,
+			wantPath: filepath.Join(tmpDir, "inside.txt"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotPath, gotOk := safeResolvePath(tt.path, tt.cwd)
+			assert.Equal(t, tt.wantOk, gotOk, "ok status mismatch")
+			if tt.wantPath != "" && gotOk {
+				assert.Equal(t, tt.wantPath, gotPath, "path mismatch")
+			}
+		})
+	}
+}

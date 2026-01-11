@@ -338,3 +338,187 @@ func (s *Sync) DeletePatterns(ctx context.Context, patternIDs []int64) error {
 
 	return nil
 }
+
+// BatchSyncConfig configures batch synchronization behavior.
+type BatchSyncConfig struct {
+	BatchSize       int // Number of items per batch (default: 50)
+	ProgressLogFreq int // Log progress every N items (default: 100)
+}
+
+// DefaultBatchSyncConfig returns sensible defaults for batch sync.
+func DefaultBatchSyncConfig() BatchSyncConfig {
+	return BatchSyncConfig{
+		BatchSize:       50,
+		ProgressLogFreq: 100,
+	}
+}
+
+// BatchSyncObservations syncs multiple observations efficiently in batches.
+// This reduces memory pressure during large rebuilds by processing in chunks.
+func (s *Sync) BatchSyncObservations(ctx context.Context, observations []*models.Observation, cfg BatchSyncConfig) (synced int, errors int) {
+	if len(observations) == 0 {
+		return 0, 0
+	}
+
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 50
+	}
+	if cfg.ProgressLogFreq <= 0 {
+		cfg.ProgressLogFreq = 100
+	}
+
+	for i := 0; i < len(observations); i += cfg.BatchSize {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			log.Warn().Int("synced", synced).Int("remaining", len(observations)-i).Msg("Batch sync cancelled")
+			return synced, errors
+		default:
+		}
+
+		end := min(i+cfg.BatchSize, len(observations))
+
+		batch := observations[i:end]
+		var docs []Document
+
+		// Collect all documents for this batch
+		for _, obs := range batch {
+			docs = append(docs, s.formatObservationDocs(obs)...)
+		}
+
+		// Add all documents in one call
+		if len(docs) > 0 {
+			if err := s.client.AddDocuments(ctx, docs); err != nil {
+				log.Warn().Err(err).Int("batchStart", i).Int("batchSize", len(batch)).Msg("Failed to sync observation batch")
+				errors += len(batch)
+				continue
+			}
+		}
+
+		synced += len(batch)
+
+		// Log progress periodically
+		if synced%cfg.ProgressLogFreq == 0 || synced == len(observations) {
+			log.Debug().Int("synced", synced).Int("total", len(observations)).Msg("Observation batch sync progress")
+		}
+	}
+
+	return synced, errors
+}
+
+// BatchSyncSummaries syncs multiple summaries efficiently in batches.
+func (s *Sync) BatchSyncSummaries(ctx context.Context, summaries []*models.SessionSummary, cfg BatchSyncConfig) (synced int, errors int) {
+	if len(summaries) == 0 {
+		return 0, 0
+	}
+
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 50
+	}
+	if cfg.ProgressLogFreq <= 0 {
+		cfg.ProgressLogFreq = 100
+	}
+
+	for i := 0; i < len(summaries); i += cfg.BatchSize {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			log.Warn().Int("synced", synced).Int("remaining", len(summaries)-i).Msg("Batch sync cancelled")
+			return synced, errors
+		default:
+		}
+
+		end := min(i+cfg.BatchSize, len(summaries))
+
+		batch := summaries[i:end]
+		var docs []Document
+
+		// Collect all documents for this batch
+		for _, summary := range batch {
+			docs = append(docs, s.formatSummaryDocs(summary)...)
+		}
+
+		// Add all documents in one call
+		if len(docs) > 0 {
+			if err := s.client.AddDocuments(ctx, docs); err != nil {
+				log.Warn().Err(err).Int("batchStart", i).Int("batchSize", len(batch)).Msg("Failed to sync summary batch")
+				errors += len(batch)
+				continue
+			}
+		}
+
+		synced += len(batch)
+
+		// Log progress periodically
+		if synced%cfg.ProgressLogFreq == 0 || synced == len(summaries) {
+			log.Debug().Int("synced", synced).Int("total", len(summaries)).Msg("Summary batch sync progress")
+		}
+	}
+
+	return synced, errors
+}
+
+// BatchSyncPrompts syncs multiple user prompts efficiently in batches.
+func (s *Sync) BatchSyncPrompts(ctx context.Context, prompts []*models.UserPromptWithSession, cfg BatchSyncConfig) (synced int, errors int) {
+	if len(prompts) == 0 {
+		return 0, 0
+	}
+
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 50
+	}
+	if cfg.ProgressLogFreq <= 0 {
+		cfg.ProgressLogFreq = 100
+	}
+
+	for i := 0; i < len(prompts); i += cfg.BatchSize {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			log.Warn().Int("synced", synced).Int("remaining", len(prompts)-i).Msg("Batch sync cancelled")
+			return synced, errors
+		default:
+		}
+
+		end := min(i+cfg.BatchSize, len(prompts))
+
+		batch := prompts[i:end]
+		docs := make([]Document, 0, len(batch))
+
+		// Collect all documents for this batch
+		for _, prompt := range batch {
+			docs = append(docs, Document{
+				ID:      fmt.Sprintf("prompt_%d", prompt.ID),
+				Content: prompt.PromptText,
+				Metadata: map[string]any{
+					"sqlite_id":        prompt.ID,
+					"doc_type":         "user_prompt",
+					"sdk_session_id":   prompt.SDKSessionID,
+					"project":          prompt.Project,
+					"scope":            "",
+					"created_at_epoch": prompt.CreatedAtEpoch,
+					"prompt_number":    prompt.PromptNumber,
+					"field_type":       "prompt",
+				},
+			})
+		}
+
+		// Add all documents in one call
+		if len(docs) > 0 {
+			if err := s.client.AddDocuments(ctx, docs); err != nil {
+				log.Warn().Err(err).Int("batchStart", i).Int("batchSize", len(batch)).Msg("Failed to sync prompt batch")
+				errors += len(batch)
+				continue
+			}
+		}
+
+		synced += len(batch)
+
+		// Log progress periodically
+		if synced%cfg.ProgressLogFreq == 0 || synced == len(prompts) {
+			log.Debug().Int("synced", synced).Int("total", len(prompts)).Msg("Prompt batch sync progress")
+		}
+	}
+
+	return synced, errors
+}

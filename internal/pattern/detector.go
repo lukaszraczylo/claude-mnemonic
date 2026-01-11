@@ -3,6 +3,8 @@ package pattern
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +23,8 @@ type DetectorConfig struct {
 	AnalysisInterval time.Duration
 	// MaxPatternsToTrack is the maximum number of active patterns.
 	MaxPatternsToTrack int
+	// MaxCandidates is the maximum number of candidates to track (LRU eviction).
+	MaxCandidates int
 }
 
 // DefaultConfig returns the default detector configuration.
@@ -30,6 +34,7 @@ func DefaultConfig() DetectorConfig {
 		MinFrequencyForPattern: 2,   // At least 2 occurrences to form a pattern
 		AnalysisInterval:       5 * time.Minute,
 		MaxPatternsToTrack:     1000,
+		MaxCandidates:          500, // Prevent unbounded growth
 	}
 }
 
@@ -195,7 +200,24 @@ func (d *Detector) AnalyzeObservation(ctx context.Context, obs *models.Observati
 			}
 		}
 	} else {
-		// Create new candidate
+		// Create new candidate - with immediate size check to prevent unbounded growth
+		// between periodic cleanups (which run every 5 minutes)
+		if d.config.MaxCandidates > 0 && len(d.candidates) >= d.config.MaxCandidates {
+			// Evict oldest candidate immediately rather than waiting for periodic cleanup
+			var oldestKey string
+			var oldestTime int64 = time.Now().UnixMilli()
+			for k, c := range d.candidates {
+				if c.lastSeenEpoch < oldestTime {
+					oldestTime = c.lastSeenEpoch
+					oldestKey = k
+				}
+			}
+			if oldestKey != "" {
+				delete(d.candidates, oldestKey)
+				log.Debug().Str("evicted_key", oldestKey).Msg("Evicted oldest candidate to make room")
+			}
+		}
+
 		patternType := models.DetectPatternType(obs.Concepts, obs.Title.String, obs.Narrative.String)
 		d.candidates[candidateKey] = &candidatePattern{
 			signature:      signature,
@@ -299,17 +321,53 @@ func (d *Detector) AnalyzeRecentObservations(ctx context.Context) error {
 	return nil
 }
 
-// cleanupOldCandidates removes candidates that haven't been seen recently.
+// cleanupOldCandidates removes candidates that haven't been seen recently
+// and enforces the max candidates limit using LRU eviction.
 func (d *Detector) cleanupOldCandidates() {
 	d.candidatesMu.Lock()
 	defer d.candidatesMu.Unlock()
 
 	threshold := time.Now().Add(-7 * 24 * time.Hour).UnixMilli()
+
+	// First pass: remove expired candidates
 	for key, candidate := range d.candidates {
 		if candidate.lastSeenEpoch < threshold {
 			delete(d.candidates, key)
 		}
 	}
+
+	// Second pass: enforce max candidates limit using LRU eviction
+	if d.config.MaxCandidates > 0 && len(d.candidates) > d.config.MaxCandidates {
+		// Find oldest candidates to evict using O(n log n) sort instead of O(n²) selection sort
+		type keyAge struct {
+			key string
+			age int64
+		}
+		candidates := make([]keyAge, 0, len(d.candidates))
+		for k, c := range d.candidates {
+			candidates = append(candidates, keyAge{k, c.lastSeenEpoch})
+		}
+
+		// Sort by age ascending (oldest first) - O(n log n)
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].age < candidates[j].age
+		})
+
+		// Delete oldest entries
+		toEvict := len(d.candidates) - d.config.MaxCandidates
+		for i := 0; i < toEvict; i++ {
+			delete(d.candidates, candidates[i].key)
+		}
+
+		log.Debug().Int("evicted", toEvict).Int("remaining", len(d.candidates)).Msg("Evicted old pattern candidates (LRU)")
+	}
+}
+
+// CandidateCount returns the current number of pattern candidates.
+func (d *Detector) CandidateCount() int {
+	d.candidatesMu.RLock()
+	defer d.candidatesMu.RUnlock()
+	return len(d.candidates)
 }
 
 // GetPatternInsight returns a formatted insight string for a pattern.
@@ -334,11 +392,15 @@ func generateCandidateKey(signature []string) string {
 	if len(signature) == 0 {
 		return ""
 	}
-	key := ""
+	// Use strings.Builder to avoid O(n²) string concatenation
+	var b strings.Builder
+	// Pre-allocate: estimate average signature element is 10 chars + separator
+	b.Grow(len(signature) * 11)
 	for _, s := range signature {
-		key += s + "|"
+		b.WriteString(s)
+		b.WriteByte('|')
 	}
-	return key
+	return b.String()
 }
 
 // generatePatternName creates a human-readable name for a pattern.

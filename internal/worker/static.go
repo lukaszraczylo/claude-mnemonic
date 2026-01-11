@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 )
 
 //go:embed static/*
@@ -13,16 +15,22 @@ var staticFS embed.FS
 // staticSubFS is the static subdirectory filesystem
 var staticSubFS fs.FS
 
+// staticInitErr stores any error from static filesystem initialization
+var staticInitErr error
+
 func init() {
-	var err error
-	staticSubFS, err = fs.Sub(staticFS, "static")
-	if err != nil {
-		panic("failed to create sub filesystem: " + err.Error())
+	staticSubFS, staticInitErr = fs.Sub(staticFS, "static")
+	if staticInitErr != nil {
+		log.Warn().Err(staticInitErr).Msg("Static filesystem initialization failed - dashboard will be unavailable")
 	}
 }
 
 // serveIndex serves the index.html file for the root path
 func serveIndex(w http.ResponseWriter, r *http.Request) {
+	if staticInitErr != nil {
+		http.Error(w, "Dashboard unavailable: static files not initialized", http.StatusServiceUnavailable)
+		return
+	}
 	content, err := fs.ReadFile(staticSubFS, "index.html")
 	if err != nil {
 		http.Error(w, "Dashboard not found", http.StatusNotFound)
@@ -38,6 +46,10 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 
 // serveAssets serves static assets from the embedded filesystem
 func serveAssets(w http.ResponseWriter, r *http.Request) {
+	if staticInitErr != nil {
+		http.Error(w, "Assets unavailable: static files not initialized", http.StatusServiceUnavailable)
+		return
+	}
 	// Strip the /assets/ prefix and serve the file
 	path := strings.TrimPrefix(r.URL.Path, "/")
 

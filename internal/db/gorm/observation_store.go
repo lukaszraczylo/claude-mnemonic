@@ -5,16 +5,35 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
+	"github.com/rs/zerolog/log"
 )
 
 // MaxObservationsPerProject is the maximum number of observations to keep per project.
 const MaxObservationsPerProject = 100
+
+// cleanupQueueSize is the buffer size for the cleanup queue.
+const cleanupQueueSize = 100
+
+// commonWords is a package-level set for O(1) lookup of stop words.
+// Created once at init time to avoid repeated map allocations.
+var commonWords = map[string]struct{}{
+	"the": {}, "and": {}, "or": {}, "but": {}, "in": {},
+	"on": {}, "at": {}, "to": {}, "for": {}, "of": {},
+	"with": {}, "by": {}, "from": {}, "as": {}, "is": {},
+	"was": {}, "are": {}, "were": {}, "be": {}, "been": {},
+	"being": {}, "have": {}, "has": {}, "had": {}, "do": {},
+	"does": {}, "did": {}, "will": {}, "would": {}, "should": {},
+	"could": {}, "may": {}, "might": {}, "must": {}, "can": {},
+}
 
 // CleanupFunc is a callback for when observations are cleaned up.
 // Receives the IDs of deleted observations for downstream cleanup (e.g., vector DB).
@@ -22,22 +41,90 @@ type CleanupFunc func(ctx context.Context, deletedIDs []int64)
 
 // ObservationStore provides observation-related database operations using GORM.
 type ObservationStore struct {
-	db            *gorm.DB
-	rawDB         *sql.DB
-	cleanupFunc   CleanupFunc
-	conflictStore interface{} // Placeholder for ConflictStore (Phase 4)
-	relationStore interface{} // Placeholder for RelationStore (Phase 4)
+	conflictStore  any
+	relationStore  any
+	db             *gorm.DB
+	rawDB          *sql.DB
+	cleanupFunc    CleanupFunc
+	cleanupQueue   chan string
+	stopCleanup    chan struct{}
+	cleanupWg      sync.WaitGroup
+	cleanupOnce    sync.Once
+	cleanupStarted atomic.Bool
 }
 
 // NewObservationStore creates a new observation store.
 // The conflictStore and relationStore parameters are optional (can be nil) and will be used in Phase 4.
-func NewObservationStore(store *Store, cleanupFunc CleanupFunc, conflictStore, relationStore interface{}) *ObservationStore {
-	return &ObservationStore{
+func NewObservationStore(store *Store, cleanupFunc CleanupFunc, conflictStore, relationStore any) *ObservationStore {
+	s := &ObservationStore{
 		db:            store.DB,
 		rawDB:         store.GetRawDB(),
 		cleanupFunc:   cleanupFunc,
 		conflictStore: conflictStore,
 		relationStore: relationStore,
+		cleanupQueue:  make(chan string, cleanupQueueSize),
+		stopCleanup:   make(chan struct{}),
+	}
+	// Start the cleanup worker
+	s.startCleanupWorker()
+	return s
+}
+
+// startCleanupWorker starts the background cleanup worker.
+func (s *ObservationStore) startCleanupWorker() {
+	s.cleanupOnce.Do(func() {
+		s.cleanupStarted.Store(true)
+		s.cleanupWg.Add(1)
+		go s.cleanupWorker()
+	})
+}
+
+// cleanupWorker processes cleanup requests from the queue.
+func (s *ObservationStore) cleanupWorker() {
+	defer s.cleanupWg.Done()
+
+	for {
+		select {
+		case <-s.stopCleanup:
+			// Drain remaining items in queue before exiting
+			for {
+				select {
+				case project := <-s.cleanupQueue:
+					s.processCleanup(project)
+				default:
+					return
+				}
+			}
+		case project := <-s.cleanupQueue:
+			s.processCleanup(project)
+		}
+	}
+}
+
+// processCleanup performs the actual cleanup for a project.
+func (s *ObservationStore) processCleanup(project string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	deletedIDs, err := s.CleanupOldObservations(ctx, project)
+	if err != nil {
+		log.Warn().Err(err).Str("project", project).Msg("Failed to cleanup old observations")
+		return
+	}
+
+	if len(deletedIDs) > 0 && s.cleanupFunc != nil {
+		s.cleanupFunc(ctx, deletedIDs)
+		log.Debug().Str("project", project).Int("count", len(deletedIDs)).Msg("Cleaned up old observations")
+	}
+}
+
+// Close stops the cleanup worker and waits for it to finish.
+// Safe to call even if the worker was never started.
+func (s *ObservationStore) Close() {
+	// Only stop if worker was actually started to avoid deadlock
+	if s.cleanupStarted.Load() {
+		close(s.stopCleanup)
+		s.cleanupWg.Wait()
 	}
 }
 
@@ -86,22 +173,104 @@ func (s *ObservationStore) StoreObservation(ctx context.Context, sdkSessionID, p
 		return 0, 0, err
 	}
 
-	// Cleanup old observations beyond the limit for this project (async to not block handler)
+	// Queue cleanup of old observations beyond the limit for this project (async to not block handler)
 	if project != "" {
-		go func(proj string) {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			deletedIDs, _ := s.CleanupOldObservations(cleanupCtx, proj)
-			if len(deletedIDs) > 0 && s.cleanupFunc != nil {
-				s.cleanupFunc(cleanupCtx, deletedIDs)
-			}
-		}(project)
+		select {
+		case s.cleanupQueue <- project:
+			// Successfully queued for cleanup
+		default:
+			// Queue is full, log a warning instead of silently dropping
+			log.Warn().Str("project", project).Msg("Cleanup queue full, skipping cleanup for this observation")
+		}
 	}
 
 	// Note: Conflict and relation detection intentionally omitted for now
 	// Will be added in Phase 4 when ConflictStore and RelationStore are implemented
 
 	return dbObs.ID, nowEpoch, nil
+}
+
+// ObservationUpdate contains fields that can be updated on an observation.
+// Only non-nil fields will be updated.
+type ObservationUpdate struct {
+	Title         *string   // New title
+	Subtitle      *string   // New subtitle
+	Narrative     *string   // New narrative
+	Facts         *[]string // New facts (replaces existing)
+	Concepts      *[]string // New concepts (replaces existing)
+	FilesRead     *[]string // New files read (replaces existing)
+	FilesModified *[]string // New files modified (replaces existing)
+	Scope         *string   // New scope (project or global)
+}
+
+// UpdateObservation updates an existing observation with the provided fields.
+// Only non-nil fields in the update struct will be modified.
+// Returns the updated observation or an error.
+func (s *ObservationStore) UpdateObservation(ctx context.Context, id int64, update *ObservationUpdate) (*models.Observation, error) {
+	if update == nil {
+		return nil, fmt.Errorf("update cannot be nil")
+	}
+
+	// First, verify the observation exists
+	var dbObs Observation
+	if err := s.db.WithContext(ctx).First(&dbObs, id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("observation not found: %d", id)
+		}
+		return nil, err
+	}
+
+	// Build update map with only provided fields
+	updates := make(map[string]any)
+
+	if update.Title != nil {
+		updates["title"] = sql.NullString{String: *update.Title, Valid: true}
+	}
+	if update.Subtitle != nil {
+		updates["subtitle"] = sql.NullString{String: *update.Subtitle, Valid: true}
+	}
+	if update.Narrative != nil {
+		updates["narrative"] = sql.NullString{String: *update.Narrative, Valid: true}
+	}
+	if update.Facts != nil {
+		factsJSON, _ := json.Marshal(*update.Facts)
+		updates["facts"] = string(factsJSON)
+	}
+	if update.Concepts != nil {
+		conceptsJSON, _ := json.Marshal(*update.Concepts)
+		updates["concepts"] = string(conceptsJSON)
+	}
+	if update.FilesRead != nil {
+		filesReadJSON, _ := json.Marshal(*update.FilesRead)
+		updates["files_read"] = string(filesReadJSON)
+	}
+	if update.FilesModified != nil {
+		filesModifiedJSON, _ := json.Marshal(*update.FilesModified)
+		updates["files_modified"] = string(filesModifiedJSON)
+	}
+	if update.Scope != nil {
+		updates["scope"] = sql.NullString{String: *update.Scope, Valid: true}
+	}
+
+	// Add updated_at timestamp
+	updates["updated_at_epoch"] = sql.NullInt64{Int64: time.Now().Unix(), Valid: true}
+
+	if len(updates) == 0 {
+		// Nothing to update, just return existing observation
+		return toModelObservation(&dbObs), nil
+	}
+
+	// Perform the update
+	if err := s.db.WithContext(ctx).Model(&Observation{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		return nil, fmt.Errorf("failed to update observation: %w", err)
+	}
+
+	// Fetch the updated observation
+	if err := s.db.WithContext(ctx).First(&dbObs, id).Error; err != nil {
+		return nil, err
+	}
+
+	return toModelObservation(&dbObs), nil
 }
 
 // GetObservationByID retrieves an observation by its ID.
@@ -134,6 +303,8 @@ func (s *ObservationStore) GetObservationsByIDs(ctx context.Context, ids []int64
 		query = query.Order("created_at_epoch DESC")
 	case "importance":
 		query = query.Order("importance_score DESC, created_at_epoch DESC")
+	case "score_desc":
+		query = query.Order("importance_score DESC, created_at_epoch DESC")
 	default:
 		// Default: importance first, then recency
 		query = query.Order("COALESCE(importance_score, 1.0) DESC, created_at_epoch DESC")
@@ -150,6 +321,60 @@ func (s *ObservationStore) GetObservationsByIDs(ctx context.Context, ids []int64
 	}
 
 	return toModelObservations(dbObservations), nil
+}
+
+// GetObservationsByIDsPreserveOrder retrieves observations by IDs, preserving the input order.
+// This is useful when the caller has already sorted/ranked the IDs (e.g., by vector similarity).
+func (s *ObservationStore) GetObservationsByIDsPreserveOrder(ctx context.Context, ids []int64) ([]*models.Observation, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// Fetch all observations in a single query
+	var dbObservations []Observation
+	err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&dbObservations).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// Build ID -> observation map for O(1) lookups
+	obsMap := make(map[int64]*Observation, len(dbObservations))
+	for i := range dbObservations {
+		obsMap[int64(dbObservations[i].ID)] = &dbObservations[i]
+	}
+
+	// Reconstruct in original order
+	result := make([]*models.Observation, 0, len(ids))
+	for _, id := range ids {
+		if obs, ok := obsMap[id]; ok {
+			result = append(result, toModelObservation(obs))
+		}
+	}
+
+	return result, nil
+}
+
+// BatchGetObservationsWithScores retrieves observations with associated scores.
+// Returns a map of ID -> observation for efficient lookup.
+func (s *ObservationStore) BatchGetObservationsWithScores(ctx context.Context, ids []int64) (map[int64]*models.Observation, error) {
+	if len(ids) == 0 {
+		return make(map[int64]*models.Observation), nil
+	}
+
+	// Fetch all observations in a single query
+	var dbObservations []Observation
+	err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&dbObservations).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// Build result map
+	result := make(map[int64]*models.Observation, len(dbObservations))
+	for i := range dbObservations {
+		result[int64(dbObservations[i].ID)] = toModelObservation(&dbObservations[i])
+	}
+
+	return result, nil
 }
 
 // GetRecentObservations retrieves recent observations for a project.
@@ -169,13 +394,13 @@ func (s *ObservationStore) GetRecentObservations(ctx context.Context, project st
 	return toModelObservations(dbObservations), nil
 }
 
-// GetActiveObservations retrieves recent non-superseded observations for a project.
-// This excludes observations that have been marked as superseded by newer ones.
+// GetActiveObservations retrieves recent non-superseded, non-archived observations for a project.
+// This excludes observations that have been marked as superseded or archived.
 // Results are ordered by importance_score DESC, then created_at_epoch DESC.
 func (s *ObservationStore) GetActiveObservations(ctx context.Context, project string, limit int) ([]*models.Observation, error) {
 	var dbObservations []Observation
 	err := s.db.WithContext(ctx).
-		Scopes(projectScopeFilter(project), notSupersededFilter(), importanceOrdering()).
+		Scopes(projectScopeFilter(project), activeObservationFilter(), importanceOrdering()).
 		Limit(limit).
 		Find(&dbObservations).Error
 
@@ -245,7 +470,57 @@ func (s *ObservationStore) GetAllRecentObservations(ctx context.Context, limit i
 	return toModelObservations(dbObservations), nil
 }
 
+// GetAllRecentObservationsPaginated retrieves recent observations with pagination.
+func (s *ObservationStore) GetAllRecentObservationsPaginated(ctx context.Context, limit, offset int) ([]*models.Observation, int64, error) {
+	var dbObservations []Observation
+	var total int64
+
+	// Get total count
+	if err := s.db.WithContext(ctx).Model(&Observation{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// Get paginated results
+	err := s.db.WithContext(ctx).
+		Scopes(importanceOrdering()).
+		Limit(limit).
+		Offset(offset).
+		Find(&dbObservations).Error
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return toModelObservations(dbObservations), total, nil
+}
+
+// GetObservationsByProjectStrictPaginated retrieves observations strictly from a project with pagination.
+func (s *ObservationStore) GetObservationsByProjectStrictPaginated(ctx context.Context, project string, limit, offset int) ([]*models.Observation, int64, error) {
+	var dbObservations []Observation
+	var total int64
+
+	// Get total count for project
+	if err := s.db.WithContext(ctx).Model(&Observation{}).Where("project = ?", project).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// Get paginated results
+	err := s.db.WithContext(ctx).
+		Where("project = ?", project).
+		Scopes(importanceOrdering()).
+		Limit(limit).
+		Offset(offset).
+		Find(&dbObservations).Error
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return toModelObservations(dbObservations), total, nil
+}
+
 // GetAllObservations retrieves all observations (for vector rebuild).
+// Note: For large datasets, prefer GetAllObservationsIterator to avoid memory issues.
 func (s *ObservationStore) GetAllObservations(ctx context.Context) ([]*models.Observation, error) {
 	var dbObservations []Observation
 	err := s.db.WithContext(ctx).
@@ -257,6 +532,51 @@ func (s *ObservationStore) GetAllObservations(ctx context.Context) ([]*models.Ob
 	}
 
 	return toModelObservations(dbObservations), nil
+}
+
+// GetAllObservationsIterator returns observations in batches to avoid loading all into memory.
+// The callback is called for each batch. Return false from callback to stop iteration.
+// batchSize controls how many observations are loaded at once (default 500 if <= 0).
+func (s *ObservationStore) GetAllObservationsIterator(ctx context.Context, batchSize int, callback func([]*models.Observation) bool) error {
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+
+	var lastID int64 = 0
+	for {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		var dbObservations []Observation
+		err := s.db.WithContext(ctx).
+			Where("id > ?", lastID).
+			Order("id ASC").
+			Limit(batchSize).
+			Find(&dbObservations).Error
+
+		if err != nil {
+			return err
+		}
+
+		if len(dbObservations) == 0 {
+			break // No more observations
+		}
+
+		// Update cursor for next batch
+		lastID = dbObservations[len(dbObservations)-1].ID
+
+		// Convert and call callback
+		observations := toModelObservations(dbObservations)
+		if !callback(observations) {
+			break // Callback requested stop
+		}
+	}
+
+	return nil
 }
 
 // SearchObservationsFTS performs full-text search on observations using FTS5.
@@ -314,14 +634,26 @@ func (s *ObservationStore) SearchObservationsFTS(ctx context.Context, query, pro
 }
 
 // searchObservationsLike performs fallback LIKE search on observations using GORM.
+// Limits to 2 keywords to prevent expensive OR queries that SQLite optimizes poorly.
+// This is a fallback path when FTS returns no results, so we prioritize performance.
 func (s *ObservationStore) searchObservationsLike(ctx context.Context, keywords []string, project string, limit int) ([]*models.Observation, error) {
 	if len(keywords) == 0 {
 		return nil, nil
 	}
 
+	// Limit keywords to prevent excessive OR conditions that hurt query planning.
+	// SQLite performs significantly better with fewer LIKE conditions.
+	// Using 2 instead of 5 reduces query complexity from O(15) to O(6) conditions
+	// (each keyword creates 3 LIKE conditions for title, subtitle, narrative).
+	const maxKeywords = 2
+	if len(keywords) > maxKeywords {
+		keywords = keywords[:maxKeywords]
+	}
+
 	// Build LIKE conditions for each keyword
-	var conditions []string
-	var args []interface{}
+	// Pre-allocate for efficiency: maxKeywords conditions × 3 args each + 1 project arg
+	conditions := make([]string, 0, len(keywords))
+	args := make([]any, 0, len(keywords)*3+1)
 
 	for _, kw := range keywords {
 		pattern := "%" + kw + "%"
@@ -356,6 +688,217 @@ func (s *ObservationStore) DeleteObservations(ctx context.Context, ids []int64) 
 
 	result := s.db.WithContext(ctx).Delete(&Observation{}, ids)
 	return result.RowsAffected, result.Error
+}
+
+// DeleteObservation deletes a single observation by ID.
+func (s *ObservationStore) DeleteObservation(ctx context.Context, id int64) error {
+	result := s.db.WithContext(ctx).Delete(&Observation{}, id)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("observation %d not found", id)
+	}
+	return nil
+}
+
+// MarkAsSuperseded marks an observation as superseded (stale).
+func (s *ObservationStore) MarkAsSuperseded(ctx context.Context, id int64) error {
+	result := s.db.WithContext(ctx).
+		Model(&Observation{}).
+		Where("id = ?", id).
+		Update("is_superseded", 1)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("observation %d not found", id)
+	}
+	return nil
+}
+
+// MarkAsSupersededBatch marks multiple observations as superseded in a single query.
+// Returns the number of observations updated and any error.
+func (s *ObservationStore) MarkAsSupersededBatch(ctx context.Context, ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	result := s.db.WithContext(ctx).
+		Model(&Observation{}).
+		Where("id IN ?", ids).
+		Update("is_superseded", 1)
+
+	return result.RowsAffected, result.Error
+}
+
+// ArchiveObservation archives a single observation with an optional reason.
+func (s *ObservationStore) ArchiveObservation(ctx context.Context, id int64, reason string) error {
+	updates := map[string]any{
+		"is_archived":       1,
+		"archived_at_epoch": time.Now().UnixMilli(),
+	}
+	if reason != "" {
+		updates["archived_reason"] = reason
+	}
+
+	result := s.db.WithContext(ctx).
+		Model(&Observation{}).
+		Where("id = ?", id).
+		Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("observation %d not found", id)
+	}
+	return nil
+}
+
+// UnarchiveObservation restores an archived observation.
+func (s *ObservationStore) UnarchiveObservation(ctx context.Context, id int64) error {
+	result := s.db.WithContext(ctx).
+		Model(&Observation{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"is_archived":       0,
+			"archived_at_epoch": nil,
+			"archived_reason":   nil,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("observation %d not found", id)
+	}
+	return nil
+}
+
+// ArchiveOldObservations archives observations older than the specified age.
+// Returns the count of archived observations and their IDs.
+func (s *ObservationStore) ArchiveOldObservations(ctx context.Context, project string, maxAgeDays int, reason string) ([]int64, error) {
+	if maxAgeDays <= 0 {
+		maxAgeDays = 90 // Default: archive observations older than 90 days
+	}
+
+	cutoffEpoch := time.Now().AddDate(0, 0, -maxAgeDays).UnixMilli()
+	if reason == "" {
+		reason = fmt.Sprintf("auto-archived: older than %d days", maxAgeDays)
+	}
+
+	var idsToArchive []int64
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Find observations to archive (not already archived, older than cutoff)
+		query := tx.Model(&Observation{}).
+			Where("created_at_epoch < ?", cutoffEpoch).
+			Where("COALESCE(is_archived, 0) = 0")
+
+		if project != "" {
+			query = query.Where("project = ?", project)
+		}
+
+		if err := query.Pluck("id", &idsToArchive).Error; err != nil {
+			return err
+		}
+
+		if len(idsToArchive) == 0 {
+			return nil
+		}
+
+		// Archive the observations
+		now := time.Now().UnixMilli()
+		return tx.Model(&Observation{}).
+			Where("id IN ?", idsToArchive).
+			Updates(map[string]any{
+				"is_archived":       1,
+				"archived_at_epoch": now,
+				"archived_reason":   reason,
+			}).Error
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return idsToArchive, nil
+}
+
+// GetArchivedObservations retrieves archived observations for a project.
+func (s *ObservationStore) GetArchivedObservations(ctx context.Context, project string, limit int) ([]*models.Observation, error) {
+	var dbObservations []Observation
+	query := s.db.WithContext(ctx).
+		Where("COALESCE(is_archived, 0) = 1")
+
+	if project != "" {
+		query = query.Where("project = ?", project)
+	}
+
+	err := query.
+		Order("archived_at_epoch DESC").
+		Limit(limit).
+		Find(&dbObservations).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	return toModelObservations(dbObservations), nil
+}
+
+// GetArchivalStats returns statistics about archived observations.
+// Optimized to use a single query instead of 4 separate queries.
+func (s *ObservationStore) GetArchivalStats(ctx context.Context, project string) (*ArchivalStats, error) {
+	// Use a single query with conditional aggregation to get all stats at once.
+	// This is much faster than 4 separate queries (saves 3 round trips).
+	type statsResult struct {
+		OldestEpoch   *int64
+		NewestEpoch   *int64
+		TotalCount    int64
+		ArchivedCount int64
+	}
+
+	var result statsResult
+
+	query := s.db.WithContext(ctx).Model(&Observation{}).
+		Select(`
+			COUNT(*) as total_count,
+			SUM(CASE WHEN COALESCE(is_archived, 0) = 1 THEN 1 ELSE 0 END) as archived_count,
+			MIN(CASE WHEN COALESCE(is_archived, 0) = 1 THEN archived_at_epoch END) as oldest_epoch,
+			MAX(CASE WHEN COALESCE(is_archived, 0) = 1 THEN archived_at_epoch END) as newest_epoch
+		`)
+
+	if project != "" {
+		query = query.Where("project = ?", project)
+	}
+
+	if err := query.Scan(&result).Error; err != nil {
+		return nil, err
+	}
+
+	stats := &ArchivalStats{
+		TotalCount:    result.TotalCount,
+		ArchivedCount: result.ArchivedCount,
+		ActiveCount:   result.TotalCount - result.ArchivedCount,
+	}
+
+	if result.OldestEpoch != nil {
+		stats.OldestArchivedEpoch = *result.OldestEpoch
+	}
+	if result.NewestEpoch != nil {
+		stats.NewestArchivedEpoch = *result.NewestEpoch
+	}
+
+	return stats, nil
+}
+
+// ArchivalStats contains statistics about archived observations.
+type ArchivalStats struct {
+	TotalCount          int64 `json:"total_count"`
+	ActiveCount         int64 `json:"active_count"`
+	ArchivedCount       int64 `json:"archived_count"`
+	OldestArchivedEpoch int64 `json:"oldest_archived_epoch,omitempty"`
+	NewestArchivedEpoch int64 `json:"newest_archived_epoch,omitempty"`
 }
 
 // CleanupOldObservations removes observations beyond the limit for a project.
@@ -418,10 +961,12 @@ func projectScopeFilter(project string) func(*gorm.DB) *gorm.DB {
 	}
 }
 
-// notSupersededFilter filters out superseded observations.
-func notSupersededFilter() func(*gorm.DB) *gorm.DB {
+// activeObservationFilter filters for active (non-archived, non-superseded) observations.
+// This is more efficient than chaining notSupersededFilter + notArchivedFilter
+// as it produces a single WHERE clause for the query optimizer.
+func activeObservationFilter() func(*gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
-		return db.Where("COALESCE(is_superseded, 0) = 0")
+		return db.Where("COALESCE(is_archived, 0) = 0 AND COALESCE(is_superseded, 0) = 0")
 	}
 }
 
@@ -437,23 +982,17 @@ func importanceOrdering() func(*gorm.DB) *gorm.DB {
 // ====================
 
 // extractKeywords extracts keywords from a search query.
+// Uses package-level commonWords map for O(1) stop word filtering.
 func extractKeywords(query string) []string {
 	words := strings.Fields(strings.ToLower(query))
-	var keywords []string
-
-	commonWords := map[string]bool{
-		"the": true, "and": true, "or": true, "but": true, "in": true,
-		"on": true, "at": true, "to": true, "for": true, "of": true,
-		"with": true, "by": true, "from": true, "as": true, "is": true,
-		"was": true, "are": true, "were": true, "be": true, "been": true,
-		"being": true, "have": true, "has": true, "had": true, "do": true,
-		"does": true, "did": true, "will": true, "would": true, "should": true,
-		"could": true, "may": true, "might": true, "must": true, "can": true,
-	}
+	keywords := make([]string, 0, len(words)) // Pre-allocate for typical case
 
 	for _, word := range words {
-		// Skip short words and common words
-		if len(word) <= 3 || commonWords[word] {
+		// Skip short words and common stop words
+		if len(word) <= 3 {
+			continue
+		}
+		if _, isCommon := commonWords[word]; isCommon {
 			continue
 		}
 		keywords = append(keywords, word)
@@ -464,7 +1003,8 @@ func extractKeywords(query string) []string {
 
 // scanObservationRows scans multiple observations from raw SQL rows.
 func scanObservationRows(rows *sql.Rows) ([]*models.Observation, error) {
-	var observations []*models.Observation
+	// Pre-allocate with reasonable initial capacity to avoid repeated slice growth
+	observations := make([]*models.Observation, 0, 64)
 	for rows.Next() {
 		obs, err := scanObservation(rows)
 		if err != nil {
@@ -476,7 +1016,7 @@ func scanObservationRows(rows *sql.Rows) ([]*models.Observation, error) {
 }
 
 // scanObservation scans a single observation from a row scanner.
-func scanObservation(scanner interface{ Scan(...interface{}) error }) (*models.Observation, error) {
+func scanObservation(scanner interface{ Scan(...any) error }) (*models.Observation, error) {
 	var obs models.Observation
 	var factsJSON, conceptsJSON, filesReadJSON, filesModifiedJSON, fileMtimesJSON []byte
 	var isSuperseded int

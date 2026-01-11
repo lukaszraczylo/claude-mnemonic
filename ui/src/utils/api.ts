@@ -165,6 +165,122 @@ export async function fetchRelationStats(signal?: AbortSignal): Promise<Relation
   return fetchWithRetry<RelationStats>(`${API_BASE}/relations/stats`, { signal })
 }
 
+// Scoring API functions
+export interface ScoreBreakdown {
+  observation: {
+    id: number
+    title: string
+    type: string
+    project: string
+    created_at: number
+  }
+  scoring: {
+    final_score: number
+    type_weight: number
+    recency_decay: number
+    core_score: number
+    feedback_contrib: number
+    concept_contrib: number
+    retrieval_contrib: number
+    age_days: number
+  }
+  explanation: {
+    type_impact: string
+    recency_impact: string
+    feedback_impact: string
+    concept_impact: string
+    retrieval_impact: string
+  }
+}
+
+export async function fetchObservationScore(observationId: number, signal?: AbortSignal): Promise<ScoreBreakdown> {
+  return fetchWithRetry<ScoreBreakdown>(`${API_BASE}/observations/${observationId}/score`, { signal })
+}
+
+export interface FeedbackStats {
+  total: number
+  positive: number
+  negative: number
+  neutral: number
+  avg_score: number
+  avg_retrieval: number
+}
+
+export interface TopObservation {
+  id: number
+  title: string
+  type: string
+  importance_score: number
+  retrieval_count?: number
+}
+
+export async function fetchScoringStats(project?: string, signal?: AbortSignal): Promise<FeedbackStats> {
+  const params = new URLSearchParams()
+  if (project) params.append('project', project)
+  const query = params.toString()
+  return fetchWithRetry<FeedbackStats>(`${API_BASE}/scoring/stats${query ? '?' + query : ''}`, { signal })
+}
+
+export async function fetchTopObservations(project?: string, limit: number = 10, signal?: AbortSignal): Promise<Observation[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (project) params.append('project', project)
+  return fetchWithRetry<Observation[]>(`${API_BASE}/observations/top?${params}`, { signal })
+}
+
+export async function fetchMostRetrievedObservations(project?: string, limit: number = 10, signal?: AbortSignal): Promise<Observation[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (project) params.append('project', project)
+  return fetchWithRetry<Observation[]>(`${API_BASE}/observations/most-retrieved?${params}`, { signal })
+}
+
+// Search Analytics API functions
+export interface RecentQuery {
+  query: string
+  project?: string
+  type?: string
+  count: number
+  last_used: string
+}
+
+export interface SearchAnalytics {
+  total_searches: number
+  vector_searches: number
+  filter_searches: number
+  cache_hits: number
+  coalesced_requests: number
+  search_errors: number
+  avg_latency_ms: number
+  avg_vector_latency_ms: number
+  avg_filter_latency_ms: number
+}
+
+export async function fetchSearchAnalytics(signal?: AbortSignal): Promise<SearchAnalytics> {
+  return fetchWithRetry<SearchAnalytics>(`${API_BASE}/search/analytics`, { signal })
+}
+
+export async function fetchRecentSearches(limit: number = 20, signal?: AbortSignal): Promise<RecentQuery[]> {
+  return fetchWithRetry<RecentQuery[]>(`${API_BASE}/search/recent?limit=${limit}`, { signal })
+}
+
+// System health API
+export interface ComponentHealth {
+  name: string
+  status: 'healthy' | 'degraded' | 'unhealthy'
+  message?: string
+  latency_ms?: number
+}
+
+export interface SystemHealth {
+  status: 'healthy' | 'degraded' | 'unhealthy'
+  version: string
+  components: ComponentHealth[]
+  warnings?: string[]
+}
+
+export async function fetchSystemHealth(signal?: AbortSignal): Promise<SystemHealth> {
+  return fetchWithRetry<SystemHealth>(`${API_BASE}/selfcheck`, { signal })
+}
+
 export async function fetchGraphStats(signal?: AbortSignal): Promise<GraphStats> {
   return fetchWithRetry<GraphStats>(`${API_BASE}/graph/stats`, { signal })
 }
