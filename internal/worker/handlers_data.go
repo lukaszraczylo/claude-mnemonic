@@ -594,7 +594,6 @@ func (s *Service) handleGetObservationByID(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, obs)
 }
 
-
 // handleGraphStats returns graph statistics for the dashboard.
 // Uses relation data to compute knowledge graph metrics.
 func (s *Service) handleGraphStats(w http.ResponseWriter, r *http.Request) {
