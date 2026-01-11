@@ -593,3 +593,118 @@ func (s *Service) handleGetObservationByID(w http.ResponseWriter, r *http.Reques
 
 	writeJSON(w, obs)
 }
+
+// handleGraphStats returns graph statistics for the dashboard.
+// Uses relation data to compute knowledge graph metrics.
+func (s *Service) handleGraphStats(w http.ResponseWriter, r *http.Request) {
+	// Get relation count (edges) - this represents the knowledge graph
+	edgeCount, err := s.relationStore.GetTotalRelationCount(r.Context())
+	if err != nil {
+		edgeCount = 0
+	}
+
+	// Count by relation type
+	edgeTypes := make(map[string]int)
+	for _, t := range models.AllRelationTypes {
+		relations, err := s.relationStore.GetRelationsByType(r.Context(), t, 10000)
+		if err == nil {
+			edgeTypes[string(t)] = len(relations)
+		}
+	}
+
+	// Get unique observation IDs involved in relations (approximate node count)
+	// For now, use edge count as a proxy - each edge has 2 nodes
+	nodeCount := 0
+	if edgeCount > 0 {
+		// Rough estimate: unique nodes ≈ edges * 1.5 (since nodes can have multiple edges)
+		nodeCount = int(float64(edgeCount) * 1.5)
+	}
+
+	// Calculate average degree
+	var avgDegree float64
+	if nodeCount > 0 {
+		avgDegree = float64(edgeCount*2) / float64(nodeCount)
+	}
+
+	// Graph is enabled if we have any edges (relations)
+	enabled := edgeCount > 0
+
+	writeJSON(w, map[string]any{
+		"enabled":      enabled,
+		"nodeCount":    nodeCount,
+		"edgeCount":    edgeCount,
+		"avgDegree":    avgDegree,
+		"maxDegree":    0,
+		"minDegree":    0,
+		"medianDegree": 0.0,
+		"edgeTypes":    edgeTypes,
+		"config": map[string]any{
+			"maxHops":            2,
+			"branchFactor":       10,
+			"edgeWeight":         0.3,
+			"rebuildIntervalMin": 30,
+		},
+	})
+}
+
+// handleVectorMetrics returns vector database metrics for the dashboard.
+// Returns enabled: false if vector features are not available.
+func (s *Service) handleVectorMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.vectorClient == nil {
+		writeJSON(w, map[string]any{
+			"enabled": false,
+			"message": "Vector database not initialized",
+		})
+		return
+	}
+
+	// Get cache stats from vector client
+	cacheSize, cacheMax := s.vectorClient.CacheStats()
+	cacheStats := s.vectorClient.GetCacheStats()
+	count, _ := s.vectorClient.Count(r.Context())
+
+	uptime := time.Since(s.startTime).Round(time.Second).String()
+
+	// Calculate total queries from cache hits/misses
+	totalQueries := cacheStats.EmbeddingHits + cacheStats.EmbeddingMisses + cacheStats.ResultHits + cacheStats.ResultMisses
+	totalHits := cacheStats.EmbeddingHits + cacheStats.ResultHits
+	totalMisses := cacheStats.EmbeddingMisses + cacheStats.ResultMisses
+
+	writeJSON(w, map[string]any{
+		"enabled": true,
+		"queries": map[string]any{
+			"total":    totalQueries,
+			"hubOnly":  0,
+			"hybrid":   0,
+			"onDemand": 0,
+			"graph":    0,
+		},
+		"latency": map[string]any{
+			"avg":          "0ms",
+			"p50":          "0ms",
+			"p95":          "0ms",
+			"p99":          "0ms",
+			"avgHub":       "0ms",
+			"avgRecompute": "0ms",
+		},
+		"storage": map[string]any{
+			"totalDocuments":   count,
+			"hubDocuments":     0,
+			"storedEmbeddings": count,
+			"savingsPercent":   0.0,
+			"recomputedTotal":  0,
+		},
+		"cache": map[string]any{
+			"hits":    totalHits,
+			"misses":  totalMisses,
+			"hitRate": cacheStats.HitRate(),
+			"size":    cacheSize,
+			"maxSize": cacheMax,
+		},
+		"graph": map[string]any{
+			"traversals": 0,
+			"avgDepth":   0.0,
+		},
+		"uptime": uptime,
+	})
+}

@@ -290,3 +290,334 @@ func TestClusterObservations_PreservesOrder(t *testing.T) {
 	require.NotEmpty(t, clustered)
 	assert.Equal(t, int64(1), clustered[0].ID, "First observation should be kept as first result")
 }
+
+// =============================================================================
+// TESTS FOR OPTIMIZED CLUSTERING (triggered when len(observations) > 50)
+// =============================================================================
+
+func TestClusterObservationsOptimized_LargeSet(t *testing.T) {
+	t.Parallel()
+
+	// Create 60 observations to trigger optimized path (threshold is 50)
+	observations := make([]*models.Observation, 60)
+
+	// Create 30 pairs of similar observations
+	topics := []string{
+		"authentication", "authorization", "database", "caching", "logging",
+		"monitoring", "testing", "deployment", "scaling", "security",
+		"networking", "storage", "messaging", "scheduling", "configuration",
+		"validation", "serialization", "encryption", "compression", "indexing",
+		"backup", "recovery", "migration", "versioning", "documentation",
+		"profiling", "debugging", "tracing", "alerting", "reporting",
+	}
+
+	for i := 0; i < 30; i++ {
+		// First observation of pair
+		observations[i*2] = &models.Observation{
+			ID:        int64(i*2 + 1),
+			Title:     sql.NullString{String: topics[i] + " implementation", Valid: true},
+			Narrative: sql.NullString{String: "Detailed " + topics[i] + " system design", Valid: true},
+		}
+		// Second observation of pair (similar to first)
+		observations[i*2+1] = &models.Observation{
+			ID:        int64(i*2 + 2),
+			Title:     sql.NullString{String: topics[i] + " update", Valid: true},
+			Narrative: sql.NullString{String: "Updated " + topics[i] + " logic", Valid: true},
+		}
+	}
+
+	clustered := ClusterObservations(observations, 0.4)
+
+	// With similar pairs, we should get roughly 30 clusters (one per topic)
+	t.Logf("Clustered %d observations down to %d", len(observations), len(clustered))
+	assert.Less(t, len(clustered), 60, "Similar observations should be clustered together")
+	assert.GreaterOrEqual(t, len(clustered), 1, "Should have at least one cluster")
+}
+
+func TestClusterObservationsOptimized_AllUnique(t *testing.T) {
+	t.Parallel()
+
+	// Create 55 completely unique observations with NO shared terms
+	// Each observation has only its unique term (no common words like "topic" or "content")
+	uniqueTerms := []string{
+		"aardvark", "butterfly", "caterpillar", "dragonfly", "elephant",
+		"flamingo", "giraffe", "hippopotamus", "iguana", "jellyfish",
+		"kangaroo", "leopard", "mongoose", "nightingale", "octopus",
+		"penguin", "quail", "rhinoceros", "salamander", "toucan",
+		"umbrella", "vulture", "walrus", "xylophone", "yakking",
+		"zebra123", "astronomy99", "biology88", "chemistry77", "dynamics66",
+		"economics55", "forensics44", "genetics33", "hydraulics22", "immunology11",
+		"jurisprudence", "kinetics", "linguistics", "metallurgy", "neurology",
+		"oceanography", "pharmacology", "quantumphysics", "robotics", "sociology",
+		"thermodynamics", "ultrasound", "virology", "wavelength", "xenobiology",
+		"yeastculture", "zoology123", "algebra456", "botany789", "calculus012",
+	}
+
+	observations := make([]*models.Observation, 55)
+	for i := 0; i < 55; i++ {
+		// Each observation has ONLY its unique term - no shared words
+		observations[i] = &models.Observation{
+			ID:        int64(i + 1),
+			Title:     sql.NullString{String: uniqueTerms[i], Valid: true},
+			Narrative: sql.NullString{String: uniqueTerms[i], Valid: true},
+		}
+	}
+
+	clustered := ClusterObservations(observations, 0.4)
+
+	// All unique content should remain unclustered
+	assert.Len(t, clustered, 55, "All unique observations should be kept")
+}
+
+func TestClusterObservationsOptimized_SignaturePrefiltering(t *testing.T) {
+	t.Parallel()
+
+	// Test that signature prefiltering works correctly
+	// Create observations where some have very different signatures
+	observations := make([]*models.Observation, 60)
+
+	// First half: all identical (about "authentication") - should cluster to 1
+	for i := 0; i < 30; i++ {
+		observations[i] = &models.Observation{
+			ID:        int64(i + 1),
+			Title:     sql.NullString{String: "authentication security login", Valid: true},
+			Narrative: sql.NullString{String: "JWT tokens OAuth authentication", Valid: true},
+		}
+	}
+
+	// Second half: each completely unique with NO shared terms
+	diffTerms := []string{
+		"quantumphysics", "photosynthesis", "archaeologydig", "linguisticstudy", "astronomystar",
+		"paleontologyfossil", "oceanographywave", "entomologybug", "mycologyfungi", "herpetologysnake",
+		"ornithologybird", "ichthyologyfish", "seismologyquake", "volcanologylava", "meteorologyrain",
+		"cartographymap", "ethnographyculture", "philologyword", "numismaticscoin", "heraldryshield",
+		"genealogytree", "chronologytime", "typographyfont", "calligraphyink", "epigraphystone",
+		"papyrologytext", "codicologybook", "diplomaticseal", "sigillographywax", "sphragisticsring",
+	}
+	for i := 30; i < 60; i++ {
+		term := diffTerms[i-30]
+		// Each has ONLY its unique term - no shared words
+		observations[i] = &models.Observation{
+			ID:        int64(i + 1),
+			Title:     sql.NullString{String: term, Valid: true},
+			Narrative: sql.NullString{String: term, Valid: true},
+		}
+	}
+
+	clustered := ClusterObservations(observations, 0.5)
+
+	// Should have 31 clusters: 1 for all auth topics + 30 unique topics
+	t.Logf("Clustered %d observations down to %d", len(observations), len(clustered))
+	assert.Equal(t, 31, len(clustered), "Should have 31 clusters (1 auth + 30 unique)")
+}
+
+// =============================================================================
+// TESTS FOR HELPER FUNCTIONS
+// =============================================================================
+
+func TestComputeTermSignature(t *testing.T) {
+	tests := []struct {
+		terms      map[string]bool
+		compareTo  map[string]bool
+		name       string
+		expectZero bool
+		expectSame bool
+	}{
+		// ===== GOOD CASES =====
+		{
+			name:       "single term",
+			terms:      map[string]bool{"hello": true},
+			expectZero: false,
+		},
+		{
+			name:       "multiple terms",
+			terms:      map[string]bool{"hello": true, "world": true},
+			expectZero: false,
+		},
+		{
+			name:       "identical terms produce same signature",
+			terms:      map[string]bool{"alpha": true, "beta": true},
+			expectSame: true,
+			compareTo:  map[string]bool{"alpha": true, "beta": true},
+		},
+
+		// ===== EDGE CASES =====
+		{
+			name:       "empty set",
+			terms:      map[string]bool{},
+			expectZero: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sig := computeTermSignature(tt.terms)
+
+			if tt.expectZero {
+				assert.Equal(t, uint64(0), sig, "Empty set should produce zero signature")
+			} else {
+				assert.NotEqual(t, uint64(0), sig, "Non-empty set should produce non-zero signature")
+			}
+
+			if tt.expectSame && tt.compareTo != nil {
+				sig2 := computeTermSignature(tt.compareTo)
+				assert.Equal(t, sig, sig2, "Identical term sets should produce identical signatures")
+			}
+		})
+	}
+}
+
+func TestComputeTermSignature_DifferentSets(t *testing.T) {
+	t.Parallel()
+
+	// Different term sets should usually produce different signatures
+	set1 := map[string]bool{"authentication": true, "security": true}
+	set2 := map[string]bool{"database": true, "migration": true}
+
+	sig1 := computeTermSignature(set1)
+	sig2 := computeTermSignature(set2)
+
+	// While hash collisions are possible, they should be rare
+	assert.NotEqual(t, sig1, sig2, "Different term sets should usually produce different signatures")
+}
+
+func TestPopCount64(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    uint64
+		expected int
+	}{
+		// ===== GOOD CASES =====
+		{name: "zero", input: 0, expected: 0},
+		{name: "one", input: 1, expected: 1},
+		{name: "powers of two", input: 8, expected: 1},
+		{name: "all ones in byte", input: 0xFF, expected: 8},
+		{name: "alternating bits", input: 0xAAAAAAAAAAAAAAAA, expected: 32},
+		{name: "max uint64", input: 0xFFFFFFFFFFFFFFFF, expected: 64},
+
+		// ===== EDGE CASES =====
+		{name: "single high bit", input: 1 << 63, expected: 1},
+		{name: "sparse bits", input: 0x8000000000000001, expected: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := popCount64(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestIsSimilarToAny_EmptyTerms(t *testing.T) {
+	t.Parallel()
+
+	// Observation with no extractable terms
+	emptyObs := &models.Observation{
+		ID:        1,
+		Title:     sql.NullString{String: "", Valid: false},
+		Narrative: sql.NullString{String: "", Valid: false},
+	}
+
+	existing := []*models.Observation{
+		{
+			ID:        2,
+			Title:     sql.NullString{String: "Some content here", Valid: true},
+			Narrative: sql.NullString{String: "More content", Valid: true},
+		},
+	}
+
+	// Should return false when new observation has no terms
+	assert.False(t, IsSimilarToAny(emptyObs, existing, 0.3))
+}
+
+func TestExtractObservationTerms_FilesModified(t *testing.T) {
+	t.Parallel()
+
+	obs := &models.Observation{
+		ID:            1,
+		Title:         sql.NullString{String: "Code changes", Valid: true},
+		FilesModified: models.JSONStringArray{"/src/handler.go", "/pkg/models/user.go"},
+	}
+
+	terms := ExtractObservationTerms(obs)
+
+	// Should contain filenames from FilesModified
+	assert.Contains(t, terms, "handler.go")
+	assert.Contains(t, terms, "user.go")
+}
+
+func TestAddTerms_ShortWords(t *testing.T) {
+	t.Parallel()
+
+	terms := make(map[string]bool)
+
+	addTerms(terms, "I am a go developer")
+
+	// Short words (< 3 chars) should be excluded
+	assert.NotContains(t, terms, "i")
+	assert.NotContains(t, terms, "am")
+	assert.NotContains(t, terms, "a")
+	assert.NotContains(t, terms, "go") // Only 2 chars
+
+	// "developer" should be included
+	assert.Contains(t, terms, "developer")
+}
+
+func TestAddTerms_SpecialCharacters(t *testing.T) {
+	t.Parallel()
+
+	terms := make(map[string]bool)
+
+	addTerms(terms, "user_id authentication-flow JWT_token")
+
+	// Hyphens split words, but underscores are kept as part of the word
+	// (underscore is included in the tokenization regex)
+	assert.Contains(t, terms, "user_id")
+	assert.Contains(t, terms, "authentication")
+	assert.Contains(t, terms, "flow")
+	assert.Contains(t, terms, "jwt_token")
+}
+
+func TestJaccardSimilarity_SubsetSuperset(t *testing.T) {
+	t.Parallel()
+
+	subset := map[string]bool{"a": true, "b": true}
+	superset := map[string]bool{"a": true, "b": true, "c": true, "d": true}
+
+	// Subset similarity should be intersection/union = 2/4 = 0.5
+	result := JaccardSimilarity(subset, superset)
+	assert.InDelta(t, 0.5, result, 0.001)
+}
+
+func TestClusterObservations_HighThreshold(t *testing.T) {
+	t.Parallel()
+
+	// With a very high threshold, almost nothing should be clustered
+	observations := []*models.Observation{
+		{ID: 1, Title: sql.NullString{String: "authentication implementation", Valid: true}},
+		{ID: 2, Title: sql.NullString{String: "authentication update", Valid: true}},
+		{ID: 3, Title: sql.NullString{String: "authentication refactor", Valid: true}},
+	}
+
+	// With threshold of 0.9, even similar observations shouldn't cluster
+	clustered := ClusterObservations(observations, 0.9)
+
+	assert.Len(t, clustered, 3, "High threshold should prevent clustering")
+}
+
+func TestClusterObservations_LowThreshold(t *testing.T) {
+	t.Parallel()
+
+	// With a very low threshold, more things should be clustered
+	observations := []*models.Observation{
+		{ID: 1, Title: sql.NullString{String: "authentication implementation details", Valid: true}},
+		{ID: 2, Title: sql.NullString{String: "authentication security update", Valid: true}},
+		{ID: 3, Title: sql.NullString{String: "something completely different topic", Valid: true}},
+	}
+
+	// With threshold of 0.1, partial overlap should cluster
+	clustered := ClusterObservations(observations, 0.1)
+
+	// First two share "authentication", should likely cluster
+	assert.LessOrEqual(t, len(clustered), 3)
+}

@@ -3,6 +3,7 @@ package pattern
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -371,10 +372,14 @@ func (d *Detector) CandidateCount() int {
 }
 
 // GetPatternInsight returns a formatted insight string for a pattern.
+// GetPatternInsight returns a formatted insight string for a pattern.
 func (d *Detector) GetPatternInsight(ctx context.Context, patternID int64) (string, error) {
 	pattern, err := d.patternStore.GetPatternByID(ctx, patternID)
 	if err != nil {
 		return "", err
+	}
+	if pattern == nil {
+		return "", fmt.Errorf("pattern not found: %d", patternID)
 	}
 
 	return formatPatternInsight(pattern), nil
