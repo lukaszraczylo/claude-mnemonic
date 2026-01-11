@@ -24,7 +24,7 @@ func TestServerSuite(t *testing.T) {
 
 // TestNewServer tests server creation.
 func (s *ServerSuite) TestNewServer() {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	s.NotNil(server)
 	s.Nil(server.searchMgr)
 	s.Equal("1.0.0", server.version)
@@ -293,7 +293,7 @@ func TestTimelineParams(t *testing.T) {
 
 // TestHandleInitialize tests the initialize handler.
 func TestHandleInitialize(t *testing.T) {
-	server := NewServer(nil, "1.2.3", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.2.3", nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -320,7 +320,7 @@ func TestHandleInitialize(t *testing.T) {
 
 // TestHandleToolsList tests the tools/list handler.
 func TestHandleToolsList(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -361,7 +361,7 @@ func TestHandleToolsList(t *testing.T) {
 
 // TestHandleRequest tests request routing.
 func TestHandleRequest(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -423,7 +423,7 @@ func TestHandleRequest(t *testing.T) {
 
 // TestHandleToolsCall_InvalidParams tests tools/call with invalid params.
 func TestHandleToolsCall_InvalidParams(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	req := &Request{
@@ -442,7 +442,7 @@ func TestHandleToolsCall_InvalidParams(t *testing.T) {
 
 // TestCallTool_UnknownTool tests callTool with unknown tool name.
 func TestCallTool_UnknownTool(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	_, err := server.callTool(ctx, "nonexistent_tool", json.RawMessage(`{}`))
@@ -452,7 +452,7 @@ func TestCallTool_UnknownTool(t *testing.T) {
 
 // TestCallTool_InvalidArgs tests callTool with invalid arguments.
 func TestCallTool_InvalidArgs(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	_, err := server.callTool(ctx, "search", json.RawMessage(`invalid json`))
@@ -574,7 +574,7 @@ func TestJSONRPCErrorCodes(t *testing.T) {
 
 // TestToolListContainsExpectedSchemas tests that tool schemas are valid.
 func TestToolListContainsExpectedSchemas(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -600,7 +600,7 @@ func TestToolListContainsExpectedSchemas(t *testing.T) {
 
 // TestHandleToolsCall_UnknownTool tests tools/call with unknown tool name.
 func TestHandleToolsCall_UnknownTool(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	req := &Request{
@@ -620,7 +620,7 @@ func TestHandleToolsCall_UnknownTool(t *testing.T) {
 func TestCallTool_ToolNameRecognition(t *testing.T) {
 	// Note: This test verifies tool routing logic, not execution (which requires searchMgr)
 	// All valid tool names should be in the handleToolsList response
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -782,7 +782,7 @@ func TestResponseIDTypes(t *testing.T) {
 
 // TestHandleTimelineByQuery_EmptyQuery tests timeline by query with empty query.
 func TestHandleTimelineByQuery_EmptyQuery(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	// Empty query should error
@@ -793,7 +793,7 @@ func TestHandleTimelineByQuery_EmptyQuery(t *testing.T) {
 
 // TestHandleTimeline_InvalidJSON tests timeline with invalid JSON.
 func TestHandleTimeline_InvalidJSON(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	_, err := server.handleTimeline(ctx, json.RawMessage(`{invalid`))
@@ -803,7 +803,7 @@ func TestHandleTimeline_InvalidJSON(t *testing.T) {
 
 // TestHandleTimelineByQuery_InvalidJSON tests timeline by query with invalid JSON.
 func TestHandleTimelineByQuery_InvalidJSON(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	_, err := server.handleTimelineByQuery(ctx, json.RawMessage(`{invalid`))
@@ -813,7 +813,7 @@ func TestHandleTimelineByQuery_InvalidJSON(t *testing.T) {
 
 // TestHandleTimeline_NoAnchorNoQuery tests timeline with no anchor and no query.
 func TestHandleTimeline_NoAnchorNoQuery(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	// No anchor_id and no query should return empty result
@@ -825,7 +825,7 @@ func TestHandleTimeline_NoAnchorNoQuery(t *testing.T) {
 
 // TestHandleTimeline_WithDefaults tests timeline default values are applied.
 func TestHandleTimeline_WithDefaults(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	// With anchor_id but no before/after, defaults should be applied
@@ -839,7 +839,7 @@ func TestHandleTimeline_WithDefaults(t *testing.T) {
 
 // TestServerFields tests Server struct fields.
 func TestServerFields(t *testing.T) {
-	server := NewServer(nil, "2.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "2.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 
 	assert.Equal(t, "2.0.0", server.version)
 	assert.Nil(t, server.searchMgr)
@@ -891,7 +891,7 @@ func TestErrorWithNilData(t *testing.T) {
 
 // TestToolInputSchema tests that tool input schemas have required fields.
 func TestToolInputSchema(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -960,7 +960,7 @@ func TestToolCallParamsWithComplexArgs(t *testing.T) {
 
 // TestCallTool_UnknownToolName tests callTool with various unknown tool names.
 func TestCallTool_UnknownToolName(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	unknownTools := []string{
@@ -1009,7 +1009,7 @@ func TestTimelineParams_Validation(t *testing.T) {
 
 // TestHandleToolsCall_UnknownToolNameError tests tools/call with unknown tool returns error.
 func TestHandleToolsCall_UnknownToolNameError(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	req := &Request{
@@ -1031,7 +1031,7 @@ func TestHandleToolsCall_UnknownToolNameError(t *testing.T) {
 
 // TestHandleToolsCall_EmptyParams tests tools/call with empty params.
 func TestHandleToolsCall_EmptyParams(t *testing.T) {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	req := &Request{

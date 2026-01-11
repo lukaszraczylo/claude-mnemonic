@@ -122,6 +122,7 @@ func main() {
 	startWatchers(ctx, dbPath)
 
 	// Create and run MCP server with all dependencies
+	// Note: maintenanceService is nil because it runs in the worker process
 	server := mcp.NewServer(
 		searchMgr,
 		Version,
@@ -132,6 +133,7 @@ func main() {
 		vectorClient,
 		scoreCalculator,
 		recalculator,
+		nil, // maintenanceService - handled by worker
 	)
 	log.Info().Str("project", *project).Str("version", Version).Msg("Starting MCP server")
 

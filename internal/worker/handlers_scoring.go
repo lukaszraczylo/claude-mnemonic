@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
+	"github.com/rs/zerolog/log"
 )
 
 // FeedbackRequest represents a user feedback submission.
@@ -311,8 +312,7 @@ func (s *Service) handleTriggerRecalculation(w http.ResponseWriter, r *http.Requ
 	// Run recalculation in background
 	go func() {
 		if err := recalculator.RecalculateNow(r.Context()); err != nil {
-			// Log error but don't block response
-			_ = err // Explicitly ignore - background operation
+			log.Warn().Err(err).Msg("Background score recalculation failed")
 		}
 	}()
 
@@ -345,14 +345,18 @@ func (s *Service) incrementRetrievalCounts(ids []int64) {
 	}
 
 	// Increment in background to not block response
+	// Use service context to respect shutdown signals
+	s.wg.Add(1)
 	go func() {
-		// Create a new context with timeout for the background operation
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer s.wg.Done()
+		ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
 		defer cancel()
 
 		if err := store.IncrementRetrievalCount(ctx, ids); err != nil {
 			// Log but don't fail - this is a background operation
-			_ = err // Explicitly ignore - background operation
+			if s.ctx.Err() == nil { // Don't log during shutdown
+				log.Debug().Err(err).Msg("Failed to increment retrieval counts")
+			}
 		}
 	}()
 }

@@ -3,7 +3,9 @@ package expansion
 
 import (
 	"context"
+	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -281,14 +283,10 @@ func (e *Expander) expandByVocabulary(ctx context.Context, query string, minSimi
 		return nil
 	}
 
-	// Sort by score (descending) using bubble sort
-	for i := 0; i < len(similar)-1; i++ {
-		for j := i + 1; j < len(similar); j++ {
-			if similar[j].score > similar[i].score {
-				similar[i], similar[j] = similar[j], similar[i]
-			}
-		}
-	}
+	// Sort by score (descending) using Go's standard sort - O(n log n)
+	sort.Slice(similar, func(i, j int) bool {
+		return similar[i].score > similar[j].score
+	})
 
 	// Create expansion by combining top similar terms with query
 	var expansions []ExpandedQuery
@@ -427,16 +425,13 @@ func cosineSimilarity(a, b []float32) float64 {
 	return dot / (sqrt(normA) * sqrt(normB))
 }
 
-// sqrt is a simple square root implementation.
+// sqrt uses the standard math.Sqrt for better performance and accuracy.
+// Returns 0 for non-positive values (original behavior for compatibility).
 func sqrt(x float64) float64 {
 	if x <= 0 {
 		return 0
 	}
-	z := x
-	for i := 0; i < 10; i++ {
-		z = (z + x/z) / 2
-	}
-	return z
+	return math.Sqrt(x)
 }
 
 // truncate truncates a string to maxLen characters.

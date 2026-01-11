@@ -48,7 +48,7 @@ func (s *SDKSession) BeforeCreate(tx *gorm.DB) error {
 type Observation struct {
 	ID           int64                   `gorm:"primaryKey;autoIncrement"`
 	SDKSessionID string                  `gorm:"index;not null"`
-	Project      string                  `gorm:"index;not null"`
+	Project      string                  `gorm:"index:idx_observations_project;index:idx_observations_project_created,priority:1;not null"`
 	Scope        models.ObservationScope `gorm:"type:text;default:'project';check:scope IN ('project', 'global');index:idx_observations_scope;index:idx_observations_project_scope,priority:2"`
 	Type         models.ObservationType  `gorm:"type:text;check:type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change');index;not null"`
 
@@ -66,7 +66,7 @@ type Observation struct {
 	PromptNumber    sql.NullInt64
 	DiscoveryTokens int64  `gorm:"default:0"`
 	CreatedAt       string `gorm:"not null"`
-	CreatedAtEpoch  int64  `gorm:"index:idx_observations_created,sort:desc;not null"`
+	CreatedAtEpoch  int64  `gorm:"index:idx_observations_created,sort:desc;index:idx_observations_project_created,priority:2,sort:desc;not null"`
 
 	// Importance scoring fields
 	ImportanceScore float64       `gorm:"type:real;default:1.0;index:idx_observations_importance,priority:1,sort:desc"`
@@ -74,7 +74,12 @@ type Observation struct {
 	RetrievalCount  int           `gorm:"default:0"`
 	LastRetrievedAt sql.NullInt64 `gorm:"column:last_retrieved_at_epoch"`
 	ScoreUpdatedAt  sql.NullInt64 `gorm:"column:score_updated_at_epoch;index:idx_observations_score_updated"`
-	IsSuperseded    int           `gorm:"default:0;index:idx_observations_superseded,priority:1"`
+	IsSuperseded    int           `gorm:"default:0;index:idx_observations_superseded;index:idx_observations_active,priority:2"`
+
+	// Archival fields
+	IsArchived      int           `gorm:"default:0;index:idx_observations_archived;index:idx_observations_active,priority:1"`
+	ArchivedAt      sql.NullInt64 `gorm:"column:archived_at_epoch"`
+	ArchivedReason  sql.NullString
 }
 
 func (Observation) TableName() string { return "observations" }

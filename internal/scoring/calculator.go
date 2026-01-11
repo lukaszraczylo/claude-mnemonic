@@ -36,6 +36,13 @@ func NewCalculator(config *models.ScoringConfig) *Calculator {
 //   - ConceptContrib = sum(concept_weights) × concept_weight_factor
 //   - RetrievalContrib = log2(retrieval_count + 1) × 0.1 × retrieval_weight
 func (c *Calculator) Calculate(obs *models.Observation, now time.Time) float64 {
+	return c.CalculateComponents(obs, now).FinalScore
+}
+
+// CalculateComponents returns the individual components of the importance score.
+// Useful for debugging and explaining scores to users.
+// This is the core calculation method - Calculate() delegates to this.
+func (c *Calculator) CalculateComponents(obs *models.Observation, now time.Time) ScoreComponents {
 	// 1. Get base type weight
 	typeWeight := models.TypeBaseScore(obs.Type)
 
@@ -70,42 +77,6 @@ func (c *Calculator) Calculate(obs *models.Observation, now time.Time) float64 {
 	}
 
 	// Final score with minimum threshold
-	finalScore := coreScore + feedbackContrib + conceptContrib + retrievalContrib
-	if finalScore < c.config.MinScore {
-		finalScore = c.config.MinScore
-	}
-
-	return finalScore
-}
-
-// CalculateComponents returns the individual components of the importance score.
-// Useful for debugging and explaining scores to users.
-func (c *Calculator) CalculateComponents(obs *models.Observation, now time.Time) ScoreComponents {
-	typeWeight := models.TypeBaseScore(obs.Type)
-
-	ageDays := now.Sub(time.UnixMilli(obs.CreatedAtEpoch)).Hours() / 24.0
-	if ageDays < 0 {
-		ageDays = 0
-	}
-	recencyDecay := math.Pow(0.5, ageDays/c.config.RecencyHalfLifeDays)
-
-	coreScore := 1.0 * typeWeight * recencyDecay
-	feedbackContrib := float64(obs.UserFeedback) * c.config.FeedbackWeight
-
-	conceptBoost := 0.0
-	for _, concept := range obs.Concepts {
-		if weight, ok := c.config.ConceptWeights[concept]; ok {
-			conceptBoost += weight
-		}
-	}
-	conceptContrib := conceptBoost * c.config.ConceptWeight
-
-	retrievalContrib := 0.0
-	if obs.RetrievalCount > 0 {
-		retrievalBoost := math.Log2(float64(obs.RetrievalCount)+1) * 0.1
-		retrievalContrib = retrievalBoost * c.config.RetrievalWeight
-	}
-
 	finalScore := coreScore + feedbackContrib + conceptContrib + retrievalContrib
 	if finalScore < c.config.MinScore {
 		finalScore = c.config.MinScore

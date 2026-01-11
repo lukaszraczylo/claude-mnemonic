@@ -71,6 +71,12 @@ type Config struct {
 	ContextObsConcepts        []string `json:"context_obs_concepts"`
 	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"` // 0.0-1.0, minimum similarity for inclusion
 	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`  // Max results per prompt (0 = threshold only)
+
+	// Maintenance settings
+	MaintenanceEnabled       bool `json:"maintenance_enabled"`        // Enable scheduled maintenance
+	MaintenanceIntervalHours int  `json:"maintenance_interval_hours"` // How often to run maintenance (default 6 hours)
+	ObservationRetentionDays int  `json:"observation_retention_days"` // Delete observations older than N days (0 = no age-based deletion)
+	CleanupStaleObservations bool `json:"cleanup_stale_observations"` // Auto-cleanup stale observations during maintenance
 }
 
 var (
@@ -96,8 +102,9 @@ func SettingsPath() string {
 }
 
 // EnsureDataDir creates the data directory if it doesn't exist.
+// Uses 0700 permissions (owner-only) for security.
 func EnsureDataDir() error {
-	return os.MkdirAll(DataDir(), 0750)
+	return os.MkdirAll(DataDir(), 0700)
 }
 
 // EnsureSettings creates a default settings file if it doesn't exist.
@@ -157,8 +164,12 @@ func Default() *Config {
 		ContextShowLastSummary:    true,
 		ContextObsTypes:           DefaultObservationTypes,
 		ContextObsConcepts:        DefaultObservationConcepts,
-		ContextRelevanceThreshold: 0.3, // Minimum 30% similarity to include
-		ContextMaxPromptResults:   10,  // Cap at 10 results max (0 = no cap, threshold only)
+		ContextRelevanceThreshold: 0.3,   // Minimum 30% similarity to include
+		ContextMaxPromptResults:   10,    // Cap at 10 results max (0 = no cap, threshold only)
+		MaintenanceEnabled:        true,  // Enable scheduled maintenance
+		MaintenanceIntervalHours:  6,     // Run every 6 hours
+		ObservationRetentionDays:  0,     // 0 = no age-based deletion (keep all)
+		CleanupStaleObservations:  false, // Don't auto-cleanup stale observations
 	}
 }
 

@@ -8,6 +8,7 @@ import Card from './Card.vue'
 import IconBox from './IconBox.vue'
 import Badge from './Badge.vue'
 import RelationGraph from './RelationGraph.vue'
+import ScoreBreakdown from './ScoreBreakdown.vue'
 import { computed, ref, onMounted } from 'vue'
 
 const props = defineProps<{
@@ -94,6 +95,9 @@ const relations = ref<RelationWithDetails[]>([])
 const relationsLoading = ref(false)
 const relationsExpanded = ref(false)
 const showGraph = ref(false)
+
+// Score breakdown state
+const showScoreBreakdown = ref(false)
 
 const hasRelations = computed(() => relations.value.length > 0)
 const relationCount = computed(() => relations.value.length)
@@ -350,14 +354,15 @@ const splitPath = (path: string, components = 3) => {
           <i class="fas fa-thumbs-up text-sm" />
         </button>
 
-        <span
-          class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800/50 text-slate-400 flex items-center gap-1 transition-all duration-300"
+        <button
+          @click="showScoreBreakdown = true"
+          class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800/50 text-slate-400 flex items-center gap-1 transition-all duration-300 hover:bg-purple-500/20 hover:text-purple-300 cursor-pointer"
           :class="{ 'text-green-400': localScore !== null && localScore > (observation.importance_score || 1), 'text-red-400': localScore !== null && localScore < (observation.importance_score || 1) }"
-          :title="`Importance Score: ${currentScore.toFixed(3)}\nRetrieval Count: ${observation.retrieval_count || 0}`"
+          :title="`Importance Score: ${currentScore.toFixed(3)}\nRetrieval Count: ${observation.retrieval_count || 0}\nClick for details`"
         >
-          <i class="fas fa-scale-balanced text-amber-500/60" />
+          <i class="fas fa-chart-bar text-purple-500/60" />
           {{ currentScore.toFixed(2) }}
-        </span>
+        </button>
 
         <button
           @click="submitFeedback(-1)"
@@ -382,6 +387,13 @@ const splitPath = (path: string, components = 3) => {
       :show="showGraph"
       @close="showGraph = false"
       @navigate-to="handleNavigateTo"
+    />
+
+    <!-- Score Breakdown Modal -->
+    <ScoreBreakdown
+      :observation-id="observation.id"
+      :show="showScoreBreakdown"
+      @close="showScoreBreakdown = false"
     />
   </Card>
 </template>

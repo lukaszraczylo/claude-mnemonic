@@ -322,6 +322,244 @@ func runMigrations(db *gorm.DB, sqlDB *sql.DB) error {
 				return tx.Migrator().DropTable("observation_relations")
 			},
 		},
+
+		// Migration 012: Query optimization indexes
+		// Adds covering and composite indexes for common query patterns
+		{
+			ID: "012_query_optimization_indexes",
+			Migrate: func(tx *gorm.DB) error {
+				sqls := []string{
+					// Composite index for observation queries by project + scope + importance
+					// Covers the common pattern: WHERE project = ? OR scope = 'global' ORDER BY importance_score DESC
+					`CREATE INDEX IF NOT EXISTS idx_observations_project_scope_importance
+					 ON observations(project, scope, importance_score DESC, created_at_epoch DESC)`,
+
+					// Covering index for observation retrieval (includes most used columns)
+					// Allows index-only scans for listing queries
+					`CREATE INDEX IF NOT EXISTS idx_observations_project_covering
+					 ON observations(project, scope, is_superseded, importance_score DESC)
+					 WHERE is_superseded = 0 OR is_superseded IS NULL`,
+
+					// Index for session summary lookups
+					`CREATE INDEX IF NOT EXISTS idx_summaries_project_importance
+					 ON session_summaries(project, importance_score DESC, created_at_epoch DESC)`,
+
+					// Index for prompt retrieval by session
+					`CREATE INDEX IF NOT EXISTS idx_prompts_session_number
+					 ON user_prompts(claude_session_id, prompt_number)`,
+
+					// Index for pattern queries by frequency
+					`CREATE INDEX IF NOT EXISTS idx_patterns_frequency
+					 ON patterns(frequency DESC, last_seen_at_epoch DESC)
+					 WHERE is_deprecated = 0`,
+				}
+				for _, s := range sqls {
+					if err := tx.Exec(s).Error; err != nil {
+						// Non-fatal: index may already exist or fail for benign reasons
+						continue
+					}
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				sqls := []string{
+					"DROP INDEX IF EXISTS idx_observations_project_scope_importance",
+					"DROP INDEX IF EXISTS idx_observations_project_covering",
+					"DROP INDEX IF EXISTS idx_summaries_project_importance",
+					"DROP INDEX IF EXISTS idx_prompts_session_number",
+					"DROP INDEX IF EXISTS idx_patterns_frequency",
+				}
+				for _, s := range sqls {
+					if err := tx.Exec(s).Error; err != nil {
+						continue
+					}
+				}
+				return nil
+			},
+		},
+
+		// Migration 013: Add archival columns to observations
+		{
+			ID: "013_observation_archival",
+			Migrate: func(tx *gorm.DB) error {
+				sqls := []string{
+					// Add archival columns
+					`ALTER TABLE observations ADD COLUMN is_archived INTEGER DEFAULT 0`,
+					`ALTER TABLE observations ADD COLUMN archived_at_epoch INTEGER`,
+					`ALTER TABLE observations ADD COLUMN archived_reason TEXT`,
+					// Index for archived observations
+					`CREATE INDEX IF NOT EXISTS idx_observations_archived ON observations(is_archived)`,
+					// Composite index for filtering active (non-archived) observations
+					`CREATE INDEX IF NOT EXISTS idx_observations_active
+					 ON observations(project, is_archived, is_superseded, importance_score DESC)
+					 WHERE (is_archived = 0 OR is_archived IS NULL)`,
+				}
+				for _, s := range sqls {
+					if err := tx.Exec(s).Error; err != nil {
+						// Non-fatal: column may already exist
+						continue
+					}
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				// SQLite doesn't support DROP COLUMN in older versions
+				// but for newer versions we can try
+				sqls := []string{
+					"DROP INDEX IF EXISTS idx_observations_active",
+					"DROP INDEX IF EXISTS idx_observations_archived",
+				}
+				for _, s := range sqls {
+					_ = tx.Exec(s).Error
+				}
+				return nil
+			},
+		},
+
+		// Migration 014: Add performance-critical indexes for common query patterns
+		{
+			ID: "014_performance_indexes",
+			Migrate: func(tx *gorm.DB) error {
+				sqls := []string{
+					// Index for batch ID lookups (IN queries)
+					`CREATE INDEX IF NOT EXISTS idx_observations_id_covering
+					 ON observations(id, project, scope, importance_score)`,
+
+					// Index for vector search result fetching
+					`CREATE INDEX IF NOT EXISTS idx_vectors_doc_type_project
+					 ON vectors(doc_type, project, scope)`,
+
+					// Index for session summaries by project
+					`CREATE INDEX IF NOT EXISTS idx_summaries_project_created
+					 ON session_summaries(project, created_at_epoch DESC)`,
+
+					// Index for user prompts by session
+					`CREATE INDEX IF NOT EXISTS idx_prompts_session_created
+					 ON user_prompts(claude_session_id, created_at_epoch DESC)`,
+
+					// Index for patterns by type and project
+					`CREATE INDEX IF NOT EXISTS idx_patterns_type_project
+					 ON patterns(type, project, frequency DESC)
+					 WHERE is_deprecated = 0`,
+
+					// Index for observation relations
+					`CREATE INDEX IF NOT EXISTS idx_relations_source_type
+					 ON observation_relations(source_observation_id, relation_type)`,
+					`CREATE INDEX IF NOT EXISTS idx_relations_target_type
+					 ON observation_relations(target_observation_id, relation_type)`,
+				}
+				for _, s := range sqls {
+					if err := tx.Exec(s).Error; err != nil {
+						// Non-fatal: index may already exist
+						continue
+					}
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				sqls := []string{
+					"DROP INDEX IF EXISTS idx_observations_id_covering",
+					"DROP INDEX IF EXISTS idx_vectors_doc_type_project",
+					"DROP INDEX IF EXISTS idx_summaries_project_created",
+					"DROP INDEX IF EXISTS idx_prompts_session_created",
+					"DROP INDEX IF EXISTS idx_patterns_type_project",
+					"DROP INDEX IF EXISTS idx_relations_source_type",
+					"DROP INDEX IF EXISTS idx_relations_target_type",
+				}
+				for _, s := range sqls {
+					_ = tx.Exec(s).Error
+				}
+				return nil
+			},
+		},
+
+		// Migration 015: Add optimized composite indexes for common query patterns
+		{
+			ID: "015_optimized_composite_indexes",
+			Migrate: func(tx *gorm.DB) error {
+				sqls := []string{
+					// Composite index for GetRecentObservations with project+scope filtering
+					// Covers: WHERE (project = ? OR scope = 'global') ORDER BY importance_score DESC, created_at_epoch DESC
+					`CREATE INDEX IF NOT EXISTS idx_observations_project_scope_created
+					 ON observations(project, scope, created_at_epoch DESC, importance_score DESC)`,
+
+					// Index for scope='global' queries (common pattern in search)
+					`CREATE INDEX IF NOT EXISTS idx_observations_global_scope
+					 ON observations(scope, importance_score DESC, created_at_epoch DESC)
+					 WHERE scope = 'global'`,
+
+					// Index for vector search result deduplication by observation
+					`CREATE INDEX IF NOT EXISTS idx_vectors_observation_lookup
+					 ON vectors(doc_type, sqlite_id, project)
+					 WHERE doc_type = 'observation'`,
+
+					// Index for FTS search result ordering
+					`CREATE INDEX IF NOT EXISTS idx_observations_fts_ordering
+					 ON observations(project, importance_score DESC)
+					 WHERE (is_archived = 0 OR is_archived IS NULL) AND (is_superseded = 0 OR is_superseded IS NULL)`,
+				}
+				for _, s := range sqls {
+					if err := tx.Exec(s).Error; err != nil {
+						// Non-fatal: index may already exist
+						continue
+					}
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				sqls := []string{
+					"DROP INDEX IF EXISTS idx_observations_project_scope_created",
+					"DROP INDEX IF EXISTS idx_observations_global_scope",
+					"DROP INDEX IF EXISTS idx_vectors_observation_lookup",
+					"DROP INDEX IF EXISTS idx_observations_fts_ordering",
+				}
+				for _, s := range sqls {
+					_ = tx.Exec(s).Error
+				}
+				return nil
+			},
+		},
+
+		// Migration 016: Add covering indexes for relation joins and active observations
+		{
+			ID: "016_relation_and_active_indexes",
+			Migrate: func(tx *gorm.DB) error {
+				sqls := []string{
+					// Covering index for observation relation joins (common JOIN patterns)
+					// Speeds up queries like: JOIN observation_relations ON source_id = obs.id WHERE relation_type = ?
+					`CREATE INDEX IF NOT EXISTS idx_relations_source_type_target
+					 ON observation_relations(source_observation_id, relation_type, target_observation_id)`,
+
+					// Covering index for reverse relation lookups
+					`CREATE INDEX IF NOT EXISTS idx_relations_target_type_source
+					 ON observation_relations(target_observation_id, relation_type, source_observation_id)`,
+
+					// Partial index for active (non-archived, non-superseded) observations
+					// Optimizes activeObservationFilter queries
+					`CREATE INDEX IF NOT EXISTS idx_observations_active
+					 ON observations(project, importance_score DESC, created_at_epoch DESC)
+					 WHERE (is_archived = 0 OR is_archived IS NULL) AND (is_superseded = 0 OR is_superseded IS NULL)`,
+				}
+				for _, s := range sqls {
+					if err := tx.Exec(s).Error; err != nil {
+						// Non-fatal: index may already exist
+						continue
+					}
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				sqls := []string{
+					"DROP INDEX IF EXISTS idx_relations_source_type_target",
+					"DROP INDEX IF EXISTS idx_relations_target_type_source",
+					"DROP INDEX IF EXISTS idx_observations_active",
+				}
+				for _, s := range sqls {
+					_ = tx.Exec(s).Error
+				}
+				return nil
+			},
+		},
 	})
 
 	if err := m.Migrate(); err != nil {
