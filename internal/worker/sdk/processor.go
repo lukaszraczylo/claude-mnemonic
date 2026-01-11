@@ -208,24 +208,21 @@ type SyncSummaryFunc func(summary *models.SessionSummary)
 const MaxVectorSyncWorkers = 8
 
 // Processor handles SDK agent processing of observations and summaries using Claude Code CLI.
+// Field order optimized for memory alignment (fieldalignment).
 type Processor struct {
-	claudePath          string
-	model               string
 	observationStore    *gorm.ObservationStore
 	summaryStore        *gorm.SummaryStore
 	broadcastFunc       BroadcastFunc
 	syncObservationFunc SyncObservationFunc
 	syncSummaryFunc     SyncSummaryFunc
-	// Semaphore to limit concurrent Claude CLI calls (prevents API overload)
-	sem chan struct{}
-	// Circuit breaker for CLI failures
-	circuitBreaker *CircuitBreaker
-	// Request deduplicator to prevent duplicate processing
-	deduplicator *RequestDeduplicator
-	// Bounded worker pool for vector sync operations
-	vectorSyncChan chan *models.Observation
-	vectorSyncWg   sync.WaitGroup
-	vectorSyncDone chan struct{}
+	circuitBreaker      *CircuitBreaker
+	deduplicator        *RequestDeduplicator
+	vectorSyncChan      chan *models.Observation
+	vectorSyncDone      chan struct{}
+	sem                 chan struct{}
+	claudePath          string
+	model               string
+	vectorSyncWg        sync.WaitGroup
 }
 
 // SetBroadcastFunc sets the broadcast callback for SSE events.

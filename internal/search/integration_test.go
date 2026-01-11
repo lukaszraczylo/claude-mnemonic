@@ -516,16 +516,16 @@ func TestTruncate_TableDriven(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
-		{"short_string", "hello", 10, "hello"},
-		{"exact_length", "hello", 5, "hello"},
-		{"long_string", "hello world", 5, "hello..."},
-		{"empty_string", "", 10, ""},
-		{"whitespace_only", "   ", 10, ""},
-		{"with_leading_space", "  hello  ", 10, "hello"},
-		{"very_long", "this is a very long string that should be truncated", 20, "this is a very long ..."},
+		{name: "short_string", input: "hello", expected: "hello", maxLen: 10},
+		{name: "exact_length", input: "hello", expected: "hello", maxLen: 5},
+		{name: "long_string", input: "hello world", expected: "hello...", maxLen: 5},
+		{name: "empty_string", input: "", expected: "", maxLen: 10},
+		{name: "whitespace_only", input: "   ", expected: "", maxLen: 10},
+		{name: "with_leading_space", input: "  hello  ", expected: "hello", maxLen: 10},
+		{name: "very_long", input: "this is a very long string that should be truncated", expected: "this is a very long ...", maxLen: 20},
 	}
 
 	for _, tt := range tests {

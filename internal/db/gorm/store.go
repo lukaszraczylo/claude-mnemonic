@@ -24,10 +24,10 @@ type Store struct {
 	metrics *PoolMetrics
 
 	// Health check caching to reduce database load from frequent monitoring
-	healthCacheMu    sync.RWMutex
-	cachedHealth     *HealthInfo
-	healthCacheTime  time.Time
-	healthCacheTTL   time.Duration // Default: 5 seconds
+	healthCacheMu   sync.RWMutex
+	cachedHealth    *HealthInfo
+	healthCacheTime time.Time
+	healthCacheTTL  time.Duration // Default: 5 seconds
 }
 
 // Config holds database configuration.
@@ -99,15 +99,20 @@ func NewStore(cfg Config) (*Store, error) {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=NORMAL",
-		"PRAGMA cache_size=-64000",      // 64MB cache (negative = KB)
-		"PRAGMA temp_store=MEMORY",      // Store temp tables in memory
-		"PRAGMA mmap_size=268435456",    // 256MB memory-mapped I/O
-		"PRAGMA page_size=4096",         // 4KB pages (optimal for most systems)
+		"PRAGMA cache_size=-64000",   // 64MB cache (negative = KB)
+		"PRAGMA temp_store=MEMORY",   // Store temp tables in memory
+		"PRAGMA mmap_size=268435456", // 256MB memory-mapped I/O
+		"PRAGMA page_size=4096",      // 4KB pages (optimal for most systems)
 	}
 	for _, pragma := range pragmas {
 		if _, err := sqlDB.Exec(pragma); err != nil {
 			log.Warn().Str("pragma", pragma).Err(err).Msg("Failed to set pragma (non-fatal)")
 		}
+	}
+	// Set busy timeout to 5 seconds to handle concurrent writes
+	// This allows SQLite to retry when database is locked instead of failing immediately
+	if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		return nil, fmt.Errorf("set busy timeout: %w", err)
 	}
 
 	// 9. Warm the connection pool
@@ -340,16 +345,16 @@ const (
 
 // PoolMetrics tracks historical connection pool metrics with a sliding window.
 type PoolMetrics struct {
-	mu              sync.RWMutex
-	latencySamples  []time.Duration // Circular buffer of latency samples
-	latencyIdx      int             // Current index in circular buffer
-	latencyCount    int             // Number of samples collected
-	totalQueries    int64           // Total queries executed
-	totalWaitTime   time.Duration   // Cumulative wait time for connections
-	peakInUse       int             // Peak concurrent connections in use
-	peakWaitCount   int64           // Peak wait count observed
-	lastSampleTime  time.Time       // Last time a sample was recorded
-	windowSize      int             // Size of sliding window
+	mu             sync.RWMutex
+	latencySamples []time.Duration // Circular buffer of latency samples
+	latencyIdx     int             // Current index in circular buffer
+	latencyCount   int             // Number of samples collected
+	totalQueries   int64           // Total queries executed
+	totalWaitTime  time.Duration   // Cumulative wait time for connections
+	peakInUse      int             // Peak concurrent connections in use
+	peakWaitCount  int64           // Peak wait count observed
+	lastSampleTime time.Time       // Last time a sample was recorded
+	windowSize     int             // Size of sliding window
 }
 
 // NewPoolMetrics creates a new pool metrics collector with the given window size.

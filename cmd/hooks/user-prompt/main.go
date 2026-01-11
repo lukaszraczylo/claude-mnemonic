@@ -94,8 +94,18 @@ func handleUserPrompt(ctx *hooks.HookContext, input *Input) (string, error) {
 		return "", nil
 	}
 
-	sessionID := int64(result["sessionDbId"].(float64))
-	promptNumber := int(result["promptNumber"].(float64))
+	// Safely extract session ID and prompt number with type checking
+	sessionDbIdRaw, ok := result["sessionDbId"].(float64)
+	if !ok {
+		return "", fmt.Errorf("invalid or missing sessionDbId in response")
+	}
+	sessionID := int64(sessionDbIdRaw)
+
+	promptNumberRaw, ok := result["promptNumber"].(float64)
+	if !ok {
+		return "", fmt.Errorf("invalid or missing promptNumber in response")
+	}
+	promptNumber := int(promptNumberRaw)
 
 	fmt.Fprintf(os.Stderr, "[user-prompt] Session %d, prompt #%d\n", sessionID, promptNumber)
 

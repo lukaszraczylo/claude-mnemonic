@@ -21,13 +21,11 @@ import (
 )
 
 // Server is the MCP server that exposes search tools.
+// Field order optimized for memory alignment (fieldalignment).
 type Server struct {
-	searchMgr *search.Manager
-	version   string
-	stdin     io.Reader
-	stdout    io.Writer
-
-	// Store dependencies for enhanced tools
+	stdin              io.Reader
+	stdout             io.Writer
+	searchMgr          *search.Manager
 	observationStore   *gorm.ObservationStore
 	patternStore       *gorm.PatternStore
 	relationStore      *gorm.RelationStore
@@ -36,6 +34,7 @@ type Server struct {
 	scoreCalculator    *scoring.Calculator
 	recalculator       *scoring.Recalculator
 	maintenanceService *maintenance.Service
+	version            string
 }
 
 // NewServer creates a new MCP server.
@@ -77,17 +76,17 @@ type Request struct {
 
 // Response represents a JSON-RPC response.
 type Response struct {
-	JSONRPC string `json:"jsonrpc"`
 	ID      any    `json:"id"`
 	Result  any    `json:"result,omitempty"`
 	Error   *Error `json:"error,omitempty"`
+	JSONRPC string `json:"jsonrpc"`
 }
 
 // Error represents a JSON-RPC error.
 type Error struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
+	Message string `json:"message"`
+	Code    int    `json:"code"`
 }
 
 // ToolCallParams represents parameters for tools/call method.
@@ -98,9 +97,9 @@ type ToolCallParams struct {
 
 // Tool represents an MCP tool definition.
 type Tool struct {
+	InputSchema map[string]any `json:"inputSchema"`
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
 }
 
 // Run starts the MCP server loop.
@@ -193,7 +192,7 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	tools := []Tool{
 		{
 			Name:        "search",
-			Description: "Unified search across all memory types (observations, sessions, and user prompts) using vector-first semantic search (ChromaDB).",
+			Description: "Unified search across all memory types (observations, sessions, and user prompts) using vector-first semantic search (sqlite-vec).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -410,10 +409,10 @@ func (s *Server) handleToolsList(req *Request) *Response {
 				"type":     "object",
 				"required": []string{"query"},
 				"properties": map[string]any{
-					"query":         map[string]any{"type": "string", "description": "Text to find similar observations for"},
-					"project":       map[string]any{"type": "string", "description": "Filter by project name"},
+					"query":          map[string]any{"type": "string", "description": "Text to find similar observations for"},
+					"project":        map[string]any{"type": "string", "description": "Filter by project name"},
 					"min_similarity": map[string]any{"type": "number", "default": 0.7, "minimum": 0.0, "maximum": 1.0, "description": "Minimum similarity threshold (0-1)"},
-					"limit":         map[string]any{"type": "number", "default": 10, "minimum": 1, "maximum": 50},
+					"limit":          map[string]any{"type": "number", "default": 10, "minimum": 1, "maximum": 50},
 				},
 			},
 		},
@@ -587,9 +586,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"project":    map[string]any{"type": "string", "description": "Filter by project (optional)"},
-					"days":       map[string]any{"type": "number", "default": 30, "minimum": 1, "maximum": 365, "description": "Number of days to analyze"},
-					"group_by":   map[string]any{"type": "string", "enum": []string{"day", "week", "hour_of_day"}, "default": "day", "description": "How to group the data"},
+					"project":  map[string]any{"type": "string", "description": "Filter by project (optional)"},
+					"days":     map[string]any{"type": "number", "default": 30, "minimum": 1, "maximum": 365, "description": "Number of days to analyze"},
+					"group_by": map[string]any{"type": "string", "enum": []string{"day", "week", "hour_of_day"}, "default": "day", "description": "How to group the data"},
 				},
 			},
 		},
@@ -611,11 +610,11 @@ func (s *Server) handleToolsList(req *Request) *Response {
 				"type":     "object",
 				"required": []string{"pattern", "tags"},
 				"properties": map[string]any{
-					"pattern":      map[string]any{"type": "string", "description": "Search pattern to match (searches title, narrative, facts)"},
-					"tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags to add to matching observations"},
-					"project":      map[string]any{"type": "string", "description": "Filter by project (optional)"},
-					"dry_run":      map[string]any{"type": "boolean", "default": true, "description": "If true, only preview matches without applying tags"},
-					"max_matches":  map[string]any{"type": "number", "default": 100, "minimum": 1, "maximum": 500, "description": "Maximum observations to tag"},
+					"pattern":     map[string]any{"type": "string", "description": "Search pattern to match (searches title, narrative, facts)"},
+					"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags to add to matching observations"},
+					"project":     map[string]any{"type": "string", "description": "Filter by project (optional)"},
+					"dry_run":     map[string]any{"type": "boolean", "default": true, "description": "If true, only preview matches without applying tags"},
+					"max_matches": map[string]any{"type": "number", "default": 100, "minimum": 1, "maximum": 500, "description": "Maximum observations to tag"},
 				},
 			},
 		},
@@ -695,11 +694,11 @@ func (s *Server) handleToolsList(req *Request) *Response {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"project":               map[string]any{"type": "string", "description": "Project to analyze (optional, analyzes all if omitted)"},
-					"include_top_scored":    map[string]any{"type": "boolean", "default": true, "description": "Include top-scoring observations"},
-					"include_most_retrieved": map[string]any{"type": "boolean", "default": true, "description": "Include most-retrieved observations"},
+					"project":                 map[string]any{"type": "string", "description": "Project to analyze (optional, analyzes all if omitted)"},
+					"include_top_scored":      map[string]any{"type": "boolean", "default": true, "description": "Include top-scoring observations"},
+					"include_most_retrieved":  map[string]any{"type": "boolean", "default": true, "description": "Include most-retrieved observations"},
 					"include_concept_weights": map[string]any{"type": "boolean", "default": true, "description": "Include concept weight analysis"},
-					"limit":                 map[string]any{"type": "number", "default": 10, "minimum": 1, "maximum": 50, "description": "Number of top observations to include"},
+					"limit":                   map[string]any{"type": "number", "default": 10, "minimum": 1, "maximum": 50, "description": "Number of top observations to include"},
 				},
 			},
 		},
@@ -867,17 +866,17 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 
 // TimelineParams represents parameters for timeline operations.
 type TimelineParams struct {
-	AnchorID  int64  `json:"anchor_id"`
 	Query     string `json:"query"`
-	Before    int    `json:"before"`
-	After     int    `json:"after"`
 	Project   string `json:"project"`
 	ObsType   string `json:"obs_type"`
 	Concepts  string `json:"concepts"`
 	Files     string `json:"files"`
+	Format    string `json:"format"`
+	AnchorID  int64  `json:"anchor_id"`
+	Before    int    `json:"before"`
+	After     int    `json:"after"`
 	DateStart int64  `json:"dateStart"`
 	DateEnd   int64  `json:"dateEnd"`
-	Format    string `json:"format"`
 }
 
 // handleTimeline handles timeline requests.
@@ -979,7 +978,8 @@ func (s *Server) handleFindRelatedObservations(ctx context.Context, args json.Ra
 		return "", fmt.Errorf("id is required")
 	}
 
-	if params.MinConfidence == 0 {
+	// Use -1 as sentinel for "not provided" since 0.0 is a valid threshold
+	if params.MinConfidence < 0 {
 		params.MinConfidence = 0.5
 	}
 
@@ -1535,14 +1535,14 @@ func (s *Server) handleMergeObservations(ctx context.Context, args json.RawMessa
 	}
 
 	response := map[string]any{
-		"merged":             true,
-		"source_id":          params.SourceID,
-		"source_title":       source.Title.String,
-		"target_id":          params.TargetID,
-		"target_title":       target.Title.String,
-		"target_new_score":   newScore,
-		"target_old_score":   target.ImportanceScore,
-		"boost_applied":      params.Boost,
+		"merged":           true,
+		"source_id":        params.SourceID,
+		"source_title":     source.Title.String,
+		"target_id":        params.TargetID,
+		"target_title":     target.Title.String,
+		"target_new_score": newScore,
+		"target_old_score": target.ImportanceScore,
+		"boost_applied":    params.Boost,
 	}
 
 	output, err := json.Marshal(response)
@@ -1645,9 +1645,9 @@ func (s *Server) handleEditObservation(ctx context.Context, args json.RawMessage
 	// The MCP server doesn't have access to the embedding service
 
 	response := map[string]any{
-		"updated":          true,
-		"observation":      updatedObs,
-		"vector_resync":    "deferred",
+		"updated":       true,
+		"observation":   updatedObs,
+		"vector_resync": "deferred",
 	}
 
 	output, err := json.Marshal(response)
@@ -2324,9 +2324,9 @@ func (s *Server) handleGetDataQualityReport(ctx context.Context, args json.RawMe
 			"average_score": fmt.Sprintf("%.1f%%", avgScore),
 			"distribution":  scoreDistribution,
 		},
-		"issues_found":  issuesFound,
-		"top_issues":    topIssuesList,
-		"improvements":  improvements,
+		"issues_found": issuesFound,
+		"top_issues":   topIssuesList,
+		"improvements": improvements,
 		"recommendations": []string{
 			"Add titles to observations for better discoverability",
 			"Include narratives to provide context",
@@ -3033,23 +3033,23 @@ func (s *Server) handleGetObservationRelationships(ctx context.Context, args jso
 
 	// Build response with additional context
 	type RelationInfo struct {
-		ID           int64   `json:"id"`
-		SourceID     int64   `json:"source_id"`
-		TargetID     int64   `json:"target_id"`
-		Type         string  `json:"type"`
-		Confidence   float64 `json:"confidence"`
-		SourceTitle  string  `json:"source_title,omitempty"`
-		TargetTitle  string  `json:"target_title,omitempty"`
-		SourceType   string  `json:"source_type,omitempty"`
-		TargetType   string  `json:"target_type,omitempty"`
+		ID          int64   `json:"id"`
+		SourceID    int64   `json:"source_id"`
+		TargetID    int64   `json:"target_id"`
+		Type        string  `json:"type"`
+		Confidence  float64 `json:"confidence"`
+		SourceTitle string  `json:"source_title,omitempty"`
+		TargetTitle string  `json:"target_title,omitempty"`
+		SourceType  string  `json:"source_type,omitempty"`
+		TargetType  string  `json:"target_type,omitempty"`
 	}
 
 	type GraphResponse struct {
-		CenterID      int64          `json:"center_id"`
-		MaxDepth      int            `json:"max_depth"`
-		TotalRelations int           `json:"total_relations"`
-		Relations     []RelationInfo `json:"relations"`
-		UniqueNodes   []int64        `json:"unique_nodes"`
+		CenterID       int64          `json:"center_id"`
+		MaxDepth       int            `json:"max_depth"`
+		TotalRelations int            `json:"total_relations"`
+		Relations      []RelationInfo `json:"relations"`
+		UniqueNodes    []int64        `json:"unique_nodes"`
 	}
 
 	// Collect unique node IDs
@@ -3144,10 +3144,10 @@ func (s *Server) handleGetObservationScoringBreakdown(ctx context.Context, args 
 			"age_days":          components.AgeDays,
 		},
 		"explanation": map[string]any{
-			"type_impact":     fmt.Sprintf("Observation type '%s' has weight %.2f", obs.Type, components.TypeWeight),
-			"recency_impact":  fmt.Sprintf("%.1f days old, decay factor %.2f", components.AgeDays, components.RecencyDecay),
-			"feedback_impact": fmt.Sprintf("User feedback contributes %.2f to score", components.FeedbackContrib),
-			"concept_impact":  fmt.Sprintf("Concept tags contribute %.2f to score", components.ConceptContrib),
+			"type_impact":      fmt.Sprintf("Observation type '%s' has weight %.2f", obs.Type, components.TypeWeight),
+			"recency_impact":   fmt.Sprintf("%.1f days old, decay factor %.2f", components.AgeDays, components.RecencyDecay),
+			"feedback_impact":  fmt.Sprintf("User feedback contributes %.2f to score", components.FeedbackContrib),
+			"concept_impact":   fmt.Sprintf("Concept tags contribute %.2f to score", components.ConceptContrib),
 			"retrieval_impact": fmt.Sprintf("Retrieval frequency contributes %.2f to score", components.RetrievalContrib),
 		},
 	}

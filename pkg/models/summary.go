@@ -9,18 +9,18 @@ import (
 
 // SessionSummary represents a summary of a Claude Code session.
 type SessionSummary struct {
-	ID              int64          `db:"id" json:"id"`
+	CreatedAt       string         `db:"created_at" json:"created_at"`
 	SDKSessionID    string         `db:"sdk_session_id" json:"sdk_session_id"`
 	Project         string         `db:"project" json:"project"`
-	Request         sql.NullString `db:"request" json:"request,omitempty"`
+	Completed       sql.NullString `db:"completed" json:"completed,omitempty"`
 	Investigated    sql.NullString `db:"investigated" json:"investigated,omitempty"`
 	Learned         sql.NullString `db:"learned" json:"learned,omitempty"`
-	Completed       sql.NullString `db:"completed" json:"completed,omitempty"`
 	NextSteps       sql.NullString `db:"next_steps" json:"next_steps,omitempty"`
 	Notes           sql.NullString `db:"notes" json:"notes,omitempty"`
+	Request         sql.NullString `db:"request" json:"request,omitempty"`
 	PromptNumber    sql.NullInt64  `db:"prompt_number" json:"prompt_number,omitempty"`
+	ID              int64          `db:"id" json:"id"`
 	DiscoveryTokens int64          `db:"discovery_tokens" json:"discovery_tokens"`
-	CreatedAt       string         `db:"created_at" json:"created_at"`
 	CreatedAtEpoch  int64          `db:"created_at_epoch" json:"created_at_epoch"`
 }
 
@@ -56,18 +56,18 @@ func NewSessionSummary(sdkSessionID, project string, parsed *ParsedSummary, prom
 // SessionSummaryJSON is a JSON-friendly representation of SessionSummary.
 // It converts sql.NullString to plain strings for clean JSON output.
 type SessionSummaryJSON struct {
-	ID              int64  `json:"id"`
+	Completed       string `json:"completed,omitempty"`
 	SDKSessionID    string `json:"sdk_session_id"`
 	Project         string `json:"project"`
 	Request         string `json:"request,omitempty"`
 	Investigated    string `json:"investigated,omitempty"`
 	Learned         string `json:"learned,omitempty"`
-	Completed       string `json:"completed,omitempty"`
 	NextSteps       string `json:"next_steps,omitempty"`
 	Notes           string `json:"notes,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	ID              int64  `json:"id"`
 	PromptNumber    int64  `json:"prompt_number,omitempty"`
 	DiscoveryTokens int64  `json:"discovery_tokens"`
-	CreatedAt       string `json:"created_at"`
 	CreatedAtEpoch  int64  `json:"created_at_epoch"`
 }
 

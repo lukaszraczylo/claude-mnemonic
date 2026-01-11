@@ -33,11 +33,11 @@ const (
 
 // Release represents a GitHub release.
 type Release struct {
+	PublishedAt time.Time `json:"published_at"`
 	TagName     string    `json:"tag_name"`
 	Name        string    `json:"name"`
-	PublishedAt time.Time `json:"published_at"`
-	Assets      []Asset   `json:"assets"`
 	Body        string    `json:"body"`
+	Assets      []Asset   `json:"assets"`
 }
 
 // Asset represents a release asset.
@@ -49,15 +49,15 @@ type Asset struct {
 
 // UpdateInfo contains information about an available update.
 type UpdateInfo struct {
-	Available           bool      `json:"available"`
+	PublishedAt         time.Time `json:"published_at,omitempty"`
 	CurrentVersion      string    `json:"current_version"`
 	LatestVersion       string    `json:"latest_version"`
 	ReleaseNotes        string    `json:"release_notes,omitempty"`
-	PublishedAt         time.Time `json:"published_at,omitempty"`
 	DownloadURL         string    `json:"download_url,omitempty"`
 	ChecksumsURL        string    `json:"checksums_url,omitempty"`
-	BundleURL           string    `json:"bundle_url,omitempty"` // Sigstore bundle (.sigstore.json)
+	BundleURL           string    `json:"bundle_url,omitempty"`
 	ManualUpdateCommand string    `json:"manual_update_command,omitempty"`
+	Available           bool      `json:"available"`
 }
 
 // InstallScriptURL is the URL to the remote installation script.
@@ -74,23 +74,22 @@ func GetManualUpdateCommand(version string) string {
 
 // UpdateStatus represents the current update status.
 type UpdateStatus struct {
-	State               string  `json:"state"` // "idle", "checking", "downloading", "verifying", "applying", "done", "error"
-	Progress            float64 `json:"progress"`
+	State               string  `json:"state"`
 	Message             string  `json:"message"`
 	Error               string  `json:"error,omitempty"`
-	ManualUpdateCommand string  `json:"manual_update_command,omitempty"` // Shown when update fails
+	ManualUpdateCommand string  `json:"manual_update_command,omitempty"`
+	Progress            float64 `json:"progress"`
 }
 
 // Updater handles self-updates.
 type Updater struct {
+	lastCheck      time.Time
+	httpClient     *http.Client
+	cachedUpdate   *UpdateInfo
 	currentVersion string
 	installDir     string
-	httpClient     *http.Client
-
-	mu           sync.RWMutex
-	status       UpdateStatus
-	lastCheck    time.Time
-	cachedUpdate *UpdateInfo
+	status         UpdateStatus
+	mu             sync.RWMutex
 }
 
 // New creates a new Updater.

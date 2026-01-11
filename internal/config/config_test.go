@@ -121,8 +121,8 @@ func (s *ConfigSuite) TestLoad_TableDriven() {
 	tests := []struct {
 		name           string
 		settingsJSON   string
-		expectedPort   int
 		expectedModel  string
+		expectedPort   int
 		expectedObsObs int
 	}{
 		{
@@ -183,12 +183,12 @@ func (s *ConfigSuite) TestLoad_TableDriven() {
 			s.Require().NoError(err)
 
 			if tt.settingsJSON != "" {
-				err := os.WriteFile(
+				writeErr := os.WriteFile(
 					filepath.Join(tempDir, ".claude-mnemonic", "settings.json"),
 					[]byte(tt.settingsJSON),
 					0600,
 				)
-				s.Require().NoError(err)
+				s.Require().NoError(writeErr)
 			}
 
 			cfg, err := Load()

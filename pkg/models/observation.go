@@ -121,48 +121,44 @@ func (j JSONInt64Map) Value() (driver.Value, error) {
 
 // Observation represents a learning extracted from a Claude Code session.
 type Observation struct {
-	ID              int64            `db:"id" json:"id"`
+	FileMtimes      JSONInt64Map     `db:"file_mtimes" json:"file_mtimes,omitempty"`
 	SDKSessionID    string           `db:"sdk_session_id" json:"sdk_session_id"`
 	Project         string           `db:"project" json:"project"`
 	Scope           ObservationScope `db:"scope" json:"scope"`
 	Type            ObservationType  `db:"type" json:"type"`
-	Title           sql.NullString   `db:"title" json:"title,omitempty"`
+	CreatedAt       string           `db:"created_at" json:"created_at"`
 	Subtitle        sql.NullString   `db:"subtitle" json:"subtitle,omitempty"`
-	Facts           JSONStringArray  `db:"facts" json:"facts,omitempty"`
+	Title           sql.NullString   `db:"title" json:"title,omitempty"`
 	Narrative       sql.NullString   `db:"narrative" json:"narrative,omitempty"`
 	Concepts        JSONStringArray  `db:"concepts" json:"concepts,omitempty"`
 	FilesRead       JSONStringArray  `db:"files_read" json:"files_read,omitempty"`
 	FilesModified   JSONStringArray  `db:"files_modified" json:"files_modified,omitempty"`
-	FileMtimes      JSONInt64Map     `db:"file_mtimes" json:"file_mtimes,omitempty"`
+	Facts           JSONStringArray  `db:"facts" json:"facts,omitempty"`
 	PromptNumber    sql.NullInt64    `db:"prompt_number" json:"prompt_number,omitempty"`
+	LastRetrievedAt sql.NullInt64    `db:"last_retrieved_at_epoch" json:"last_retrieved_at_epoch,omitempty"`
+	ScoreUpdatedAt  sql.NullInt64    `db:"score_updated_at_epoch" json:"score_updated_at_epoch,omitempty"`
 	DiscoveryTokens int64            `db:"discovery_tokens" json:"discovery_tokens"`
-	CreatedAt       string           `db:"created_at" json:"created_at"`
+	ID              int64            `db:"id" json:"id"`
 	CreatedAtEpoch  int64            `db:"created_at_epoch" json:"created_at_epoch"`
+	ImportanceScore float64          `db:"importance_score" json:"importance_score"`
+	UserFeedback    int              `db:"user_feedback" json:"user_feedback"`
+	RetrievalCount  int              `db:"retrieval_count" json:"retrieval_count"`
 	IsStale         bool             `db:"-" json:"is_stale,omitempty"`
-
-	// Importance scoring fields
-	ImportanceScore float64       `db:"importance_score" json:"importance_score"`
-	UserFeedback    int           `db:"user_feedback" json:"user_feedback"`
-	RetrievalCount  int           `db:"retrieval_count" json:"retrieval_count"`
-	LastRetrievedAt sql.NullInt64 `db:"last_retrieved_at_epoch" json:"last_retrieved_at_epoch,omitempty"`
-	ScoreUpdatedAt  sql.NullInt64 `db:"score_updated_at_epoch" json:"score_updated_at_epoch,omitempty"`
-
-	// Conflict detection fields
-	IsSuperseded bool `db:"is_superseded" json:"is_superseded,omitempty"`
+	IsSuperseded    bool             `db:"is_superseded" json:"is_superseded,omitempty"`
 }
 
 // ParsedObservation represents an observation parsed from SDK response XML.
 type ParsedObservation struct {
+	FileMtimes    map[string]int64
 	Type          ObservationType
 	Title         string
 	Subtitle      string
-	Facts         []string
 	Narrative     string
+	Scope         ObservationScope
+	Facts         []string
 	Concepts      []string
 	FilesRead     []string
 	FilesModified []string
-	FileMtimes    map[string]int64 // File path -> mtime epoch ms
-	Scope         ObservationScope // Optional: if empty, will be auto-determined
 }
 
 // ToStoredObservation converts a ParsedObservation to the stored Observation format.
@@ -197,34 +193,30 @@ func DetermineScope(concepts []string) ObservationScope {
 // ObservationJSON is a JSON-friendly representation of Observation.
 // It converts sql.NullString to plain strings for clean JSON output.
 type ObservationJSON struct {
-	ID              int64            `json:"id"`
+	FileMtimes      map[string]int64 `json:"file_mtimes,omitempty"`
+	Subtitle        string           `json:"subtitle,omitempty"`
 	SDKSessionID    string           `json:"sdk_session_id"`
-	Project         string           `json:"project"`
 	Scope           ObservationScope `json:"scope"`
 	Type            ObservationType  `json:"type"`
 	Title           string           `json:"title,omitempty"`
-	Subtitle        string           `json:"subtitle,omitempty"`
-	Facts           []string         `json:"facts,omitempty"`
+	CreatedAt       string           `json:"created_at"`
 	Narrative       string           `json:"narrative,omitempty"`
+	Project         string           `json:"project"`
 	Concepts        []string         `json:"concepts,omitempty"`
+	Facts           []string         `json:"facts,omitempty"`
 	FilesRead       []string         `json:"files_read,omitempty"`
 	FilesModified   []string         `json:"files_modified,omitempty"`
-	FileMtimes      map[string]int64 `json:"file_mtimes,omitempty"`
-	PromptNumber    int64            `json:"prompt_number,omitempty"`
-	DiscoveryTokens int64            `json:"discovery_tokens"`
-	CreatedAt       string           `json:"created_at"`
 	CreatedAtEpoch  int64            `json:"created_at_epoch"`
+	DiscoveryTokens int64            `json:"discovery_tokens"`
+	ID              int64            `json:"id"`
+	PromptNumber    int64            `json:"prompt_number,omitempty"`
+	ImportanceScore float64          `json:"importance_score"`
+	UserFeedback    int              `json:"user_feedback"`
+	RetrievalCount  int              `json:"retrieval_count"`
+	LastRetrievedAt int64            `json:"last_retrieved_at_epoch,omitempty"`
+	ScoreUpdatedAt  int64            `json:"score_updated_at_epoch,omitempty"`
 	IsStale         bool             `json:"is_stale,omitempty"`
-
-	// Importance scoring fields
-	ImportanceScore float64 `json:"importance_score"`
-	UserFeedback    int     `json:"user_feedback"`
-	RetrievalCount  int     `json:"retrieval_count"`
-	LastRetrievedAt int64   `json:"last_retrieved_at_epoch,omitempty"`
-	ScoreUpdatedAt  int64   `json:"score_updated_at_epoch,omitempty"`
-
-	// Conflict detection fields
-	IsSuperseded bool `json:"is_superseded,omitempty"`
+	IsSuperseded    bool             `json:"is_superseded,omitempty"`
 }
 
 // MarshalJSON implements json.Marshaler for Observation.

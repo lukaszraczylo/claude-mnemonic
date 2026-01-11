@@ -16,15 +16,15 @@ import (
 // Watcher monitors a file or directory for deletion and calls onDelete when removed.
 // It watches the parent directory since fsnotify cannot watch non-existent files.
 type Watcher struct {
-	targetPath string // The file/directory to watch for deletion
-	parentPath string // Parent directory (what we actually watch)
-	onDelete   func() // Callback when target is deleted
-	watcher    *fsnotify.Watcher
 	ctx        context.Context
+	onDelete   func()
+	watcher    *fsnotify.Watcher
 	cancel     context.CancelFunc
+	targetPath string
+	parentPath string
+	debounce   time.Duration
 	mu         sync.Mutex
 	running    bool
-	debounce   time.Duration
 }
 
 // New creates a new Watcher for the given target path.

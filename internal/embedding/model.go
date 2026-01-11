@@ -21,15 +21,10 @@ const (
 // ONNXConfig describes ONNX-specific model configuration.
 // This allows different models to specify their tensor names and pooling needs.
 type ONNXConfig struct {
-	// InputNames are the ONNX input tensor names in order.
-	InputNames []string
-	// OutputNames are the ONNX output tensor names.
+	Pooling     PoolingStrategy
+	InputNames  []string
 	OutputNames []string
-	// Pooling specifies how to convert token embeddings to sentence embeddings.
-	// If PoolingNone, the model outputs sentence embeddings directly.
-	Pooling PoolingStrategy
-	// HiddenSize is the embedding dimension (used for pooling calculations).
-	HiddenSize int
+	HiddenSize  int
 }
 
 // EmbeddingModel represents a text embedding model.
@@ -62,11 +57,11 @@ type ONNXConfigurer interface {
 
 // ModelMetadata describes an embedding model for UI/config.
 type ModelMetadata struct {
-	Name        string `json:"name"`        // Human-readable name
-	Version     string `json:"version"`     // Short ID for DB storage
-	Dimensions  int    `json:"dimensions"`  // Vector size
-	Description string `json:"description"` // Brief description
-	Default     bool   `json:"default"`     // Is this the default model?
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Description string `json:"description"`
+	Dimensions  int    `json:"dimensions"`
+	Default     bool   `json:"default"`
 }
 
 // ModelFactory creates a new instance of an embedding model.
@@ -74,10 +69,10 @@ type ModelFactory func() (EmbeddingModel, error)
 
 // ModelRegistry provides model lookup by version.
 type ModelRegistry struct {
-	mu           sync.RWMutex
 	models       map[string]ModelFactory
 	metadata     map[string]ModelMetadata
 	defaultModel string
+	mu           sync.RWMutex
 }
 
 // NewModelRegistry creates a new model registry.

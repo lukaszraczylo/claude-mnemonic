@@ -33,25 +33,25 @@ const (
 
 // ObservationConflict tracks conflicting observations.
 type ObservationConflict struct {
-	ID              int64              `db:"id" json:"id"`
-	NewerObsID      int64              `db:"newer_obs_id" json:"newer_obs_id"`
-	OlderObsID      int64              `db:"older_obs_id" json:"older_obs_id"`
+	ResolvedAt      *string            `db:"resolved_at" json:"resolved_at,omitempty"`
 	ConflictType    ConflictType       `db:"conflict_type" json:"conflict_type"`
 	Resolution      ConflictResolution `db:"resolution" json:"resolution"`
 	Reason          string             `db:"reason" json:"reason"`
 	DetectedAt      string             `db:"detected_at" json:"detected_at"`
+	ID              int64              `db:"id" json:"id"`
+	NewerObsID      int64              `db:"newer_obs_id" json:"newer_obs_id"`
+	OlderObsID      int64              `db:"older_obs_id" json:"older_obs_id"`
 	DetectedAtEpoch int64              `db:"detected_at_epoch" json:"detected_at_epoch"`
 	Resolved        bool               `db:"resolved" json:"resolved"`
-	ResolvedAt      *string            `db:"resolved_at" json:"resolved_at,omitempty"`
 }
 
 // ConflictDetectionResult contains the result of conflict detection.
 type ConflictDetectionResult struct {
-	HasConflict bool
 	Type        ConflictType
 	Resolution  ConflictResolution
 	Reason      string
-	OlderObsIDs []int64 // IDs of observations that conflict with the new one
+	OlderObsIDs []int64
+	HasConflict bool
 }
 
 // NewObservationConflict creates a new conflict record.

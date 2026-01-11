@@ -50,8 +50,8 @@ func (s *ObservationSuite) TestGlobalizableConcepts() {
 func (s *ObservationSuite) TestDetermineScope_TableDriven() {
 	tests := []struct {
 		name     string
-		concepts []string
 		expected ObservationScope
+		concepts []string
 	}{
 		{
 			name:     "empty concepts - project scope",
@@ -121,9 +121,9 @@ func (s *ObservationSuite) TestParsedObservation_FileMtimesJSON() {
 // TestObservation_CheckStaleness_TableDriven tests staleness checking.
 func (s *ObservationSuite) TestObservation_CheckStaleness_TableDriven() {
 	tests := []struct {
-		name          string
 		storedMtimes  map[string]int64
 		currentMtimes map[string]int64
+		name          string
 		expectedStale bool
 	}{
 		{
@@ -300,10 +300,10 @@ func TestParsedObservation_ToStoredObservation(t *testing.T) {
 // TestJSONStringArray tests JSONStringArray scanning.
 func TestJSONStringArray(t *testing.T) {
 	tests := []struct {
-		name     string
 		input    interface{}
-		wantErr  bool
+		name     string
 		expected JSONStringArray
+		wantErr  bool
 	}{
 		{
 			name:     "nil input",
@@ -348,10 +348,10 @@ func TestJSONStringArray(t *testing.T) {
 // TestJSONInt64Map tests JSONInt64Map scanning.
 func TestJSONInt64Map(t *testing.T) {
 	tests := []struct {
-		name     string
 		input    interface{}
-		wantErr  bool
 		expected JSONInt64Map
+		name     string
+		wantErr  bool
 	}{
 		{
 			name:     "nil input",

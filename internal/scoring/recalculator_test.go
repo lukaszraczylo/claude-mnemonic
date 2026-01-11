@@ -16,14 +16,14 @@ import (
 
 // MockObservationStore is a mock implementation of ObservationStore for testing.
 type MockObservationStore struct {
-	mu                sync.Mutex
-	observations      []*models.Observation
-	scores            map[int64]float64
-	conceptWeights    map[string]float64
 	updateErr         error
 	getErr            error
 	getConceptsErr    error
+	scores            map[int64]float64
+	conceptWeights    map[string]float64
+	observations      []*models.Observation
 	updateScoresCalls int
+	mu                sync.Mutex
 }
 
 func NewMockObservationStore() *MockObservationStore {

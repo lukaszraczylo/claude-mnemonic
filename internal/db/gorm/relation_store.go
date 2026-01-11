@@ -171,11 +171,11 @@ func (s *RelationStore) GetRelationsByType(ctx context.Context, relationType mod
 // GetRelationsWithDetails retrieves relations with observation titles for display.
 func (s *RelationStore) GetRelationsWithDetails(ctx context.Context, obsID int64) ([]*models.RelationWithDetails, error) {
 	var results []struct {
-		ObservationRelation
-		SourceTitle sql.NullString `gorm:"column:source_title"`
-		TargetTitle sql.NullString `gorm:"column:target_title"`
 		SourceType  string         `gorm:"column:source_type"`
 		TargetType  string         `gorm:"column:target_type"`
+		SourceTitle sql.NullString `gorm:"column:source_title"`
+		TargetTitle sql.NullString `gorm:"column:target_title"`
+		ObservationRelation
 	}
 
 	err := s.db.WithContext(ctx).

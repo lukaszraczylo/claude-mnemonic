@@ -94,8 +94,8 @@ func TestTruncate(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
 		{
 			name:     "short string no truncation",
@@ -148,8 +148,8 @@ func TestObservationToResult(t *testing.T) {
 	m := NewManager(nil, nil, nil, nil)
 
 	tests := []struct {
-		name     string
 		obs      *models.Observation
+		name     string
 		format   string
 		expected SearchResult
 	}{
@@ -240,8 +240,8 @@ func TestSummaryToResult(t *testing.T) {
 	m := NewManager(nil, nil, nil, nil)
 
 	tests := []struct {
-		name     string
 		summary  *models.SessionSummary
+		name     string
 		format   string
 		expected SearchResult
 	}{
@@ -322,8 +322,8 @@ func TestPromptToResult(t *testing.T) {
 	m := NewManager(nil, nil, nil, nil)
 
 	tests := []struct {
-		name     string
 		prompt   *models.UserPromptWithSession
+		name     string
 		format   string
 		expected SearchResult
 	}{
@@ -406,9 +406,9 @@ func TestPromptToResult(t *testing.T) {
 func TestSearchParamsValidation(t *testing.T) {
 	tests := []struct {
 		name          string
+		expectedOrder string
 		params        SearchParams
 		expectedLimit int
-		expectedOrder string
 	}{
 		{
 			name: "default limit applied",
@@ -731,16 +731,16 @@ func TestPromptToResultFormats(t *testing.T) {
 func TestSearchParamsDefaults(t *testing.T) {
 	tests := []struct {
 		name          string
-		initialLimit  int
 		initialOrder  string
-		expectedLimit int
 		expectedOrder string
+		initialLimit  int
+		expectedLimit int
 	}{
-		{"zero_limit", 0, "", 20, "date_desc"},
-		{"negative_limit", -5, "", 20, "date_desc"},
-		{"over_100_limit", 150, "", 100, "date_desc"},
-		{"valid_limit_50", 50, "relevance", 50, "relevance"},
-		{"custom_order", 30, "date_asc", 30, "date_asc"},
+		{name: "zero_limit", initialOrder: "", expectedOrder: "date_desc", initialLimit: 0, expectedLimit: 20},
+		{name: "negative_limit", initialOrder: "", expectedOrder: "date_desc", initialLimit: -5, expectedLimit: 20},
+		{name: "over_100_limit", initialOrder: "", expectedOrder: "date_desc", initialLimit: 150, expectedLimit: 100},
+		{name: "valid_limit_50", initialOrder: "relevance", expectedOrder: "relevance", initialLimit: 50, expectedLimit: 50},
+		{name: "custom_order", initialOrder: "date_asc", expectedOrder: "date_asc", initialLimit: 30, expectedLimit: 30},
 	}
 
 	for _, tt := range tests {
@@ -774,18 +774,18 @@ func TestTruncateEdgeCases(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
 		// Unicode strings - uses byte length so ensure maxLen accommodates full string
-		{"unicode_string_no_truncate", "日本語テスト", 20, "日本語テスト"},
-		{"mixed_unicode_no_truncate", "Hello世界", 15, "Hello世界"},
+		{name: "unicode_string_no_truncate", input: "日本語テスト", expected: "日本語テスト", maxLen: 20},
+		{name: "mixed_unicode_no_truncate", input: "Hello世界", expected: "Hello世界", maxLen: 15},
 		// ASCII truncation
-		{"ascii_truncate", "Hello World", 5, "Hello..."},
-		{"only_whitespace", "   ", 10, ""},
-		{"tabs_and_newlines", "\t\n  \t", 10, ""},
-		{"newlines_with_content", "\n\nhello\n\n", 10, "hello"},
-		{"zero_max_len", "hello", 0, "..."},
+		{name: "ascii_truncate", input: "Hello World", expected: "Hello...", maxLen: 5},
+		{name: "only_whitespace", input: "   ", expected: "", maxLen: 10},
+		{name: "tabs_and_newlines", input: "\t\n  \t", expected: "", maxLen: 10},
+		{name: "newlines_with_content", input: "\n\nhello\n\n", expected: "hello", maxLen: 10},
+		{name: "zero_max_len", input: "hello", expected: "...", maxLen: 0},
 	}
 
 	for _, tt := range tests {

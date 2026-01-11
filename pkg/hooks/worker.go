@@ -251,8 +251,8 @@ func POST(port int, path string, body interface{}) (map[string]interface{}, erro
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		// Not all endpoints return JSON
-		return nil, nil
+		// Not all endpoints return JSON body - return empty map for success with no body
+		return map[string]interface{}{}, nil
 	}
 
 	return result, nil
