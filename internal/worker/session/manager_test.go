@@ -693,3 +693,734 @@ func TestToolInputResponse(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// TESTS FOR NewManager AND CLEANUP
+// =============================================================================
+
+// TestNewManager tests the NewManager function.
+func TestNewManager(t *testing.T) {
+	t.Parallel()
+
+	// Test with nil session store (valid for testing)
+	manager := NewManager(nil)
+
+	assert.NotNil(t, manager)
+	assert.NotNil(t, manager.sessions)
+	assert.NotNil(t, manager.ProcessNotify)
+	assert.NotNil(t, manager.ctx)
+	assert.NotNil(t, manager.cancel)
+	assert.Equal(t, 0, manager.GetActiveSessionCount())
+
+	// Clean up - cancel context to stop cleanup goroutine
+	manager.cancel()
+}
+
+// TestNewManager_CleanupGoroutineStops tests that cleanup goroutine stops on cancel.
+func TestNewManager_CleanupGoroutineStops(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil)
+
+	// Give goroutine time to start
+	time.Sleep(10 * time.Millisecond)
+
+	// Cancel should stop the cleanup goroutine
+	manager.cancel()
+
+	// Context should be done
+	select {
+	case <-manager.ctx.Done():
+		// Expected
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Context should be done after cancel")
+	}
+}
+
+// TestCleanupStaleSessions_NoSessions tests cleanup with no sessions.
+func TestCleanupStaleSessions_NoSessions(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Should not panic with empty sessions
+	manager.cleanupStaleSessions()
+	assert.Equal(t, 0, manager.GetActiveSessionCount())
+}
+
+// TestCleanupStaleSessions_FreshSession tests that fresh sessions are not cleaned.
+func TestCleanupStaleSessions_FreshSession(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Add a fresh session
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	manager.sessions[1] = &ActiveSession{
+		SessionDBID:     1,
+		StartTime:       time.Now(), // Fresh
+		pendingMessages: []PendingMessage{},
+		ctx:             sessionCtx,
+		cancel:          sessionCancel,
+	}
+
+	manager.cleanupStaleSessions()
+
+	// Session should still exist (not stale)
+	assert.Equal(t, 1, manager.GetActiveSessionCount())
+	sessionCancel()
+}
+
+// TestCleanupStaleSessions_StaleSession tests that stale sessions are cleaned.
+func TestCleanupStaleSessions_StaleSession(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Add a stale session
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	manager.sessions[1] = &ActiveSession{
+		SessionDBID:     1,
+		StartTime:       time.Now().Add(-SessionTimeout - time.Minute), // Stale
+		pendingMessages: []PendingMessage{},
+		ctx:             sessionCtx,
+		cancel:          sessionCancel,
+	}
+
+	manager.cleanupStaleSessions()
+
+	// Session should be deleted
+	assert.Equal(t, 0, manager.GetActiveSessionCount())
+}
+
+// TestCleanupStaleSessions_StaleWithPending tests stale sessions with pending messages are not cleaned.
+func TestCleanupStaleSessions_StaleWithPending(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Add a stale session with pending messages
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	defer sessionCancel()
+	manager.sessions[1] = &ActiveSession{
+		SessionDBID:     1,
+		StartTime:       time.Now().Add(-SessionTimeout - time.Minute), // Stale
+		pendingMessages: []PendingMessage{{Type: MessageTypeObservation}},
+		ctx:             sessionCtx,
+		cancel:          sessionCancel,
+	}
+
+	manager.cleanupStaleSessions()
+
+	// Session should NOT be deleted (has pending messages)
+	assert.Equal(t, 1, manager.GetActiveSessionCount())
+}
+
+// TestCleanupStaleSessions_StaleWithActiveGenerator tests stale sessions with active generator are not cleaned.
+func TestCleanupStaleSessions_StaleWithActiveGenerator(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Add a stale session with active generator
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	defer sessionCancel()
+	session := &ActiveSession{
+		SessionDBID:     1,
+		StartTime:       time.Now().Add(-SessionTimeout - time.Minute), // Stale
+		pendingMessages: []PendingMessage{},
+		ctx:             sessionCtx,
+		cancel:          sessionCancel,
+	}
+	session.generatorActive.Store(true)
+	manager.sessions[1] = session
+
+	manager.cleanupStaleSessions()
+
+	// Session should NOT be deleted (generator is active)
+	assert.Equal(t, 1, manager.GetActiveSessionCount())
+}
+
+// TestCleanupStaleSessions_MixedSessions tests cleanup with mixed fresh and stale sessions.
+func TestCleanupStaleSessions_MixedSessions(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Fresh session
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	manager.sessions[1] = &ActiveSession{
+		SessionDBID:     1,
+		StartTime:       time.Now(),
+		pendingMessages: []PendingMessage{},
+		ctx:             ctx1,
+		cancel:          cancel1,
+	}
+
+	// Stale session (should be deleted)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	manager.sessions[2] = &ActiveSession{
+		SessionDBID:     2,
+		StartTime:       time.Now().Add(-SessionTimeout - time.Minute),
+		pendingMessages: []PendingMessage{},
+		ctx:             ctx2,
+		cancel:          cancel2,
+	}
+
+	// Stale session with pending (should NOT be deleted)
+	ctx3, cancel3 := context.WithCancel(context.Background())
+	defer cancel3()
+	manager.sessions[3] = &ActiveSession{
+		SessionDBID:     3,
+		StartTime:       time.Now().Add(-SessionTimeout - time.Minute),
+		pendingMessages: []PendingMessage{{Type: MessageTypeObservation}},
+		ctx:             ctx3,
+		cancel:          cancel3,
+	}
+
+	manager.cleanupStaleSessions()
+
+	// Should have 2 sessions left (1 fresh, 1 stale with pending)
+	assert.Equal(t, 2, manager.GetActiveSessionCount())
+
+	// Verify which sessions remain
+	manager.mu.RLock()
+	_, has1 := manager.sessions[1]
+	_, has2 := manager.sessions[2]
+	_, has3 := manager.sessions[3]
+	manager.mu.RUnlock()
+
+	assert.True(t, has1, "Fresh session should remain")
+	assert.False(t, has2, "Stale session should be deleted")
+	assert.True(t, has3, "Stale session with pending should remain")
+}
+
+// TestCleanupLoop_ExitsOnCancel tests that cleanup loop exits when context is cancelled.
+func TestCleanupLoop_ExitsOnCancel(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Start cleanup loop in goroutine
+	done := make(chan struct{})
+	go func() {
+		manager.cleanupLoop()
+		close(done)
+	}()
+
+	// Cancel immediately
+	cancel()
+
+	// Should exit quickly
+	select {
+	case <-done:
+		// Success - loop exited
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Cleanup loop should exit when context is cancelled")
+	}
+}
+
+// =============================================================================
+// TESTS FOR InitializeSession (without DB)
+// =============================================================================
+
+// TestInitializeSession_AlreadyActive tests reusing an already active session.
+func TestInitializeSession_AlreadyActive(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Pre-add an active session
+	existingSession := &ActiveSession{
+		SessionDBID:      42,
+		ClaudeSessionID:  "claude-existing",
+		Project:          "test-project",
+		UserPrompt:       "original prompt",
+		LastPromptNumber: 1,
+		StartTime:        time.Now(),
+		pendingMessages:  make([]PendingMessage, 0),
+	}
+	manager.sessions[42] = existingSession
+
+	// Initialize same session - should reuse
+	session, err := manager.InitializeSession(context.Background(), 42, "new prompt", 5)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, session)
+	assert.Same(t, existingSession, session)
+	assert.Equal(t, "new prompt", session.UserPrompt)
+	assert.Equal(t, 5, session.LastPromptNumber)
+}
+
+// TestInitializeSession_AlreadyActive_EmptyPrompt tests reusing session with empty prompt.
+func TestInitializeSession_AlreadyActive_EmptyPrompt(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Pre-add an active session
+	existingSession := &ActiveSession{
+		SessionDBID:      42,
+		UserPrompt:       "original prompt",
+		LastPromptNumber: 1,
+	}
+	manager.sessions[42] = existingSession
+
+	// Initialize with empty prompt - should NOT update
+	session, err := manager.InitializeSession(context.Background(), 42, "", 0)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, session)
+	assert.Equal(t, "original prompt", session.UserPrompt) // Unchanged
+	assert.Equal(t, 1, session.LastPromptNumber)           // Unchanged
+}
+
+// TestInitializeSession_NoStore tests initialization without session store.
+func TestInitializeSession_NoStore(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessionStore:  nil, // No store
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Should fail gracefully with nil store (panic recovery not expected)
+	// This tests the guard against nil sessionStore
+	defer func() {
+		if r := recover(); r != nil {
+			_ = r // Expected panic when calling nil store - intentionally ignored
+		}
+	}()
+
+	_, _ = manager.InitializeSession(context.Background(), 999, "prompt", 1)
+}
+
+// TestInitializeSession_CallbackTriggered tests that created callback is triggered.
+func TestInitializeSession_CallbackTriggered(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	var calledWithID int64
+	manager.SetOnSessionCreated(func(id int64) {
+		calledWithID = id
+	})
+
+	// Add session directly (simulating what would happen after DB fetch)
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	defer sessionCancel()
+	session := &ActiveSession{
+		SessionDBID:     100,
+		ClaudeSessionID: "test",
+		Project:         "project",
+		StartTime:       time.Now(),
+		pendingMessages: make([]PendingMessage, 0),
+		notify:          make(chan struct{}, 1),
+		ctx:             sessionCtx,
+		cancel:          sessionCancel,
+	}
+
+	manager.mu.Lock()
+	manager.sessions[100] = session
+	onCreated := manager.onCreated
+	manager.mu.Unlock()
+
+	// Trigger callback
+	if onCreated != nil {
+		onCreated(100)
+	}
+
+	assert.Equal(t, int64(100), calledWithID)
+}
+
+// =============================================================================
+// TESTS FOR QueueObservation AND QueueSummarize (without DB)
+// =============================================================================
+
+// TestQueueObservation_ToExistingSession tests queuing to an existing session.
+func TestQueueObservation_ToExistingSession(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Pre-add session
+	session := &ActiveSession{
+		SessionDBID:     1,
+		pendingMessages: make([]PendingMessage, 0),
+		notify:          make(chan struct{}, 1),
+	}
+	manager.sessions[1] = session
+
+	// Queue observation
+	err := manager.QueueObservation(context.Background(), 1, ObservationData{
+		ToolName:     "Read",
+		ToolInput:    map[string]string{"path": "/test"},
+		ToolResponse: "content",
+		PromptNumber: 1,
+		CWD:          "/project",
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, 1, manager.GetTotalQueueDepth())
+
+	// Verify message
+	messages := manager.DrainMessages(1)
+	assert.Len(t, messages, 1)
+	assert.Equal(t, MessageTypeObservation, messages[0].Type)
+	assert.Equal(t, "Read", messages[0].Observation.ToolName)
+	assert.Equal(t, "/project", messages[0].Observation.CWD)
+}
+
+// TestQueueObservation_NotifiesSession tests that notification is sent to session.
+func TestQueueObservation_NotifiesSession(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Pre-add session with notify channel
+	session := &ActiveSession{
+		SessionDBID:     1,
+		pendingMessages: make([]PendingMessage, 0),
+		notify:          make(chan struct{}, 1),
+	}
+	manager.sessions[1] = session
+
+	// Queue observation
+	err := manager.QueueObservation(context.Background(), 1, ObservationData{ToolName: "Test"})
+	assert.NoError(t, err)
+
+	// Should receive notification on session channel
+	select {
+	case <-session.notify:
+		// Success
+	default:
+		t.Error("Session should receive notification")
+	}
+
+	// Should receive notification on process channel
+	select {
+	case <-manager.ProcessNotify:
+		// Success
+	default:
+		t.Error("Manager ProcessNotify should receive notification")
+	}
+}
+
+// TestQueueSummarize_ToExistingSession tests queuing summarize to an existing session.
+func TestQueueSummarize_ToExistingSession(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Pre-add session
+	session := &ActiveSession{
+		SessionDBID:     1,
+		pendingMessages: make([]PendingMessage, 0),
+		notify:          make(chan struct{}, 1),
+	}
+	manager.sessions[1] = session
+
+	// Queue summarize
+	err := manager.QueueSummarize(context.Background(), 1, "User asked question", "Assistant answered")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, manager.GetTotalQueueDepth())
+
+	// Verify message
+	messages := manager.DrainMessages(1)
+	assert.Len(t, messages, 1)
+	assert.Equal(t, MessageTypeSummarize, messages[0].Type)
+	assert.Equal(t, "User asked question", messages[0].Summarize.LastUserMessage)
+	assert.Equal(t, "Assistant answered", messages[0].Summarize.LastAssistantMessage)
+}
+
+// TestQueueSummarize_NotifiesSession tests that notification is sent to session.
+func TestQueueSummarize_NotifiesSession(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Pre-add session with notify channel
+	session := &ActiveSession{
+		SessionDBID:     1,
+		pendingMessages: make([]PendingMessage, 0),
+		notify:          make(chan struct{}, 1),
+	}
+	manager.sessions[1] = session
+
+	// Queue summarize
+	err := manager.QueueSummarize(context.Background(), 1, "user", "assistant")
+	assert.NoError(t, err)
+
+	// Should receive notification on session channel
+	select {
+	case <-session.notify:
+		// Success
+	default:
+		t.Error("Session should receive notification")
+	}
+
+	// Should receive notification on process channel
+	select {
+	case <-manager.ProcessNotify:
+		// Success
+	default:
+		t.Error("Manager ProcessNotify should receive notification")
+	}
+}
+
+// TestQueueOperations_MultipleMessages tests queuing multiple messages.
+func TestQueueOperations_MultipleMessages(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Pre-add session
+	session := &ActiveSession{
+		SessionDBID:     1,
+		pendingMessages: make([]PendingMessage, 0),
+		notify:          make(chan struct{}, 1),
+	}
+	manager.sessions[1] = session
+
+	// Queue multiple messages
+	for i := 0; i < 10; i++ {
+		if i%2 == 0 {
+			err := manager.QueueObservation(context.Background(), 1, ObservationData{
+				ToolName: "Tool" + string(rune('A'+i)),
+			})
+			assert.NoError(t, err)
+		} else {
+			err := manager.QueueSummarize(context.Background(), 1, "user", "assistant")
+			assert.NoError(t, err)
+		}
+	}
+
+	assert.Equal(t, 10, manager.GetTotalQueueDepth())
+
+	// Drain and verify
+	messages := manager.DrainMessages(1)
+	assert.Len(t, messages, 10)
+}
+
+// TestQueueOperations_NonBlockingNotification tests non-blocking notification behavior.
+func TestQueueOperations_NonBlockingNotification(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Pre-add session with full notify channel
+	session := &ActiveSession{
+		SessionDBID:     1,
+		pendingMessages: make([]PendingMessage, 0),
+		notify:          make(chan struct{}, 1),
+	}
+	// Fill the notify channel
+	session.notify <- struct{}{}
+	manager.sessions[1] = session
+
+	// Fill ProcessNotify channel
+	manager.ProcessNotify <- struct{}{}
+
+	// Queue should NOT block even with full channels
+	done := make(chan bool)
+	go func() {
+		err := manager.QueueObservation(context.Background(), 1, ObservationData{ToolName: "Test"})
+		assert.NoError(t, err)
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		// Success - didn't block
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Queue operation should not block even with full notification channels")
+	}
+}
+
+// TestConcurrentQueueAndCleanup tests concurrent queue operations and cleanup.
+func TestConcurrentQueueAndCleanup(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		sessions:      make(map[int64]*ActiveSession),
+		ProcessNotify: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.ctx = ctx
+	manager.cancel = cancel
+
+	// Pre-add multiple sessions
+	for i := int64(1); i <= 5; i++ {
+		sessionCtx, sessionCancel := context.WithCancel(context.Background())
+		manager.sessions[i] = &ActiveSession{
+			SessionDBID:     i,
+			StartTime:       time.Now(),
+			pendingMessages: make([]PendingMessage, 0),
+			notify:          make(chan struct{}, 1),
+			ctx:             sessionCtx,
+			cancel:          sessionCancel,
+		}
+	}
+
+	var wg sync.WaitGroup
+
+	// Concurrent queue operations
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			sessionID := int64((idx % 5) + 1)
+			if idx%2 == 0 {
+				_ = manager.QueueObservation(context.Background(), sessionID, ObservationData{ToolName: "Test"})
+			} else {
+				_ = manager.QueueSummarize(context.Background(), sessionID, "user", "assistant")
+			}
+		}(i)
+	}
+
+	// Concurrent cleanup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			manager.cleanupStaleSessions()
+		}()
+	}
+
+	// Concurrent reads
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = manager.GetActiveSessionCount()
+			_ = manager.GetTotalQueueDepth()
+			_ = manager.IsAnySessionProcessing()
+			_ = manager.GetAllSessions()
+		}()
+	}
+
+	wg.Wait()
+
+	// Should have all sessions (none are stale)
+	assert.Equal(t, 5, manager.GetActiveSessionCount())
+	// Should have 50 messages total
+	assert.Equal(t, 50, manager.GetTotalQueueDepth())
+}

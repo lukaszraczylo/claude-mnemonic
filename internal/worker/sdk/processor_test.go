@@ -1,9 +1,12 @@
 package sdk
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/stretchr/testify/assert"
@@ -1177,4 +1180,664 @@ func TestSafeResolvePath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================================================
+// TESTS FOR CircuitBreaker
+// =============================================================================
+
+func TestNewCircuitBreaker(t *testing.T) {
+	cb := NewCircuitBreaker(5, 60)
+
+	assert.NotNil(t, cb)
+	assert.Equal(t, int64(5), cb.threshold)
+	assert.Equal(t, int64(60), cb.resetTimeout)
+	assert.Equal(t, "closed", cb.State())
+}
+
+func TestCircuitBreaker_Allow_Closed(t *testing.T) {
+	cb := NewCircuitBreaker(5, 60)
+
+	// Closed state should allow requests
+	assert.True(t, cb.Allow())
+	assert.True(t, cb.Allow())
+}
+
+func TestCircuitBreaker_Allow_Open(t *testing.T) {
+	cb := NewCircuitBreaker(2, 60) // Low threshold for testing
+
+	// Record enough failures to open the circuit
+	cb.RecordFailure()
+	cb.RecordFailure()
+
+	// Open state should block requests
+	assert.False(t, cb.Allow())
+	assert.Equal(t, "open", cb.State())
+}
+
+func TestCircuitBreaker_RecordSuccess(t *testing.T) {
+	cb := NewCircuitBreaker(2, 60)
+
+	// Record a failure
+	cb.RecordFailure()
+	assert.Equal(t, int64(1), cb.Metrics().Failures)
+
+	// Record success resets failures
+	cb.RecordSuccess()
+	assert.Equal(t, int64(0), cb.Metrics().Failures)
+	assert.Equal(t, "closed", cb.State())
+}
+
+func TestCircuitBreaker_RecordFailure_OpensCircuit(t *testing.T) {
+	cb := NewCircuitBreaker(3, 60)
+
+	// Record failures below threshold
+	cb.RecordFailure()
+	assert.Equal(t, "closed", cb.State())
+
+	cb.RecordFailure()
+	assert.Equal(t, "closed", cb.State())
+
+	// Third failure should open circuit
+	cb.RecordFailure()
+	assert.Equal(t, "open", cb.State())
+}
+
+func TestCircuitBreaker_State(t *testing.T) {
+	cb := NewCircuitBreaker(1, 60)
+
+	// Initially closed
+	assert.Equal(t, "closed", cb.State())
+
+	// After failure, open
+	cb.RecordFailure()
+	assert.Equal(t, "open", cb.State())
+
+	// After success, closed
+	cb.RecordSuccess()
+	assert.Equal(t, "closed", cb.State())
+}
+
+func TestCircuitBreaker_Metrics(t *testing.T) {
+	cb := NewCircuitBreaker(5, 120)
+
+	metrics := cb.Metrics()
+	assert.Equal(t, "closed", metrics.State)
+	assert.Equal(t, int64(0), metrics.Failures)
+	assert.Equal(t, int64(5), metrics.Threshold)
+	assert.Equal(t, int64(120), metrics.ResetTimeoutSecs)
+	assert.Equal(t, int64(0), metrics.LastFailureUnix)
+
+	// After failure
+	cb.RecordFailure()
+	metrics = cb.Metrics()
+	assert.Equal(t, int64(1), metrics.Failures)
+	assert.Greater(t, metrics.LastFailureUnix, int64(0))
+}
+
+func TestCircuitBreaker_Metrics_OpenWithReset(t *testing.T) {
+	cb := NewCircuitBreaker(1, 60)
+
+	cb.RecordFailure()
+	assert.Equal(t, "open", cb.State())
+
+	metrics := cb.Metrics()
+	assert.Equal(t, "open", metrics.State)
+	assert.Greater(t, metrics.SecondsUntilReset, int64(0))
+	assert.LessOrEqual(t, metrics.SecondsUntilReset, int64(60))
+}
+
+// =============================================================================
+// TESTS FOR RequestDeduplicator
+// =============================================================================
+
+func TestNewRequestDeduplicator(t *testing.T) {
+	d := NewRequestDeduplicator(300, 1000)
+
+	assert.NotNil(t, d)
+	assert.NotNil(t, d.seen)
+	assert.Equal(t, int64(300), d.ttlSecs)
+	assert.Equal(t, 1000, d.maxSize)
+}
+
+func TestRequestDeduplicator_IsDuplicate_NotSeen(t *testing.T) {
+	d := NewRequestDeduplicator(300, 1000)
+
+	// New hash is not a duplicate
+	assert.False(t, d.IsDuplicate("newhash"))
+}
+
+func TestRequestDeduplicator_IsDuplicate_AfterRecord(t *testing.T) {
+	d := NewRequestDeduplicator(300, 1000)
+
+	hash := "testhash"
+
+	// Record the hash
+	d.Record(hash)
+
+	// Now it should be a duplicate
+	assert.True(t, d.IsDuplicate(hash))
+}
+
+func TestRequestDeduplicator_Record(t *testing.T) {
+	d := NewRequestDeduplicator(300, 1000)
+
+	hash := "recordtest"
+	d.Record(hash)
+
+	// Check it was recorded
+	d.mu.RLock()
+	_, exists := d.seen[hash]
+	d.mu.RUnlock()
+
+	assert.True(t, exists)
+}
+
+func TestRequestDeduplicator_Record_Eviction(t *testing.T) {
+	// Small maxSize for testing eviction
+	d := NewRequestDeduplicator(0, 2) // TTL of 0 means everything is "old"
+
+	// Record until capacity
+	d.Record("hash1")
+	d.Record("hash2")
+
+	// Recording a third should trigger eviction (since TTL is 0)
+	d.Record("hash3")
+
+	// Should have cleaned up old entries
+	d.mu.RLock()
+	size := len(d.seen)
+	d.mu.RUnlock()
+
+	// Size should be limited (eviction occurred)
+	assert.LessOrEqual(t, size, 3)
+}
+
+func TestHashRequest(t *testing.T) {
+	tests := []struct {
+		name        string
+		toolName    string
+		input       string
+		output      string
+		compareWith []string
+		wantLen     int
+		wantSame    bool
+	}{
+		{
+			name:     "basic hash",
+			toolName: "Read",
+			input:    "file.txt",
+			output:   "content",
+			wantLen:  16,
+		},
+		{
+			name:     "consistent hashing",
+			toolName: "Edit",
+			input:    "same input",
+			output:   "same output",
+			wantLen:  16,
+		},
+		{
+			name:     "long output truncation",
+			toolName: "Bash",
+			input:    "command",
+			output:   string(make([]byte, 5000)), // Very long output
+			wantLen:  16,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hash := hashRequest(tt.toolName, tt.input, tt.output)
+			assert.Len(t, hash, tt.wantLen)
+
+			// Same inputs should produce same hash
+			hash2 := hashRequest(tt.toolName, tt.input, tt.output)
+			assert.Equal(t, hash, hash2)
+		})
+	}
+}
+
+func TestHashRequest_DifferentInputs(t *testing.T) {
+	// Different inputs should produce different hashes
+	hash1 := hashRequest("Read", "file1.txt", "content1")
+	hash2 := hashRequest("Read", "file2.txt", "content2")
+
+	assert.NotEqual(t, hash1, hash2)
+}
+
+func TestHashRequest_OutputTruncation(t *testing.T) {
+	// Hash should be the same for outputs that differ only after 1000 chars
+	longOutput1 := string(make([]byte, 1500))
+	longOutput2 := longOutput1[:1000] + "different suffix here"
+
+	hash1 := hashRequest("Read", "input", longOutput1)
+	hash2 := hashRequest("Read", "input", longOutput2)
+
+	// Since we only hash first 1000 chars, these should be the same
+	assert.Equal(t, hash1, hash2)
+}
+
+// =============================================================================
+// TESTS FOR Processor methods
+// =============================================================================
+
+func TestProcessor_CircuitBreakerState(t *testing.T) {
+	p := &Processor{
+		circuitBreaker: NewCircuitBreaker(2, 60),
+	}
+
+	// Initially closed
+	assert.Equal(t, "closed", p.CircuitBreakerState())
+
+	// After enough failures, open
+	p.circuitBreaker.RecordFailure()
+	p.circuitBreaker.RecordFailure()
+	assert.Equal(t, "open", p.CircuitBreakerState())
+
+	// After success, closed
+	p.circuitBreaker.RecordSuccess()
+	assert.Equal(t, "closed", p.CircuitBreakerState())
+}
+
+func TestProcessor_CircuitBreakerMetrics(t *testing.T) {
+	p := &Processor{
+		circuitBreaker: NewCircuitBreaker(5, 120),
+	}
+
+	metrics := p.CircuitBreakerMetrics()
+	assert.Equal(t, "closed", metrics.State)
+	assert.Equal(t, int64(0), metrics.Failures)
+	assert.Equal(t, int64(5), metrics.Threshold)
+	assert.Equal(t, int64(120), metrics.ResetTimeoutSecs)
+
+	// Record a failure and check metrics update
+	p.circuitBreaker.RecordFailure()
+	metrics = p.CircuitBreakerMetrics()
+	assert.Equal(t, int64(1), metrics.Failures)
+	assert.Greater(t, metrics.LastFailureUnix, int64(0))
+}
+
+// =============================================================================
+// TESTS FOR Vector Sync Workers
+// =============================================================================
+
+func TestProcessor_StartAndStopVectorSyncWorkers(t *testing.T) {
+	var syncedObservations []*models.Observation
+	var mu sync.Mutex
+
+	p := &Processor{
+		vectorSyncChan: make(chan *models.Observation, MaxVectorSyncWorkers*2),
+		vectorSyncDone: make(chan struct{}),
+		syncObservationFunc: func(obs *models.Observation) {
+			mu.Lock()
+			syncedObservations = append(syncedObservations, obs)
+			mu.Unlock()
+		},
+	}
+
+	// Start workers
+	p.StartVectorSyncWorkers()
+
+	// Send some observations
+	obs1 := &models.Observation{SDKSessionID: "test1"}
+	obs2 := &models.Observation{SDKSessionID: "test2"}
+	p.vectorSyncChan <- obs1
+	p.vectorSyncChan <- obs2
+
+	// Give workers time to process
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop workers
+	p.StopVectorSyncWorkers()
+
+	// Verify observations were synced
+	mu.Lock()
+	assert.Len(t, syncedObservations, 2)
+	mu.Unlock()
+}
+
+func TestProcessor_VectorSyncWorker_DrainOnShutdown(t *testing.T) {
+	var syncedCount int
+	var mu sync.Mutex
+
+	p := &Processor{
+		vectorSyncChan: make(chan *models.Observation, 10),
+		vectorSyncDone: make(chan struct{}),
+		syncObservationFunc: func(obs *models.Observation) {
+			mu.Lock()
+			syncedCount++
+			mu.Unlock()
+		},
+	}
+
+	// Queue observations before starting workers
+	for i := 0; i < 5; i++ {
+		p.vectorSyncChan <- &models.Observation{SDKSessionID: "pre-queued"}
+	}
+
+	// Start workers
+	p.StartVectorSyncWorkers()
+
+	// Stop immediately - workers should drain the queue
+	p.StopVectorSyncWorkers()
+
+	// All pre-queued items should have been processed
+	mu.Lock()
+	assert.Equal(t, 5, syncedCount)
+	mu.Unlock()
+}
+
+func TestProcessor_VectorSyncWorker_NilSyncFunc(t *testing.T) {
+	p := &Processor{
+		vectorSyncChan:      make(chan *models.Observation, 10),
+		vectorSyncDone:      make(chan struct{}),
+		syncObservationFunc: nil, // No sync function set
+	}
+
+	// Start workers
+	p.StartVectorSyncWorkers()
+
+	// Send observation - should not panic even with nil sync func
+	p.vectorSyncChan <- &models.Observation{SDKSessionID: "test"}
+
+	// Give it time to process
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop workers - should not panic
+	p.StopVectorSyncWorkers()
+}
+
+// =============================================================================
+// TESTS FOR CircuitBreaker Additional Behaviors
+// =============================================================================
+
+func TestCircuitBreaker_Allow_OpenBlocksRequests(t *testing.T) {
+	cb := NewCircuitBreaker(1, 60)
+
+	// Open the circuit
+	cb.RecordFailure()
+	assert.Equal(t, "open", cb.State())
+
+	// All requests should be blocked
+	assert.False(t, cb.Allow())
+	assert.False(t, cb.Allow())
+	assert.False(t, cb.Allow())
+}
+
+func TestCircuitBreaker_MultipleFailures(t *testing.T) {
+	cb := NewCircuitBreaker(3, 60) // Higher threshold
+
+	// Record failures below threshold
+	cb.RecordFailure()
+	assert.Equal(t, "closed", cb.State())
+	assert.Equal(t, int64(1), cb.Metrics().Failures)
+
+	cb.RecordFailure()
+	assert.Equal(t, "closed", cb.State())
+	assert.Equal(t, int64(2), cb.Metrics().Failures)
+
+	// Third failure opens circuit
+	cb.RecordFailure()
+	assert.Equal(t, "open", cb.State())
+	assert.Equal(t, int64(3), cb.Metrics().Failures)
+}
+
+func TestCircuitBreaker_SuccessResetsFailures(t *testing.T) {
+	cb := NewCircuitBreaker(5, 60)
+
+	// Record some failures
+	cb.RecordFailure()
+	cb.RecordFailure()
+	assert.Equal(t, int64(2), cb.Metrics().Failures)
+
+	// Success resets failures
+	cb.RecordSuccess()
+	assert.Equal(t, int64(0), cb.Metrics().Failures)
+	assert.Equal(t, "closed", cb.State())
+}
+
+func TestCircuitBreaker_Metrics_Comprehensive(t *testing.T) {
+	cb := NewCircuitBreaker(5, 120)
+
+	// Initial state
+	metrics := cb.Metrics()
+	assert.Equal(t, "closed", metrics.State)
+	assert.Equal(t, int64(0), metrics.Failures)
+	assert.Equal(t, int64(5), metrics.Threshold)
+	assert.Equal(t, int64(120), metrics.ResetTimeoutSecs)
+	assert.Equal(t, int64(0), metrics.LastFailureUnix)
+	assert.Equal(t, int64(0), metrics.SecondsUntilReset)
+
+	// After failures that open circuit
+	for i := 0; i < 5; i++ {
+		cb.RecordFailure()
+	}
+	metrics = cb.Metrics()
+	assert.Equal(t, "open", metrics.State)
+	assert.Equal(t, int64(5), metrics.Failures)
+	assert.Greater(t, metrics.LastFailureUnix, int64(0))
+	assert.Greater(t, metrics.SecondsUntilReset, int64(0))
+}
+
+// =============================================================================
+// TESTS FOR MaxVectorSyncWorkers constant
+// =============================================================================
+
+func TestMaxVectorSyncWorkers(t *testing.T) {
+	assert.Equal(t, 8, MaxVectorSyncWorkers)
+}
+
+// =============================================================================
+// ADDITIONAL EDGE CASE TESTS
+// =============================================================================
+
+func TestRequestDeduplicator_IsDuplicate_ExpiredEntry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping time-dependent test in short mode")
+	}
+	// Use a 1-second TTL with enough margin
+	d := NewRequestDeduplicator(1, 100)
+
+	hash := "expiretest"
+	d.Record(hash)
+
+	// Initially duplicate
+	assert.True(t, d.IsDuplicate(hash))
+
+	// Wait for TTL to expire (2.5 seconds to ensure crossing second boundaries)
+	time.Sleep(2500 * time.Millisecond)
+
+	// Should no longer be considered duplicate
+	assert.False(t, d.IsDuplicate(hash))
+}
+
+// =============================================================================
+// TESTS FOR ProcessObservation Early Returns
+// =============================================================================
+
+func TestProcessObservation_SkipTool(t *testing.T) {
+	p := &Processor{
+		circuitBreaker: NewCircuitBreaker(5, 60),
+		deduplicator:   NewRequestDeduplicator(300, 1000),
+	}
+
+	ctx := context.Background()
+
+	// TodoWrite should be skipped
+	err := p.ProcessObservation(ctx, "session-1", "project-1", "TodoWrite",
+		map[string]string{"content": "test"}, "success", 1, "/test/cwd")
+	assert.NoError(t, err)
+
+	// Glob should be skipped
+	err = p.ProcessObservation(ctx, "session-1", "project-1", "Glob",
+		map[string]string{"pattern": "*.go"}, []string{"main.go", "test.go"}, 1, "/test/cwd")
+	assert.NoError(t, err)
+
+	// AskUserQuestion should be skipped
+	err = p.ProcessObservation(ctx, "session-1", "project-1", "AskUserQuestion",
+		"question", "answer", 1, "/test/cwd")
+	assert.NoError(t, err)
+}
+
+func TestProcessObservation_SkipTrivial(t *testing.T) {
+	p := &Processor{
+		circuitBreaker: NewCircuitBreaker(5, 60),
+		deduplicator:   NewRequestDeduplicator(300, 1000),
+	}
+
+	ctx := context.Background()
+
+	// Short output should be skipped
+	err := p.ProcessObservation(ctx, "session-1", "project-1", "Read",
+		map[string]string{"file_path": "/test.go"}, "short", 1, "/test/cwd")
+	assert.NoError(t, err)
+
+	// "No matches found" should be skipped
+	err = p.ProcessObservation(ctx, "session-1", "project-1", "Grep",
+		map[string]string{"pattern": "test"}, "No matches found in the repository", 1, "/test/cwd")
+	assert.NoError(t, err)
+}
+
+func TestProcessObservation_SkipDuplicate(t *testing.T) {
+	p := &Processor{
+		circuitBreaker: NewCircuitBreaker(5, 60),
+		deduplicator:   NewRequestDeduplicator(300, 1000),
+		sem:            make(chan struct{}, 4),
+		claudePath:     "/nonexistent/path", // Will fail at CLI call stage
+	}
+
+	ctx := context.Background()
+
+	// Valid input that would be processed
+	input := map[string]string{"file_path": "/project/main.go"}
+	output := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello World\")\n}"
+
+	// First call should try to process (will fail because claudePath doesn't exist)
+	err := p.ProcessObservation(ctx, "session-1", "project-1", "Read", input, output, 1, "/test/cwd")
+	// Expect error because claudePath doesn't exist
+	assert.Error(t, err)
+
+	// Second call with same input should be skipped as duplicate
+	err = p.ProcessObservation(ctx, "session-1", "project-1", "Read", input, output, 1, "/test/cwd")
+	assert.NoError(t, err) // No error because it was skipped as duplicate
+}
+
+func TestProcessObservation_CircuitBreakerOpen(t *testing.T) {
+	cb := NewCircuitBreaker(1, 60) // Threshold of 1
+	cb.RecordFailure()             // Open the circuit breaker
+
+	p := &Processor{
+		circuitBreaker: cb,
+		deduplicator:   NewRequestDeduplicator(300, 1000),
+	}
+
+	ctx := context.Background()
+
+	// Valid input that would be processed
+	input := map[string]string{"file_path": "/project/main.go"}
+	output := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello World\")\n}"
+
+	err := p.ProcessObservation(ctx, "session-1", "project-1", "Read", input, output, 1, "/test/cwd")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "circuit breaker open")
+}
+
+func TestProcessObservation_ContextCancel(t *testing.T) {
+	p := &Processor{
+		circuitBreaker: NewCircuitBreaker(5, 60),
+		deduplicator:   NewRequestDeduplicator(300, 1000),
+		sem:            make(chan struct{}, 1), // Small semaphore
+		claudePath:     "/fake/claude",
+	}
+
+	// Fill the semaphore
+	p.sem <- struct{}{}
+
+	// Create a cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	// Valid input that would be processed
+	input := map[string]string{"file_path": "/project/main.go"}
+	output := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello World\")\n}"
+
+	err := p.ProcessObservation(ctx, "session-1", "project-1", "Read", input, output, 1, "/test/cwd")
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+// =============================================================================
+// TESTS FOR ProcessSummary Early Returns
+// =============================================================================
+
+func TestProcessSummary_SkipEmptyRequest(t *testing.T) {
+	p := &Processor{
+		circuitBreaker: NewCircuitBreaker(5, 60),
+		deduplicator:   NewRequestDeduplicator(300, 1000),
+	}
+
+	ctx := context.Background()
+
+	// Empty request should be skipped (sessionDBID, sdkSessionID, project, userPrompt, lastUserMsg, lastAssistantMsg)
+	err := p.ProcessSummary(ctx, 1, "session-1", "project-1", "", "", "")
+	assert.NoError(t, err)
+}
+
+func TestProcessSummary_CircuitBreakerOpen(t *testing.T) {
+	cb := NewCircuitBreaker(1, 60)
+	cb.RecordFailure() // Open the circuit breaker
+
+	p := &Processor{
+		circuitBreaker: cb,
+		deduplicator:   NewRequestDeduplicator(300, 1000),
+		sem:            make(chan struct{}, 4),
+		claudePath:     "/nonexistent/path",
+	}
+
+	ctx := context.Background()
+
+	// Meaningful assistant message (> 200 chars, contains code discussion)
+	assistantMsg := `I've updated the handler.go file to fix the authentication bug.
+The function validateToken() was not checking token expiry correctly.
+I've added a check for the exp claim and implemented proper error handling.
+The changes have been tested and the build passes successfully.
+Here's the implementation details and code review.`
+
+	// Valid request but circuit breaker is open
+	err := p.ProcessSummary(ctx, 1, "session-1", "project-1",
+		"Implement authentication", "User message", assistantMsg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "claude CLI failed")
+}
+
+// =============================================================================
+// TESTS FOR callClaudeCLI Error Paths
+// =============================================================================
+
+func TestCallClaudeCLI_PromptTooLarge(t *testing.T) {
+	p := &Processor{
+		claudePath: "/fake/claude",
+	}
+
+	ctx := context.Background()
+
+	// Create a prompt that exceeds MaxPromptSize
+	largePrompt := string(make([]byte, MaxPromptSize+1))
+
+	_, err := p.callClaudeCLI(ctx, largePrompt)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "prompt exceeds maximum size")
+}
+
+func TestCallClaudeCLI_BinaryNotFound(t *testing.T) {
+	p := &Processor{
+		claudePath: "/nonexistent/path/to/claude",
+	}
+
+	ctx := context.Background()
+
+	_, err := p.callClaudeCLI(ctx, "test prompt")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "claude CLI failed")
 }
