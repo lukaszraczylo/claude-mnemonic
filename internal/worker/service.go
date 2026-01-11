@@ -1443,12 +1443,10 @@ func (s *Service) getRecentSearchQueries(project string, limit int) []RecentSear
 	}
 
 	// Filter by project (iterate from newest to oldest)
-	// Cap capacity to maxRecentQueries to prevent excessive allocation from user input
-	capacity := limit
-	if capacity > maxRecentQueries {
-		capacity = maxRecentQueries
-	}
-	result := make([]RecentSearchQuery, 0, capacity)
+	// Use constant capacity to prevent excessive allocation from user input
+	// limit is already bounded to maxRecentQueries above, but we use the constant
+	// directly here to satisfy static analysis tools
+	result := make([]RecentSearchQuery, 0, maxRecentQueries)
 	for i := 0; i < s.recentQueriesLen; i++ {
 		idx := (s.recentQueriesHead + i) % maxRecentQueries
 		q := s.recentQueriesBuf[idx]

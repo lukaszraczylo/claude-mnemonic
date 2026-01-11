@@ -1081,3 +1081,100 @@ func BenchmarkSanitizePromptWithControlChars(b *testing.B) {
 		sanitizePrompt(prompt)
 	}
 }
+
+// TestSafeResolvePath tests the path traversal protection.
+func TestSafeResolvePath(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name     string
+		path     string
+		cwd      string
+		wantPath string
+		wantOk   bool
+	}{
+		{
+			name:     "simple relative path",
+			path:     "file.txt",
+			cwd:      tmpDir,
+			wantOk:   true,
+			wantPath: filepath.Join(tmpDir, "file.txt"),
+		},
+		{
+			name:     "nested relative path",
+			path:     "subdir/file.txt",
+			cwd:      tmpDir,
+			wantOk:   true,
+			wantPath: filepath.Join(tmpDir, "subdir", "file.txt"),
+		},
+		{
+			name:   "path traversal with ..",
+			path:   "../etc/passwd",
+			cwd:    tmpDir,
+			wantOk: false,
+		},
+		{
+			name:   "path traversal with multiple ..",
+			path:   "../../etc/passwd",
+			cwd:    tmpDir,
+			wantOk: false,
+		},
+		{
+			name:   "path traversal hidden in middle",
+			path:   "subdir/../../../etc/passwd",
+			cwd:    tmpDir,
+			wantOk: false,
+		},
+		{
+			name:   "just parent directory",
+			path:   "..",
+			cwd:    tmpDir,
+			wantOk: false,
+		},
+		{
+			name:     "absolute path without cwd",
+			path:     "/some/absolute/path",
+			cwd:      "",
+			wantOk:   true,
+			wantPath: "/some/absolute/path",
+		},
+		{
+			name:     "relative path without cwd",
+			path:     "relative/path",
+			cwd:      "",
+			wantOk:   true,
+			wantPath: "relative/path",
+		},
+		{
+			name:     "current directory reference",
+			path:     "./file.txt",
+			cwd:      tmpDir,
+			wantOk:   true,
+			wantPath: filepath.Join(tmpDir, "file.txt"),
+		},
+		{
+			name:   "absolute path outside cwd",
+			path:   "/etc/passwd",
+			cwd:    tmpDir,
+			wantOk: false,
+		},
+		{
+			name:     "absolute path inside cwd",
+			path:     filepath.Join(tmpDir, "inside.txt"),
+			cwd:      tmpDir,
+			wantOk:   true,
+			wantPath: filepath.Join(tmpDir, "inside.txt"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotPath, gotOk := safeResolvePath(tt.path, tt.cwd)
+			assert.Equal(t, tt.wantOk, gotOk, "ok status mismatch")
+			if tt.wantPath != "" && gotOk {
+				assert.Equal(t, tt.wantPath, gotPath, "path mismatch")
+			}
+		})
+	}
+}

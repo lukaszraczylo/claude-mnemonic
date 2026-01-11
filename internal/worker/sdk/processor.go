@@ -784,24 +784,41 @@ func toJSONString(v any) string {
 
 // safeResolvePath resolves a path relative to cwd and validates it doesn't escape the cwd directory.
 // Returns the resolved absolute path and true if valid, or empty string and false if path traversal detected.
+// This function is a security sanitizer for path traversal attacks.
 func safeResolvePath(path, cwd string) (string, bool) {
-	if filepath.IsAbs(path) {
-		// Absolute paths are allowed as-is
-		return filepath.Clean(path), true
+	// Clean the input path to normalize any .. or . components
+	cleanPath := filepath.Clean(path)
+
+	// Reject paths that explicitly contain parent directory traversal after cleaning
+	if strings.Contains(cleanPath, "..") {
+		return "", false
 	}
+
+	if filepath.IsAbs(cleanPath) {
+		// For absolute paths, verify they're within cwd if cwd is specified
+		if cwd != "" {
+			cleanCwd := filepath.Clean(cwd)
+			if !strings.HasPrefix(cleanPath, cleanCwd+string(filepath.Separator)) && cleanPath != cleanCwd {
+				return "", false
+			}
+		}
+		return cleanPath, true
+	}
+
 	if cwd == "" {
-		return filepath.Clean(path), true
+		return cleanPath, true
 	}
 
 	// Clean the cwd first
 	cleanCwd := filepath.Clean(cwd)
 
 	// Join and clean the path
-	absPath := filepath.Clean(filepath.Join(cleanCwd, path))
+	absPath := filepath.Join(cleanCwd, cleanPath)
 
-	// Verify the resolved path is still within cwd (prevents path traversal via ..)
-	// Use HasPrefix on cleaned paths to detect escapes
-	if !strings.HasPrefix(absPath, cleanCwd+string(filepath.Separator)) && absPath != cleanCwd {
+	// Use filepath.Rel to verify the path is actually within cwd
+	// If Rel returns a path starting with "..", it escapes the base
+	rel, err := filepath.Rel(cleanCwd, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", false
 	}
 
@@ -905,12 +922,13 @@ func GetFileMtimes(paths []string, cwd string) map[string]int64 {
 // GetFileContent reads file content for verification purposes.
 // Returns content and ok status.
 func GetFileContent(path, cwd string) (string, bool) {
-	absPath := path
-	if !filepath.IsAbs(path) && cwd != "" {
-		absPath = filepath.Join(cwd, path)
+	absPath, ok := safeResolvePath(path, cwd)
+	if !ok {
+		// Reject paths that attempt directory traversal
+		return "", false
 	}
 
-	content, err := os.ReadFile(absPath) // #nosec G304 -- intentional file read for verification
+	content, err := os.ReadFile(absPath) // #nosec G304 -- path validated by safeResolvePath
 	if err != nil {
 		return "", false
 	}
