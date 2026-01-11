@@ -2620,8 +2620,21 @@ func (s *Server) handleExportObservations(ctx context.Context, args json.RawMess
 			}
 			lines = append(lines, string(line))
 		}
-		output = fmt.Sprintf(`{"format":"jsonl","count":%d,"data":"%s"}`,
-			len(observations), escapeJSONString(strings.Join(lines, "\n")))
+		// Use proper JSON marshaling to avoid injection issues
+		jsonlOutput := struct {
+			Format string `json:"format"`
+			Data   string `json:"data"`
+			Count  int    `json:"count"`
+		}{
+			Format: "jsonl",
+			Count:  len(observations),
+			Data:   strings.Join(lines, "\n"),
+		}
+		outputBytes, err := json.Marshal(jsonlOutput)
+		if err != nil {
+			return "", fmt.Errorf("marshal jsonl output: %w", err)
+		}
+		output = string(outputBytes)
 
 	case "markdown":
 		// Markdown format for human reading
@@ -2683,16 +2696,6 @@ func (s *Server) handleExportObservations(ctx context.Context, args json.RawMess
 	}
 
 	return output, nil
-}
-
-// escapeJSONString escapes a string for use in JSON.
-func escapeJSONString(s string) string {
-	b, _ := json.Marshal(s)
-	// Remove surrounding quotes
-	if len(b) >= 2 {
-		return string(b[1 : len(b)-1])
-	}
-	return s
 }
 
 // handleCheckSystemHealth performs comprehensive system health checks.

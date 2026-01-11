@@ -782,6 +782,32 @@ func toJSONString(v any) string {
 	return string(b)
 }
 
+// safeResolvePath resolves a path relative to cwd and validates it doesn't escape the cwd directory.
+// Returns the resolved absolute path and true if valid, or empty string and false if path traversal detected.
+func safeResolvePath(path, cwd string) (string, bool) {
+	if filepath.IsAbs(path) {
+		// Absolute paths are allowed as-is
+		return filepath.Clean(path), true
+	}
+	if cwd == "" {
+		return filepath.Clean(path), true
+	}
+
+	// Clean the cwd first
+	cleanCwd := filepath.Clean(cwd)
+
+	// Join and clean the path
+	absPath := filepath.Clean(filepath.Join(cleanCwd, path))
+
+	// Verify the resolved path is still within cwd (prevents path traversal via ..)
+	// Use HasPrefix on cleaned paths to detect escapes
+	if !strings.HasPrefix(absPath, cleanCwd+string(filepath.Separator)) && absPath != cleanCwd {
+		return "", false
+	}
+
+	return absPath, true
+}
+
 // captureFileMtimes captures current modification times for tracked files.
 // Returns a map of absolute file paths to their mtime in epoch milliseconds.
 // For large file lists (>10 files), uses parallel stat calls for better performance.
@@ -809,9 +835,10 @@ func captureFileMtimesSequential(paths map[string]struct{}, cwd string) map[stri
 	mtimes := make(map[string]int64, len(paths))
 
 	for path := range paths {
-		absPath := path
-		if !filepath.IsAbs(path) && cwd != "" {
-			absPath = filepath.Join(cwd, path)
+		absPath, ok := safeResolvePath(path, cwd)
+		if !ok {
+			// Skip paths that attempt directory traversal
+			continue
 		}
 
 		info, err := os.Stat(absPath)
@@ -841,9 +868,10 @@ func captureFileMtimesParallel(paths map[string]struct{}, cwd string) map[string
 			sem <- struct{}{}        // Acquire
 			defer func() { <-sem }() // Release
 
-			absPath := p
-			if !filepath.IsAbs(p) && cwd != "" {
-				absPath = filepath.Join(cwd, p)
+			absPath, ok := safeResolvePath(p, cwd)
+			if !ok {
+				// Skip paths that attempt directory traversal
+				return
 			}
 
 			info, err := os.Stat(absPath)
