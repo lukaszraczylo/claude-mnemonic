@@ -4,6 +4,7 @@ package worker
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -13,7 +14,14 @@ import (
 func (s *Service) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	info, err := s.updater.CheckForUpdate(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// Return a proper JSON response for errors instead of 500
+		// This allows the frontend to handle it gracefully
+		writeJSON(w, map[string]any{
+			"available":       false,
+			"current_version": s.version,
+			"error":           err.Error(),
+			"rate_limited":    strings.Contains(err.Error(), "403"),
+		})
 		return
 	}
 	writeJSON(w, info)

@@ -1198,6 +1198,8 @@ func (s *Service) setupRoutes() {
 	// Vector management endpoints
 	s.router.Post("/api/vectors/rebuild", s.handleTriggerVectorRebuild)
 	s.router.Get("/api/vectors/health", s.handleVectorHealth)
+	s.router.Get("/api/vector/metrics", s.handleVectorMetrics)
+	s.router.Get("/api/graph/stats", s.handleGraphStats)
 
 	// Readiness check - returns 200 only when fully initialized
 	s.router.Get("/api/ready", s.handleReady)

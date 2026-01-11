@@ -89,10 +89,19 @@ async function fetchWithRetry<T>(url: string, options: FetchOptions = {}): Promi
   throw lastError!
 }
 
+interface ObservationsResponse {
+  observations: Observation[]
+  total: number
+  limit: number
+  offset: number
+  hasMore: boolean
+}
+
 export async function fetchObservations(limit: number = 100, project?: string, signal?: AbortSignal): Promise<Observation[]> {
   const params = new URLSearchParams({ limit: String(limit) })
   if (project) params.append('project', project)
-  return fetchWithRetry<Observation[]>(`${API_BASE}/observations?${params}`, { signal })
+  const response = await fetchWithRetry<ObservationsResponse>(`${API_BASE}/observations?${params}`, { signal })
+  return response.observations || []
 }
 
 export async function fetchPrompts(limit: number = 100, project?: string, signal?: AbortSignal): Promise<UserPrompt[]> {
