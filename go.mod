@@ -7,7 +7,7 @@ replace github.com/sugarme/tokenizer => github.com/clems4ever/tokenizer v0.0.0-2
 require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/go-chi/chi/v5 v5.2.3
+	github.com/go-chi/chi/v5 v5.2.4
 	github.com/go-gormigrate/gormigrate/v2 v2.1.5
 	github.com/goccy/go-json v0.10.5
 	github.com/mattn/go-sqlite3 v1.14.33
