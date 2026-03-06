@@ -4,8 +4,10 @@ package gorm
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -23,6 +25,7 @@ const MaxPromptsGlobal = 500
 type PromptStore struct {
 	db          *gorm.DB
 	cleanupFunc PromptCleanupFunc
+	cleanupMu   sync.RWMutex
 }
 
 // NewPromptStore creates a new prompt store.
@@ -35,6 +38,8 @@ func NewPromptStore(store *Store, cleanupFunc PromptCleanupFunc) *PromptStore {
 
 // SetCleanupFunc sets the callback for when prompts are deleted during cleanup.
 func (s *PromptStore) SetCleanupFunc(fn PromptCleanupFunc) {
+	s.cleanupMu.Lock()
+	defer s.cleanupMu.Unlock()
 	s.cleanupFunc = fn
 }
 
@@ -81,9 +86,15 @@ func (s *PromptStore) SaveUserPromptWithMatches(ctx context.Context, claudeSessi
 	go func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		deletedIDs, _ := s.CleanupOldPrompts(cleanupCtx)
-		if len(deletedIDs) > 0 && s.cleanupFunc != nil {
-			s.cleanupFunc(cleanupCtx, deletedIDs)
+		if deletedIDs, err := s.CleanupOldPrompts(cleanupCtx); err != nil {
+			log.Warn().Err(err).Msg("Background prompt cleanup failed")
+		} else if len(deletedIDs) > 0 {
+			s.cleanupMu.RLock()
+			fn := s.cleanupFunc
+			s.cleanupMu.RUnlock()
+			if fn != nil {
+				fn(cleanupCtx, deletedIDs)
+			}
 		}
 	}()
 

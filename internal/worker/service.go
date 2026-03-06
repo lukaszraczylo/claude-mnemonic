@@ -43,6 +43,13 @@ const (
 	// QueueProcessInterval is how often the background queue processor runs.
 	QueueProcessInterval = 2 * time.Second
 
+	// reinitializationDrainDelay is the delay after marking the service as not ready
+	// to allow in-flight requests to complete before reinitializing.
+	reinitializationDrainDelay = 200 * time.Millisecond
+
+	// MaxConcurrentProcessing limits the number of concurrent session processing goroutines.
+	MaxConcurrentProcessing = 4
+
 	// VectorSyncMaxRetries is the maximum number of retries for vector sync operations.
 	VectorSyncMaxRetries = 3
 
@@ -138,6 +145,7 @@ type Service struct {
 	updater            *update.Updater
 	rateLimiter        *PerClientRateLimiter
 	expensiveOpLimiter *ExpensiveOperationLimiter
+	contextCache       sync.Map
 	version            string
 	recentQueriesBuf   [maxRecentQueries]RecentSearchQuery
 	wg                 sync.WaitGroup
@@ -176,6 +184,13 @@ type RebuildStatus struct {
 type staleVerifyRequest struct {
 	cwd           string
 	observationID int64
+}
+
+// contextCacheEntry caches clustering results for context injection.
+type contextCacheEntry struct {
+	timestamp    time.Time
+	observations []*models.Observation
+	obsCount     int
 }
 
 // RecentSearchQuery tracks a search query for analytics.
@@ -286,6 +301,11 @@ func (s *Service) setupVectorSyncCallbacks(
 				log.Warn().Err(err).Int64("id", summary.ID).Msg("Failed to sync summary to sqlite-vec after retries")
 			}
 		})
+	}
+
+	// Set vector client on processor for write-time deduplication
+	if processor != nil && s.vectorClient != nil {
+		processor.SetVectorClient(s.vectorClient)
 	}
 
 	// Set cleanup callback on observation store to sync deletes to vector store
@@ -614,6 +634,7 @@ func (s *Service) startWatchers() {
 func (s *Service) reinitializeDatabase() {
 	// Block new requests
 	s.ready.Store(false)
+	time.Sleep(reinitializationDrainDelay) // Allow in-flight requests to complete
 	log.Info().Msg("Database reinitialization starting...")
 
 	// Get old store references
@@ -1587,12 +1608,13 @@ func (s *Service) processQueue() {
 
 // processAllSessions processes pending messages for all active sessions.
 // Messages are processed in parallel using goroutines, with concurrency
-// limited by the processor's semaphore.
+// limited by a channel-based semaphore.
 func (s *Service) processAllSessions() {
 	// Get all sessions with pending messages
 	sessions := s.sessionManager.GetAllSessions()
 
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, MaxConcurrentProcessing)
 
 	for _, sess := range sessions {
 		// Get pending messages
@@ -1601,11 +1623,13 @@ func (s *Service) processAllSessions() {
 			continue
 		}
 
-		// Process each message in a goroutine
+		// Process each message in a goroutine with semaphore
 		for _, msg := range messages {
 			wg.Add(1)
+			sem <- struct{}{} // Acquire semaphore slot
 			go func(sess *session.ActiveSession, msg session.PendingMessage) {
 				defer wg.Done()
+				defer func() { <-sem }() // Release semaphore slot
 
 				switch msg.Type {
 				case session.MessageTypeObservation:

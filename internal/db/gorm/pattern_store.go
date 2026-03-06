@@ -4,6 +4,8 @@ package gorm
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -18,6 +20,7 @@ type PatternCleanupFunc func(ctx context.Context, deletedIDs []int64)
 type PatternStore struct {
 	db          *gorm.DB
 	cleanupFunc PatternCleanupFunc
+	cleanupMu   sync.RWMutex
 }
 
 // NewPatternStore creates a new pattern store.
@@ -29,6 +32,8 @@ func NewPatternStore(store *Store) *PatternStore {
 
 // SetCleanupFunc sets the callback for when patterns are deleted.
 func (s *PatternStore) SetCleanupFunc(fn PatternCleanupFunc) {
+	s.cleanupMu.Lock()
+	defer s.cleanupMu.Unlock()
 	s.cleanupFunc = fn
 }
 
@@ -238,6 +243,9 @@ func (s *PatternStore) MarkPatternDeprecated(ctx context.Context, id int64) erro
 
 // MergePatterns merges a source pattern into a target pattern.
 func (s *PatternStore) MergePatterns(ctx context.Context, sourceID, targetID int64) error {
+	if sourceID == targetID {
+		return fmt.Errorf("cannot merge pattern into itself")
+	}
 	// Get both patterns
 	source, err := s.GetPatternByID(ctx, sourceID)
 	if err != nil {
@@ -294,8 +302,13 @@ func (s *PatternStore) MergePatterns(ctx context.Context, sourceID, targetID int
 func (s *PatternStore) DeletePattern(ctx context.Context, id int64) error {
 	result := s.db.WithContext(ctx).Delete(&Pattern{}, id)
 
-	if result.Error == nil && s.cleanupFunc != nil {
-		s.cleanupFunc(ctx, []int64{id})
+	if result.Error == nil {
+		s.cleanupMu.RLock()
+		fn := s.cleanupFunc
+		s.cleanupMu.RUnlock()
+		if fn != nil {
+			fn(ctx, []int64{id})
+		}
 	}
 
 	return result.Error

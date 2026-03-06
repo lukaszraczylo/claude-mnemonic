@@ -7,6 +7,8 @@
 
 set -e
 
+INSTALLER_VERSION="1.1.0"
+
 # Configuration
 GITHUB_REPO="lukaszraczylo/claude-mnemonic"
 INSTALL_DIR="$HOME/.claude/plugins/marketplaces/claude-mnemonic"
@@ -38,6 +40,50 @@ warn() {
 error() {
     echo -e "${RED}[ERROR]${NC} $1"
     exit 1
+}
+
+# Gracefully stop worker processes (SIGTERM first, then SIGKILL after timeout)
+graceful_stop_worker() {
+    # Send SIGTERM first
+    pkill -TERM -f 'claude-mnemonic.*worker' 2>/dev/null || true
+    pkill -TERM -f '\.claude/plugins/.*/worker' 2>/dev/null || true
+    if command -v lsof &> /dev/null; then
+        lsof -ti :37777 2>/dev/null | xargs kill -TERM 2>/dev/null || true
+    elif command -v ss &> /dev/null; then
+        ss -tlnp 'sport = :37777' 2>/dev/null | awk 'NR>1 {print $6}' | grep -oP 'pid=\K[0-9]+' | xargs -r kill -TERM 2>/dev/null || true
+    elif command -v fuser &> /dev/null; then
+        fuser -k -TERM 37777/tcp 2>/dev/null || true
+    fi
+
+    # Wait up to 5 seconds for graceful shutdown
+    local waited=0
+    while [[ $waited -lt 5 ]]; do
+        if ! pgrep -f 'claude-mnemonic.*worker' &>/dev/null && ! pgrep -f '\.claude/plugins/.*/worker' &>/dev/null; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    # Force kill if still running
+    pkill -9 -f 'claude-mnemonic.*worker' 2>/dev/null || true
+    pkill -9 -f '\.claude/plugins/.*/worker' 2>/dev/null || true
+    if command -v lsof &> /dev/null; then
+        lsof -ti :37777 2>/dev/null | xargs kill -9 2>/dev/null || true
+    elif command -v ss &> /dev/null; then
+        ss -tlnp 'sport = :37777' 2>/dev/null | awk 'NR>1 {print $6}' | grep -oP 'pid=\K[0-9]+' | xargs -r kill -9 2>/dev/null || true
+    elif command -v fuser &> /dev/null; then
+        fuser -k 37777/tcp 2>/dev/null || true
+    fi
+    sleep 1
+
+    # Remove stale PID cache to prevent hooks from using old worker info
+    rm -f "$HOME/.claude-mnemonic/.worker-cache" 2>/dev/null || true
+
+    # Verify process is gone
+    if pgrep -f 'claude-mnemonic.*worker' &>/dev/null; then
+        warn "Could not stop existing worker process"
+    fi
 }
 
 # Detect OS and architecture
@@ -131,7 +177,7 @@ download_release() {
     local tmp_dir
 
     tmp_dir=$(mktemp -d)
-    trap "rm -rf $tmp_dir" EXIT
+    trap 'rm -rf "$tmp_dir"' EXIT
 
     # Construct download URL (use .zip for Windows, .tar.gz for others)
     local archive_ext="tar.gz"
@@ -147,8 +193,35 @@ download_release() {
         error "Failed to download release from: $download_url"
     fi
 
+    # Verify download integrity via checksum
+    local checksum_url="${download_url}.sha256"
+    info "Verifying download integrity..."
+    if curl -sSL -o "$tmp_dir/checksum.sha256" "$checksum_url" 2>/dev/null; then
+        local expected_hash actual_hash
+        expected_hash=$(awk '{print $1}' "$tmp_dir/checksum.sha256")
+        if command -v shasum &> /dev/null; then
+            actual_hash=$(shasum -a 256 "$tmp_dir/release.${archive_ext}" | awk '{print $1}')
+        elif command -v sha256sum &> /dev/null; then
+            actual_hash=$(sha256sum "$tmp_dir/release.${archive_ext}" | awk '{print $1}')
+        else
+            warn "No SHA256 tool found (shasum or sha256sum), skipping checksum verification"
+            actual_hash=""
+        fi
+        if [[ -n "$actual_hash" ]]; then
+            if [[ "$expected_hash" != "$actual_hash" ]]; then
+                error "Checksum verification failed! Expected: $expected_hash Got: $actual_hash"
+            fi
+            success "Checksum verified"
+        fi
+    else
+        warn "No checksum file available at $checksum_url, skipping verification"
+    fi
+
     info "Extracting archive..."
     if [[ "$archive_ext" == "zip" ]]; then
+        if ! command -v unzip &> /dev/null; then
+            error "unzip is required for Windows archives but not installed"
+        fi
         if ! unzip -q "$tmp_dir/release.zip" -d "$tmp_dir"; then
             error "Failed to extract archive"
         fi
@@ -160,17 +233,7 @@ download_release() {
 
     # Stop existing worker if running
     info "Stopping existing worker (if running)..."
-    pkill -9 -f 'claude-mnemonic.*worker' 2>/dev/null || true
-    pkill -9 -f '\.claude/plugins/.*/worker' 2>/dev/null || true
-    # Kill process on port 37777 (use lsof on macOS, ss/fuser on Linux)
-    if command -v lsof &> /dev/null; then
-        lsof -ti :37777 | xargs kill -9 2>/dev/null || true
-    elif command -v ss &> /dev/null; then
-        ss -tlnp 'sport = :37777' 2>/dev/null | awk 'NR>1 {print $6}' | grep -oP 'pid=\K[0-9]+' | xargs -r kill -9 2>/dev/null || true
-    elif command -v fuser &> /dev/null; then
-        fuser -k 37777/tcp 2>/dev/null || true
-    fi
-    sleep 1
+    graceful_stop_worker
 
     # Create installation directories
     info "Installing to ${INSTALL_DIR}..."
@@ -178,13 +241,21 @@ download_release() {
     mkdir -p "$INSTALL_DIR/.claude-plugin"
     mkdir -p "$INSTALL_DIR/commands"
 
-    # Copy binaries
-    cp "$tmp_dir/worker" "$INSTALL_DIR/"
-    cp "$tmp_dir/mcp-server" "$INSTALL_DIR/"
-    cp "$tmp_dir/hooks/"* "$INSTALL_DIR/hooks/"
+    # Copy binaries (abort on failure — could indicate disk full or permissions issue)
+    if ! cp "$tmp_dir/worker" "$INSTALL_DIR/"; then
+        error "Failed to copy worker binary to $INSTALL_DIR/"
+    fi
+    if ! cp "$tmp_dir/mcp-server" "$INSTALL_DIR/"; then
+        error "Failed to copy mcp-server binary to $INSTALL_DIR/"
+    fi
+    if ! cp "$tmp_dir/hooks/"* "$INSTALL_DIR/hooks/"; then
+        error "Failed to copy hook binaries to $INSTALL_DIR/hooks/"
+    fi
 
     # Copy plugin configuration
-    cp "$tmp_dir/.claude-plugin/"* "$INSTALL_DIR/.claude-plugin/"
+    if ! cp "$tmp_dir/.claude-plugin/"* "$INSTALL_DIR/.claude-plugin/"; then
+        error "Failed to copy plugin configuration to $INSTALL_DIR/.claude-plugin/"
+    fi
 
     # Copy slash commands if they exist in the release
     if [[ -d "$tmp_dir/commands" ]]; then
@@ -338,78 +409,59 @@ start_worker() {
         error "Worker binary not found at $worker_path"
     fi
 
+    # Check for port conflict with a non-mnemonic process
+    if command -v lsof &> /dev/null; then
+        local port_pid
+        port_pid=$(lsof -ti :37777 2>/dev/null || true)
+        if [[ -n "$port_pid" ]]; then
+            local port_cmd
+            port_cmd=$(ps -p "$port_pid" -o comm= 2>/dev/null || true)
+            if [[ -n "$port_cmd" ]] && ! echo "$port_cmd" | grep -q "worker"; then
+                warn "Port 37777 is in use by another process: $port_cmd (PID $port_pid)"
+                warn "The worker may fail to start. Consider stopping the conflicting process."
+            fi
+        fi
+    fi
+
     info "Starting worker service..."
     nohup "$worker_path" > /tmp/claude-mnemonic-worker.log 2>&1 &
 
-    sleep 2
+    # Retry health check up to 5 times with 1s interval
+    local retries=0
+    local max_retries=5
+    while [[ $retries -lt $max_retries ]]; do
+        sleep 1
+        if curl -sS http://localhost:37777/health > /dev/null 2>&1; then
+            success "Worker started successfully at http://localhost:37777"
+            return 0
+        fi
+        retries=$((retries + 1))
+    done
 
-    if curl -sS http://localhost:37777/health > /dev/null 2>&1; then
-        success "Worker started successfully at http://localhost:37777"
-    else
-        warn "Worker may not have started properly. Check /tmp/claude-mnemonic-worker.log"
-    fi
+    warn "Worker may not have started properly after ${max_retries} attempts. Check /tmp/claude-mnemonic-worker.log"
 }
 
 # Check optional dependencies for semantic search
 check_optional_deps() {
-    local missing_deps=()
-    local install_hints=""
+    # Semantic search uses embedded ONNX runtime - no external Python/uvx dependencies needed
+    success "Semantic search enabled (embedded ONNX runtime)"
+}
 
-    # Check for Python 3.13+
-    if command -v python3 &> /dev/null; then
-        local py_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
-        if [[ "$py_version" < "3.13" ]]; then
-            missing_deps+=("Python 3.13+ (found $py_version)")
-        fi
-    else
-        missing_deps+=("Python 3.13+")
-    fi
-
-    # Check for uvx
-    if ! command -v uvx &> /dev/null; then
-        missing_deps+=("uvx")
-    fi
-
-    if [[ ${#missing_deps[@]} -gt 0 ]]; then
-        echo ""
-        warn "Optional dependencies missing (needed for semantic search):"
-        for dep in "${missing_deps[@]}"; do
-            echo "  - $dep"
-        done
-        echo ""
-
-        # Detect OS and show appropriate install command
-        case "$(uname -s)" in
-            Darwin)
-                info "Install on macOS:"
-                echo "  brew install python@3.13"
-                echo "  pip3 install uv"
-                ;;
-            Linux)
-                info "Install on Linux:"
-                echo "  sudo apt install python3 python3-pip"
-                echo "  pip3 install uv"
-                ;;
-            MINGW*|MSYS*|CYGWIN*)
-                info "Install on Windows:"
-                echo "  winget install Python.Python.3.13"
-                echo "  pip install uv"
-                ;;
-        esac
-        echo ""
-        info "Note: Requires Python 3.13+. Most package managers install the latest version."
-        echo ""
-        info "Semantic search will be disabled until these are installed."
-        info "Core functionality (SQLite storage, full-text search) will work."
-        echo ""
-    else
-        success "Optional dependencies found (semantic search enabled)"
+# Rollback partially installed files on failure
+INSTALL_COMPLETE=false
+cleanup_on_failure() {
+    if [[ "$INSTALL_COMPLETE" != "true" ]]; then
+        warn "Installation did not complete — cleaning up partial install..."
+        rm -rf "$INSTALL_DIR" 2>/dev/null || true
+        rm -rf "$CACHE_DIR" 2>/dev/null || true
     fi
 }
 
 # Main installation flow
 main() {
     local version="${1:-}"
+
+    trap cleanup_on_failure EXIT
 
     echo ""
     echo "╔═══════════════════════════════════════════════════════════╗"
@@ -455,6 +507,8 @@ main() {
     # Check optional dependencies
     check_optional_deps
 
+    INSTALL_COMPLETE=true
+
     echo ""
     echo "╔═══════════════════════════════════════════════════════════╗"
     echo "║                  Installation Complete!                   ║"
@@ -466,6 +520,12 @@ main() {
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
 }
+
+# Handle --version flag
+if [[ "${1:-}" == "--version" ]]; then
+    echo "claude-mnemonic installer v${INSTALLER_VERSION}"
+    exit 0
+fi
 
 # Handle --register-only flag
 if [[ "${1:-}" == "--register-only" ]]; then
@@ -486,17 +546,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     echo ""
 
     info "Stopping worker processes..."
-    pkill -9 -f 'claude-mnemonic.*worker' 2>/dev/null || true
-    pkill -9 -f '\.claude/plugins/.*/worker' 2>/dev/null || true
-    # Kill process on port 37777 (use lsof on macOS, ss/fuser on Linux)
-    if command -v lsof &> /dev/null; then
-        lsof -ti :37777 | xargs kill -9 2>/dev/null || true
-    elif command -v ss &> /dev/null; then
-        ss -tlnp 'sport = :37777' 2>/dev/null | awk 'NR>1 {print $6}' | grep -oP 'pid=\K[0-9]+' | xargs -r kill -9 2>/dev/null || true
-    elif command -v fuser &> /dev/null; then
-        fuser -k 37777/tcp 2>/dev/null || true
-    fi
-    sleep 1
+    graceful_stop_worker
 
     info "Removing plugin directories..."
     rm -rf "$INSTALL_DIR"

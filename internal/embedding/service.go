@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/sugarme/tokenizer"
@@ -69,8 +70,10 @@ func newBGEModel() (EmbeddingModel, error) {
 	libPath := filepath.Join(libDir, onnxRuntimeLibName)
 	ort.SetSharedLibraryPath(libPath)
 
-	// Initialize ONNX runtime
-	if err := ort.InitializeEnvironment(); err != nil {
+	// Initialize ONNX runtime (idempotent - ignore "already initialized" since
+	// the ONNX environment is process-global and shared with the reranking service)
+	err = ort.InitializeEnvironment()
+	if err != nil && !strings.Contains(err.Error(), "already been initialized") {
 		return nil, fmt.Errorf("initialize ONNX runtime: %w", err)
 	}
 

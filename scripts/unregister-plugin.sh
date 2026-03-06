@@ -3,6 +3,18 @@
 
 set -e
 
+# Stop running worker processes before removing binaries
+echo "Stopping worker processes..."
+pkill -TERM -f 'claude-mnemonic.*worker' 2>/dev/null || true
+pkill -TERM -f '\.claude/plugins/.*/worker' 2>/dev/null || true
+sleep 2
+# Force kill if still running
+pkill -9 -f 'claude-mnemonic.*worker' 2>/dev/null || true
+pkill -9 -f '\.claude/plugins/.*/worker' 2>/dev/null || true
+# Clean up port
+lsof -ti :37777 | xargs kill -9 2>/dev/null || true
+sleep 1
+
 PLUGINS_FILE="$HOME/.claude/plugins/installed_plugins.json"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 MARKETPLACES_FILE="$HOME/.claude/plugins/known_marketplaces.json"
@@ -30,16 +42,17 @@ else
     echo "No plugins file found, skipping"
 fi
 
-# Remove from settings.json (enabledPlugins and statusLine if it points to our plugin)
+# Remove from settings.json (enabledPlugins, statusLine, and mcpServers)
 if [ -f "$SETTINGS_FILE" ]; then
-    # Remove from enabledPlugins and clear statusLine if it references our plugin
+    # Remove from enabledPlugins, clear statusLine if it references our plugin, and remove MCP server
     jq --arg key "$PLUGIN_KEY" '
         del(.enabledPlugins[$key]) |
         if .statusLine.command and (.statusLine.command | contains("claude-mnemonic")) then
             del(.statusLine)
         else
             .
-        end
+        end |
+        del(.mcpServers["claude-mnemonic"])
     ' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" \
         && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
     echo "Plugin removed from settings.json"

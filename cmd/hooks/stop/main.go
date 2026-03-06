@@ -5,11 +5,15 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/hooks"
 )
+
+var debug = os.Getenv("CLAUDE_MNEMONIC_DEBUG") != ""
 
 // Input is the hook input from Claude Code.
 type Input struct {
@@ -62,7 +66,19 @@ func parseTranscript(path string) (lastUser, lastAssistant string) {
 	if err != nil {
 		return "", ""
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
+
+	// For large transcripts, seek to the last 256KB for efficiency.
+	// We only need the last user/assistant messages, not the entire history.
+	const tailSize = 256 * 1024
+	info, err := file.Stat()
+	if err == nil && info.Size() > tailSize {
+		if _, seekErr := file.Seek(-tailSize, io.SeekEnd); seekErr == nil {
+			// Discard partial first line after seek
+			discardScanner := bufio.NewScanner(file)
+			discardScanner.Scan()
+		}
+	}
 
 	scanner := bufio.NewScanner(file)
 	// Increase buffer size for large messages
@@ -97,12 +113,20 @@ func parseTranscript(path string) (lastUser, lastAssistant string) {
 }
 
 func main() {
+	if !hooks.IsWorkerAvailable() {
+		hooks.WriteResponse("Stop", true)
+		return
+	}
 	hooks.RunHook("Stop", handleStop)
 }
 
 func handleStop(ctx *hooks.HookContext, input *Input) (string, error) {
-	// Debug: dump raw input
-	fmt.Fprintf(os.Stderr, "[stop] Raw input: %s\n", string(ctx.RawInput))
+	deadline, cancel := hooks.HookDeadline(30 * time.Second)
+	defer cancel()
+
+	if debug {
+		fmt.Fprintf(os.Stderr, "[stop] Raw input: %s\n", string(ctx.RawInput))
+	}
 
 	// Find session
 	result, err := hooks.GET(ctx.Port, fmt.Sprintf("/api/sessions?claudeSessionId=%s", ctx.SessionID))
@@ -122,18 +146,33 @@ func handleStop(ctx *hooks.HookContext, input *Input) (string, error) {
 		lastUser, lastAssistant = parseTranscript(input.TranscriptPath)
 	}
 
-	// Debug: log what we extracted
-	fmt.Fprintf(os.Stderr, "[stop] Transcript path: %s\n", input.TranscriptPath)
-	fmt.Fprintf(os.Stderr, "[stop] Last user message length: %d\n", len(lastUser))
-	fmt.Fprintf(os.Stderr, "[stop] Last assistant message length: %d\n", len(lastAssistant))
-	if len(lastAssistant) > 0 {
-		preview := lastAssistant
-		if len(preview) > 300 {
-			preview = preview[:300] + "..."
-		}
-		fmt.Fprintf(os.Stderr, "[stop] Last assistant preview: %s\n", preview)
+	// Truncate messages to avoid sending excessive data to the worker
+	if len(lastAssistant) > 10000 {
+		lastAssistant = lastAssistant[:10000]
 	}
-	fmt.Fprintf(os.Stderr, "[stop] Requesting summary for session %d (transcript: %v)\n", int64(sessionID), input.TranscriptPath != "")
+	if len(lastUser) > 5000 {
+		lastUser = lastUser[:5000]
+	}
+
+	if debug {
+		fmt.Fprintf(os.Stderr, "[stop] Transcript path: %s\n", input.TranscriptPath)
+		fmt.Fprintf(os.Stderr, "[stop] Last user message length: %d\n", len(lastUser))
+		fmt.Fprintf(os.Stderr, "[stop] Last assistant message length: %d\n", len(lastAssistant))
+		if len(lastAssistant) > 0 {
+			preview := lastAssistant
+			if len(preview) > 300 {
+				preview = preview[:300] + "..."
+			}
+			fmt.Fprintf(os.Stderr, "[stop] Last assistant preview: %s\n", preview)
+		}
+		fmt.Fprintf(os.Stderr, "[stop] Requesting summary for session %d (transcript: %v)\n", int64(sessionID), input.TranscriptPath != "")
+	}
+
+	// Check deadline before expensive summary request
+	if deadline.Err() != nil {
+		fmt.Fprintf(os.Stderr, "[stop] Returning early due to time limit\n")
+		return "", nil
+	}
 
 	// Request summary with message context from transcript
 	_, err = hooks.POST(ctx.Port, fmt.Sprintf("/sessions/%d/summarize", int64(sessionID)), map[string]interface{}{

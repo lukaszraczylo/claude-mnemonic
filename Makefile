@@ -108,6 +108,9 @@ build-windows:
 # Stop any running worker
 stop-worker:
 	@echo "Stopping worker..."
+	@-pkill -TERM -f 'claude-mnemonic.*worker' 2>/dev/null || true
+	@-pkill -TERM -f '\.claude/plugins/.*/worker' 2>/dev/null || true
+	@sleep 1
 	@-pkill -9 -f 'claude-mnemonic.*worker' 2>/dev/null || true
 	@-pkill -9 -f '\.claude/plugins/.*/worker' 2>/dev/null || true
 	@-lsof -ti :37777 | xargs kill -9 2>/dev/null || true
@@ -135,6 +138,10 @@ restart-worker: stop-worker start-worker
 # Install to Claude plugins directory
 install: build stop-worker
 	@echo "Installing to Claude plugins directory..."
+	@# Verify build output binaries exist
+	@test -f $(BUILD_DIR)/worker || { echo "ERROR: $(BUILD_DIR)/worker not found. Build may have failed."; exit 1; }
+	@test -f $(BUILD_DIR)/mcp-server || { echo "ERROR: $(BUILD_DIR)/mcp-server not found. Build may have failed."; exit 1; }
+	@test -d $(BUILD_DIR)/hooks || { echo "ERROR: $(BUILD_DIR)/hooks not found. Build may have failed."; exit 1; }
 	@# Install to marketplaces directory (for direct installs)
 	@mkdir -p $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks
 	@mkdir -p $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin

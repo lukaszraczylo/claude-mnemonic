@@ -517,7 +517,7 @@ func TestProjectIDWithName_Uniqueness(t *testing.T) {
 // TestHookConstants tests hook-related constants.
 func TestHookConstants(t *testing.T) {
 	assert.Equal(t, 37777, DefaultWorkerPort)
-	assert.Equal(t, 1*time.Second, HealthCheckTimeout)
+	assert.Equal(t, 2*time.Second, HealthCheckTimeout)
 	assert.Equal(t, 30*time.Second, StartupTimeout)
 }
 

@@ -212,7 +212,7 @@ func (b *Broadcaster) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	defer b.RemoveClient(client)
 
 	// Send initial connection message
-	fmt.Fprintf(w, "data: {\"type\":\"connected\",\"clientId\":\"%s\"}\n\n", client.ID)
+	_, _ = fmt.Fprintf(w, "data: {\"type\":\"connected\",\"clientId\":\"%s\"}\n\n", client.ID)
 	client.Flusher.Flush()
 
 	// Wait for client disconnect

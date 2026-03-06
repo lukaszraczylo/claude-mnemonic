@@ -117,7 +117,7 @@ func getWorkerStats(port int, project string) *WorkerStats {
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil

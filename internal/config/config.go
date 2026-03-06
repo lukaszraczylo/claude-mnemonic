@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -52,6 +53,7 @@ type Config struct {
 	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"`
 	RerankingCandidates       int      `json:"reranking_candidates"`
 	WorkerPort                int      `json:"worker_port"`
+	DeduplicationThreshold    float64  `json:"deduplication_threshold"`
 	RerankingMinImprovement   float64  `json:"reranking_min_improvement"`
 	ContextObservations       int      `json:"context_observations"`
 	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`
@@ -64,10 +66,13 @@ type Config struct {
 	HubThreshold              int      `json:"hub_threshold"`
 	ObservationRetentionDays  int      `json:"observation_retention_days"`
 	MaintenanceIntervalHours  int      `json:"maintenance_interval_hours"`
+	ContextMaxTokensStartup   int      `json:"context_max_tokens_startup"`
+	ContextMaxTokensPrompt    int      `json:"context_max_tokens_prompt"`
 	ContextShowWorkTokens     bool     `json:"context_show_work_tokens"`
 	ContextShowReadTokens     bool     `json:"context_show_read_tokens"`
 	RerankingPureMode         bool     `json:"reranking_pure_mode"`
 	GraphEnabled              bool     `json:"graph_enabled"`
+	DeduplicationEnabled      bool     `json:"deduplication_enabled"`
 	MaintenanceEnabled        bool     `json:"maintenance_enabled"`
 	RerankingEnabled          bool     `json:"reranking_enabled"`
 	ContextShowLastSummary    bool     `json:"context_show_last_summary"`
@@ -168,6 +173,10 @@ func Default() *Config {
 		ContextObsConcepts:        DefaultObservationConcepts,
 		ContextRelevanceThreshold: 0.3,   // Minimum 30% similarity to include
 		ContextMaxPromptResults:   10,    // Cap at 10 results max (0 = no cap, threshold only)
+		ContextMaxTokensStartup:   16000, // Max tokens for SessionStart context injection
+		ContextMaxTokensPrompt:    8000,  // Max tokens for UserPromptSubmit context injection
+		DeduplicationEnabled:      true,  // Enable write-time vector dedup
+		DeduplicationThreshold:    0.9,   // Similarity threshold for merging (0.9 = very similar)
 		MaintenanceEnabled:        true,  // Enable scheduled maintenance
 		MaintenanceIntervalHours:  6,     // Run every 6 hours
 		ObservationRetentionDays:  0,     // 0 = no age-based deletion (keep all)
@@ -268,6 +277,29 @@ func Load() (*Config, error) {
 	}
 	if v, ok := settings["CLAUDE_MNEMONIC_HUB_THRESHOLD"].(float64); ok && v > 0 {
 		cfg.HubThreshold = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_MAX_TOKENS_STARTUP"].(float64); ok && v > 0 {
+		cfg.ContextMaxTokensStartup = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_MAX_TOKENS_PROMPT"].(float64); ok && v > 0 {
+		cfg.ContextMaxTokensPrompt = int(v)
+	}
+	// Deduplication settings
+	if v, ok := settings["CLAUDE_MNEMONIC_DEDUP_ENABLED"].(bool); ok {
+		cfg.DeduplicationEnabled = v
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_DEDUP_THRESHOLD"].(float64); ok && v > 0 && v <= 1 {
+		cfg.DeduplicationThreshold = v
+	}
+
+	// Also support env vars for dedup settings
+	if v := os.Getenv("CLAUDE_MNEMONIC_DEDUP_ENABLED"); v != "" {
+		cfg.DeduplicationEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("CLAUDE_MNEMONIC_DEDUP_THRESHOLD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 1 {
+			cfg.DeduplicationThreshold = f
+		}
 	}
 
 	return cfg, nil

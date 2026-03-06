@@ -2,6 +2,7 @@
 package hooks
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // HookResponse is the response sent back to Claude Code.
@@ -29,6 +31,14 @@ func ProjectIDWithName(cwd string) string {
 	shortHash := hex.EncodeToString(hash[:3]) // 6 chars
 
 	return fmt.Sprintf("%s_%s", dirName, shortHash)
+}
+
+// HookDeadline returns a context with the hook's timeout budget minus a safety margin.
+// This ensures hooks return gracefully before Claude kills them.
+func HookDeadline(timeout time.Duration) (context.Context, context.CancelFunc) {
+	// Use 80% of the timeout to leave margin for response serialization
+	safeTimeout := time.Duration(float64(timeout) * 0.8)
+	return context.WithTimeout(context.Background(), safeTimeout)
 }
 
 // Exit codes for Claude Code hooks
@@ -92,7 +102,7 @@ func RunHook[T any](hookName string, handler HookHandler[T]) {
 
 	// Parse input
 	var input T
-	if err := json.Unmarshal(inputData, &input); err != nil {
+	if err = json.Unmarshal(inputData, &input); err != nil {
 		WriteError(hookName, err)
 		os.Exit(1)
 	}

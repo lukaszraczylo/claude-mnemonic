@@ -46,7 +46,7 @@ func (s *Service) handleGetRelationGraph(w http.ResponseWriter, r *http.Request)
 	// Get depth parameter (default 2)
 	depth := 2
 	if depthStr := r.URL.Query().Get("depth"); depthStr != "" {
-		if d, err := strconv.Atoi(depthStr); err == nil && d > 0 && d <= 5 {
+		if d, parseErr := strconv.Atoi(depthStr); parseErr == nil && d > 0 && d <= 5 {
 			depth = d
 		}
 	}
@@ -72,7 +72,7 @@ func (s *Service) handleGetRelatedObservations(w http.ResponseWriter, r *http.Re
 	// Get minimum confidence parameter (default 0.4)
 	minConfidence := 0.4
 	if confStr := r.URL.Query().Get("min_confidence"); confStr != "" {
-		if c, err := strconv.ParseFloat(confStr, 64); err == nil && c >= 0 && c <= 1 {
+		if c, parseErr := strconv.ParseFloat(confStr, 64); parseErr == nil && c >= 0 && c <= 1 {
 			minConfidence = c
 		}
 	}

@@ -13,6 +13,21 @@ import (
 	"github.com/stretchr/testify/suite"
 )
 
+// timelineParams is used in tests for timeline request parsing.
+type timelineParams struct {
+	Query     string `json:"query"`
+	Project   string `json:"project"`
+	ObsType   string `json:"obs_type"`
+	Concepts  string `json:"concepts"`
+	Files     string `json:"files"`
+	Format    string `json:"format"`
+	AnchorID  int64  `json:"anchor_id"`
+	Before    int    `json:"before"`
+	After     int    `json:"after"`
+	DateStart int64  `json:"dateStart"`
+	DateEnd   int64  `json:"dateEnd"`
+}
+
 // =============================================================================
 // TEST SUITE
 // =============================================================================
@@ -28,10 +43,12 @@ func TestServerSuite(t *testing.T) {
 
 // TestNewServer tests server creation.
 func (s *ServerSuite) TestNewServer() {
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "http://localhost:37777", "test-project", "1.0.0")
 	s.NotNil(server)
-	s.Nil(server.searchMgr)
+	s.Nil(server.client)
 	s.Equal("1.0.0", server.version)
+	s.Equal("http://localhost:37777", server.workerURL)
+	s.Equal("test-project", server.project)
 }
 
 // =============================================================================
@@ -289,19 +306,19 @@ func TestTool(t *testing.T) {
 	assert.Equal(t, "Search observations", parsed.Description)
 }
 
-// TestTimelineParams tests TimelineParams struct.
-func TestTimelineParams(t *testing.T) {
+// TestTimelineParamsStruct tests timelineParams struct.
+func TestTimelineParamsStruct(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
 		input    string
-		expected TimelineParams
+		expected timelineParams
 	}{
 		{
 			name:  "with anchor_id",
 			input: `{"anchor_id":123,"before":5,"after":5}`,
-			expected: TimelineParams{
+			expected: timelineParams{
 				AnchorID: 123,
 				Before:   5,
 				After:    5,
@@ -310,7 +327,7 @@ func TestTimelineParams(t *testing.T) {
 		{
 			name:  "with query",
 			input: `{"query":"test query","project":"my-project"}`,
-			expected: TimelineParams{
+			expected: timelineParams{
 				Query:   "test query",
 				Project: "my-project",
 			},
@@ -318,7 +335,7 @@ func TestTimelineParams(t *testing.T) {
 		{
 			name:  "full params",
 			input: `{"anchor_id":100,"query":"search","before":10,"after":20,"project":"proj","obs_type":"bugfix","concepts":"security","files":"main.go","dateStart":1234567890,"dateEnd":9876543210,"format":"full"}`,
-			expected: TimelineParams{
+			expected: timelineParams{
 				AnchorID:  100,
 				Query:     "search",
 				Before:    10,
@@ -337,7 +354,7 @@ func TestTimelineParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var params TimelineParams
+			var params timelineParams
 			err := json.Unmarshal([]byte(tt.input), &params)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected.AnchorID, params.AnchorID)
@@ -355,7 +372,7 @@ func TestTimelineParams(t *testing.T) {
 func TestHandleInitialize(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.2.3", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.2.3")
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -384,7 +401,7 @@ func TestHandleInitialize(t *testing.T) {
 func TestHandleToolsList(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -427,7 +444,7 @@ func TestHandleToolsList(t *testing.T) {
 func TestHandleRequest(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -492,7 +509,7 @@ func TestHandleRequest(t *testing.T) {
 func TestHandleToolsCall_InvalidParams(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	req := &Request{
@@ -513,7 +530,7 @@ func TestHandleToolsCall_InvalidParams(t *testing.T) {
 func TestCallTool_UnknownTool(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	_, err := server.callTool(ctx, "nonexistent_tool", json.RawMessage(`{}`))
@@ -525,12 +542,13 @@ func TestCallTool_UnknownTool(t *testing.T) {
 func TestCallTool_InvalidArgs(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
+	// Invalid JSON is best-effort parsed; the call fails because worker is unavailable
 	_, err := server.callTool(ctx, "search", json.RawMessage(`invalid json`))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid arguments")
+	assert.Contains(t, err.Error(), "worker unavailable")
 }
 
 // =============================================================================
@@ -698,7 +716,7 @@ func TestRunMixedRequests(t *testing.T) {
 func TestHandleFindRelatedObservations_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -707,6 +725,12 @@ func TestHandleFindRelatedObservations_Validation(t *testing.T) {
 		errContains string
 		wantErr     bool
 	}{
+		{
+			name:        "worker unavailable",
+			args:        `{"id": 1}`,
+			wantErr:     true,
+			errContains: "worker unavailable",
+		},
 		{
 			name:        "missing id",
 			args:        `{}`,
@@ -724,7 +748,7 @@ func TestHandleFindRelatedObservations_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleFindRelatedObservations(ctx, json.RawMessage(tt.args))
+			_, err := server.handleFindRelatedProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -741,7 +765,7 @@ func TestHandleFindRelatedObservations_Validation(t *testing.T) {
 func TestHandleFindSimilarObservations_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -766,14 +790,14 @@ func TestHandleFindSimilarObservations_Validation(t *testing.T) {
 			name:        "nil vector client",
 			args:        `{"query": "test"}`,
 			wantErr:     true,
-			errContains: "vector search not available",
+			errContains: "worker unavailable",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleFindSimilarObservations(ctx, json.RawMessage(tt.args))
+			_, err := server.handleFindSimilarProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -790,7 +814,7 @@ func TestHandleFindSimilarObservations_Validation(t *testing.T) {
 func TestHandleGetPatterns_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -810,7 +834,7 @@ func TestHandleGetPatterns_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleGetPatterns(ctx, json.RawMessage(tt.args))
+			_, err := server.handleGetPatternsProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -827,7 +851,7 @@ func TestHandleGetPatterns_Validation(t *testing.T) {
 func TestHandleBulkDeleteObservations_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -852,7 +876,7 @@ func TestHandleBulkDeleteObservations_Validation(t *testing.T) {
 			name:        "too many ids",
 			args:        `{"ids": [` + strings.Repeat("1,", 1001) + `1]}`,
 			wantErr:     true,
-			errContains: "maximum 1000 IDs",
+			errContains: "worker unavailable",
 		},
 		{
 			name:        "invalid json",
@@ -865,7 +889,7 @@ func TestHandleBulkDeleteObservations_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleBulkDeleteObservations(ctx, json.RawMessage(tt.args))
+			_, err := server.handleBulkStatusProxy(ctx, json.RawMessage(tt.args), "delete")
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -882,7 +906,7 @@ func TestHandleBulkDeleteObservations_Validation(t *testing.T) {
 func TestHandleBulkMarkSuperseded_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -907,14 +931,14 @@ func TestHandleBulkMarkSuperseded_Validation(t *testing.T) {
 			name:        "too many ids",
 			args:        `{"ids": [` + strings.Repeat("1,", 1001) + `1]}`,
 			wantErr:     true,
-			errContains: "maximum 1000 IDs",
+			errContains: "worker unavailable",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleBulkMarkSuperseded(ctx, json.RawMessage(tt.args))
+			_, err := server.handleBulkStatusProxy(ctx, json.RawMessage(tt.args), "supersede")
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -931,7 +955,7 @@ func TestHandleBulkMarkSuperseded_Validation(t *testing.T) {
 func TestHandleBulkBoostObservations_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -950,26 +974,26 @@ func TestHandleBulkBoostObservations_Validation(t *testing.T) {
 			name:        "boost out of range low",
 			args:        `{"ids": [1], "boost": -1.5}`,
 			wantErr:     true,
-			errContains: "boost must be between",
+			errContains: "worker unavailable",
 		},
 		{
 			name:        "boost out of range high",
 			args:        `{"ids": [1], "boost": 1.5}`,
 			wantErr:     true,
-			errContains: "boost must be between",
+			errContains: "worker unavailable",
 		},
 		{
 			name:        "too many ids",
 			args:        `{"ids": [` + strings.Repeat("1,", 1001) + `1], "boost": 0.1}`,
 			wantErr:     true,
-			errContains: "maximum 1000 IDs",
+			errContains: "worker unavailable",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleBulkBoostObservations(ctx, json.RawMessage(tt.args))
+			_, err := server.handleBulkStatusProxy(ctx, json.RawMessage(tt.args), "boost")
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -986,31 +1010,31 @@ func TestHandleBulkBoostObservations_Validation(t *testing.T) {
 func TestHandleTriggerMaintenance_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	_, err := server.handleTriggerMaintenance(ctx)
+	_, err := server.proxyPostRaw(ctx, "/api/scoring/recalculate", nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "maintenance service not available")
+	assert.Contains(t, err.Error(), "worker unavailable")
 }
 
 // TestHandleGetMaintenanceStats_Validation tests that nil service returns error.
 func TestHandleGetMaintenanceStats_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	_, err := server.handleGetMaintenanceStats(ctx)
+	_, err := server.proxyGetRaw(ctx, "/api/stats", map[string]string{"project": ""})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "maintenance service not available")
+	assert.Contains(t, err.Error(), "worker unavailable")
 }
 
 // TestHandleMergeObservations_Validation tests parameter validation.
 func TestHandleMergeObservations_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1035,20 +1059,20 @@ func TestHandleMergeObservations_Validation(t *testing.T) {
 			name:        "same source and target",
 			args:        `{"source_id": 1, "target_id": 1}`,
 			wantErr:     true,
-			errContains: "source_id and target_id cannot be the same",
+			errContains: "worker unavailable",
 		},
 		{
-			name:        "boost out of range",
+			name:        "worker unavailable with boost",
 			args:        `{"source_id": 1, "target_id": 2, "boost": 0.6}`,
 			wantErr:     true,
-			errContains: "boost must be between 0 and 0.5",
+			errContains: "worker unavailable",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleMergeObservations(ctx, json.RawMessage(tt.args))
+			_, err := server.handleMergeProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1065,7 +1089,7 @@ func TestHandleMergeObservations_Validation(t *testing.T) {
 func TestHandleGetObservation_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1091,7 +1115,7 @@ func TestHandleGetObservation_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleGetObservation(ctx, json.RawMessage(tt.args))
+			_, err := server.handleGetObservationProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1108,7 +1132,7 @@ func TestHandleGetObservation_Validation(t *testing.T) {
 func TestHandleEditObservation_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1127,7 +1151,7 @@ func TestHandleEditObservation_Validation(t *testing.T) {
 			name:        "invalid scope",
 			args:        `{"id": 1, "scope": "invalid"}`,
 			wantErr:     true,
-			errContains: "scope must be 'project' or 'global'",
+			errContains: "worker unavailable",
 		},
 		{
 			name:        "invalid json",
@@ -1140,7 +1164,7 @@ func TestHandleEditObservation_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleEditObservation(ctx, json.RawMessage(tt.args))
+			_, err := server.handleEditObservationProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1157,7 +1181,7 @@ func TestHandleEditObservation_Validation(t *testing.T) {
 func TestHandleGetObservationQuality_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1183,7 +1207,7 @@ func TestHandleGetObservationQuality_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleGetObservationQuality(ctx, json.RawMessage(tt.args))
+			_, err := server.handleGetObservationQualityProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1200,7 +1224,7 @@ func TestHandleGetObservationQuality_Validation(t *testing.T) {
 func TestHandleSuggestConsolidations_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1213,13 +1237,13 @@ func TestHandleSuggestConsolidations_Validation(t *testing.T) {
 			name:        "min_similarity too low",
 			args:        `{"min_similarity": 0.3}`,
 			wantErr:     true,
-			errContains: "min_similarity must be between 0.5 and 1.0",
+			errContains: "worker unavailable",
 		},
 		{
 			name:        "min_similarity too high",
 			args:        `{"min_similarity": 1.5}`,
 			wantErr:     true,
-			errContains: "min_similarity must be between 0.5 and 1.0",
+			errContains: "worker unavailable",
 		},
 		{
 			name:        "invalid json",
@@ -1232,7 +1256,7 @@ func TestHandleSuggestConsolidations_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleSuggestConsolidations(ctx, json.RawMessage(tt.args))
+			_, err := server.handleSuggestConsolidationsProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1249,7 +1273,7 @@ func TestHandleSuggestConsolidations_Validation(t *testing.T) {
 func TestHandleTagObservation_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1281,7 +1305,7 @@ func TestHandleTagObservation_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleTagObservation(ctx, json.RawMessage(tt.args))
+			_, err := server.handleTagObservationProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1298,7 +1322,7 @@ func TestHandleTagObservation_Validation(t *testing.T) {
 func TestHandleGetObservationsByTag_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1324,7 +1348,7 @@ func TestHandleGetObservationsByTag_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleGetObservationsByTag(ctx, json.RawMessage(tt.args))
+			_, err := server.handleGetObservationsByTagProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1341,7 +1365,7 @@ func TestHandleGetObservationsByTag_Validation(t *testing.T) {
 func TestHandleBatchTagByPattern_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1367,7 +1391,7 @@ func TestHandleBatchTagByPattern_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleBatchTagByPattern(ctx, json.RawMessage(tt.args))
+			_, err := server.handleBatchTagProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1384,7 +1408,7 @@ func TestHandleBatchTagByPattern_Validation(t *testing.T) {
 func TestHandleExplainSearchRanking_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1410,7 +1434,7 @@ func TestHandleExplainSearchRanking_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleExplainSearchRanking(ctx, json.RawMessage(tt.args))
+			_, err := server.handleExplainSearchProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1427,7 +1451,7 @@ func TestHandleExplainSearchRanking_Validation(t *testing.T) {
 func TestHandleGetObservationRelationships_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1452,14 +1476,14 @@ func TestHandleGetObservationRelationships_Validation(t *testing.T) {
 			name:        "nil relation store",
 			args:        `{"id": 1}`,
 			wantErr:     true,
-			errContains: "relation store not available",
+			errContains: "worker unavailable",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleGetObservationRelationships(ctx, json.RawMessage(tt.args))
+			_, err := server.handleGetRelationshipsProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1476,7 +1500,7 @@ func TestHandleGetObservationRelationships_Validation(t *testing.T) {
 func TestHandleGetObservationScoringBreakdown_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1502,7 +1526,7 @@ func TestHandleGetObservationScoringBreakdown_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleGetObservationScoringBreakdown(ctx, json.RawMessage(tt.args))
+			_, err := server.handleGetScoringBreakdownProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -1519,10 +1543,10 @@ func TestHandleGetObservationScoringBreakdown_Validation(t *testing.T) {
 func TestHandleTimeline_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	_, err := server.handleTimeline(ctx, json.RawMessage(`{invalid`))
+	_, err := server.handleTimelineProxy(ctx, json.RawMessage(`{invalid`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid timeline params")
 }
@@ -1531,23 +1555,23 @@ func TestHandleTimeline_InvalidJSON(t *testing.T) {
 func TestHandleTimelineByQuery_EmptyQuery(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// Empty query should error
-	_, err := server.handleTimelineByQuery(ctx, json.RawMessage(`{}`))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "query is required")
+	// Empty query should return empty results (no anchor found)
+	result, err := server.handleTimelineProxy(ctx, json.RawMessage(`{}`))
+	require.NoError(t, err)
+	assert.Contains(t, result, `"observations":[]`)
 }
 
 // TestHandleTimelineByQuery_InvalidJSON tests timeline by query with invalid JSON.
 func TestHandleTimelineByQuery_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	_, err := server.handleTimelineByQuery(ctx, json.RawMessage(`{invalid`))
+	_, err := server.handleTimelineProxy(ctx, json.RawMessage(`{invalid`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid timeline params")
 }
@@ -1556,28 +1580,28 @@ func TestHandleTimelineByQuery_InvalidJSON(t *testing.T) {
 func TestHandleTimeline_NoAnchorNoQuery(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// No anchor_id and no query should return empty result
-	result, err := server.handleTimeline(ctx, json.RawMessage(`{}`))
+	// No anchor_id and no query should return empty result JSON
+	result, err := server.handleTimelineProxy(ctx, json.RawMessage(`{}`))
 	require.NoError(t, err)
-	assert.NotNil(t, result)
-	assert.Empty(t, result.Results)
+	assert.NotEmpty(t, result)
+	assert.Contains(t, result, `"observations":[]`)
 }
 
 // TestHandleTimeline_WithDefaults tests timeline default values are applied.
 func TestHandleTimeline_WithDefaults(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// With anchor_id = 0, should return empty result
-	result, err := server.handleTimeline(ctx, json.RawMessage(`{"anchor_id": 0}`))
+	// With anchor_id = 0, should return empty result JSON
+	result, err := server.handleTimelineProxy(ctx, json.RawMessage(`{"anchor_id": 0}`))
 	require.NoError(t, err)
-	assert.NotNil(t, result)
-	assert.Empty(t, result.Results)
+	assert.NotEmpty(t, result)
+	assert.Contains(t, result, `"observations":[]`)
 }
 
 // =============================================================================
@@ -1610,7 +1634,7 @@ func TestJSONRPCErrorCodes(t *testing.T) {
 func TestToolListContainsExpectedSchemas(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -1638,7 +1662,7 @@ func TestToolListContainsExpectedSchemas(t *testing.T) {
 func TestHandleToolsCall_UnknownTool(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	req := &Request{
@@ -1658,7 +1682,7 @@ func TestHandleToolsCall_UnknownTool(t *testing.T) {
 func TestCallTool_ToolNameRecognition(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -1721,8 +1745,8 @@ func TestCallTool_ToolNameRecognition(t *testing.T) {
 	}
 }
 
-// TestTimelineParams_Complete tests complete TimelineParams parsing.
-func TestTimelineParams_Complete(t *testing.T) {
+// TestTimelineParamsStruct_Complete tests complete timelineParams parsing.
+func TestTimelineParamsStruct_Complete(t *testing.T) {
 	t.Parallel()
 
 	input := `{
@@ -1739,7 +1763,7 @@ func TestTimelineParams_Complete(t *testing.T) {
 		"format": "full"
 	}`
 
-	var params TimelineParams
+	var params timelineParams
 	err := json.Unmarshal([]byte(input), &params)
 	require.NoError(t, err)
 
@@ -1811,10 +1835,11 @@ func TestResponseIDTypes(t *testing.T) {
 func TestServerFields(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "2.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "http://localhost:37777", "test", "2.0.0")
 
 	assert.Equal(t, "2.0.0", server.version)
-	assert.Nil(t, server.searchMgr)
+	assert.Nil(t, server.client)
+	assert.Equal(t, "http://localhost:37777", server.workerURL)
 	assert.NotNil(t, server.stdin)
 	assert.NotNil(t, server.stdout)
 }
@@ -1871,7 +1896,7 @@ func TestErrorWithNilData(t *testing.T) {
 func TestToolInputSchema(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -1899,7 +1924,7 @@ func TestToolInputSchema(t *testing.T) {
 func TestCallTool_UnknownToolName(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	unknownTools := []string{
@@ -1920,8 +1945,8 @@ func TestCallTool_UnknownToolName(t *testing.T) {
 	}
 }
 
-// TestTimelineParams_Validation tests TimelineParams struct field validation.
-func TestTimelineParams_Validation(t *testing.T) {
+// TestTimelineParamsStruct_Validation tests timelineParams struct field validation.
+func TestTimelineParamsStruct_Validation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1939,7 +1964,7 @@ func TestTimelineParams_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var params TimelineParams
+			var params timelineParams
 			err := json.Unmarshal([]byte(tt.json), &params)
 			if tt.wantOK {
 				assert.NoError(t, err)
@@ -1954,7 +1979,7 @@ func TestTimelineParams_Validation(t *testing.T) {
 func TestHandleToolsCall_EmptyParams(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	req := &Request{
@@ -2034,7 +2059,7 @@ func TestToolCallParamsWithComplexArgs(t *testing.T) {
 func TestHandleToolsCall_UnknownToolNameError(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	req := &Request{
@@ -2063,7 +2088,7 @@ func TestHandleTimeline_Defaults(t *testing.T) {
 	t.Parallel()
 
 	// Test that handleTimeline sets default before/after values
-	params := TimelineParams{
+	params := timelineParams{
 		AnchorID: 0,
 		Query:    "",
 		Before:   0,
@@ -2086,7 +2111,7 @@ func TestHandleTimeline_Defaults(t *testing.T) {
 func TestHandleGetTemporalTrends_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -2106,7 +2131,7 @@ func TestHandleGetTemporalTrends_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleGetTemporalTrends(ctx, json.RawMessage(tt.args))
+			_, err := server.handleGetTemporalTrendsProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -2121,7 +2146,7 @@ func TestHandleGetTemporalTrends_Validation(t *testing.T) {
 func TestHandleGetDataQualityReport_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -2141,7 +2166,7 @@ func TestHandleGetDataQualityReport_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleGetDataQualityReport(ctx, json.RawMessage(tt.args))
+			_, err := server.handleGetDataQualityProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -2156,7 +2181,7 @@ func TestHandleGetDataQualityReport_Validation(t *testing.T) {
 func TestHandleExportObservations_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -2176,7 +2201,7 @@ func TestHandleExportObservations_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleExportObservations(ctx, json.RawMessage(tt.args))
+			_, err := server.handleExportProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -2191,7 +2216,7 @@ func TestHandleExportObservations_Validation(t *testing.T) {
 func TestHandleAnalyzeSearchPatterns_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -2201,17 +2226,17 @@ func TestHandleAnalyzeSearchPatterns_Validation(t *testing.T) {
 		wantErr     bool
 	}{
 		{
-			name:        "invalid json",
-			args:        `{invalid`,
+			name:        "worker unavailable",
+			args:        `{}`,
 			wantErr:     true,
-			errContains: "invalid params",
+			errContains: "worker unavailable",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleAnalyzeSearchPatterns(ctx, json.RawMessage(tt.args))
+			_, err := server.proxyGetRaw(ctx, "/api/search/analytics", nil)
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -2226,7 +2251,7 @@ func TestHandleAnalyzeSearchPatterns_Validation(t *testing.T) {
 func TestHandleAnalyzeObservationImportance_Validation(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -2246,7 +2271,7 @@ func TestHandleAnalyzeObservationImportance_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleAnalyzeObservationImportance(ctx, json.RawMessage(tt.args))
+			_, err := server.handleAnalyzeImportanceProxy(ctx, json.RawMessage(tt.args))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errContains != "" {
@@ -2261,40 +2286,26 @@ func TestHandleAnalyzeObservationImportance_Validation(t *testing.T) {
 func TestHandleGetMemoryStats_NilStores(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// Should not panic with nil stores
-	result, err := server.handleGetMemoryStats(ctx)
-	require.NoError(t, err)
-	assert.NotEmpty(t, result)
-
-	// Should be valid JSON
-	var stats map[string]any
-	err = json.Unmarshal([]byte(result), &stats)
-	require.NoError(t, err)
+	// Should return error when worker is unavailable (nil client)
+	_, err := server.proxyGetRaw(ctx, "/api/stats", map[string]string{"project": ""})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worker unavailable")
 }
 
 // TestHandleCheckSystemHealth_NilStores tests CheckSystemHealth with nil stores.
 func TestHandleCheckSystemHealth_NilStores(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// Should not panic with nil stores
-	result, err := server.handleCheckSystemHealth(ctx)
-	require.NoError(t, err)
-	assert.NotEmpty(t, result)
-
-	// Should be valid JSON
-	var health map[string]any
-	err = json.Unmarshal([]byte(result), &health)
-	require.NoError(t, err)
-
-	// Should have subsystems and overall status
-	assert.Contains(t, health, "overall_status")
-	assert.Contains(t, health, "subsystems")
+	// Should return error when worker is unavailable (nil client)
+	_, err := server.proxyGetRaw(ctx, "/api/selfcheck", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worker unavailable")
 }
 
 // =============================================================================
@@ -2305,7 +2316,7 @@ func TestHandleCheckSystemHealth_NilStores(t *testing.T) {
 func TestCallTool_AllSpecialTools(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	// Tests for tools that can work without stores or have nil guards
@@ -2321,13 +2332,13 @@ func TestCallTool_AllSpecialTools(t *testing.T) {
 			name:     "get_memory_stats",
 			toolName: "get_memory_stats",
 			args:     `{}`,
-			wantErr:  false,
+			wantErr:  true, // worker unavailable with nil client
 		},
 		{
 			name:     "check_system_health",
 			toolName: "check_system_health",
 			args:     `{}`,
-			wantErr:  false,
+			wantErr:  true, // worker unavailable with nil client
 		},
 		// Tools that need stores but have parameter validation first
 		{
@@ -2572,13 +2583,12 @@ func TestCallTool_AllSpecialTools(t *testing.T) {
 func TestCallTool_SearchTools(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// All search tools should fail with invalid JSON or when searchMgr is nil
+	// All search tools should fail when worker is unavailable (nil client)
 	searchTools := []string{
 		"search",
-		"timeline",
 		"decisions",
 		"changes",
 		"how_it_works",
@@ -2586,11 +2596,25 @@ func TestCallTool_SearchTools(t *testing.T) {
 		"find_by_file",
 		"find_by_type",
 		"get_recent_context",
+	}
+
+	for _, toolName := range searchTools {
+		t.Run(toolName+"_worker_unavailable", func(t *testing.T) {
+			t.Parallel()
+			_, err := server.callTool(ctx, toolName, json.RawMessage(`{"query":"test"}`))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "worker unavailable")
+		})
+	}
+
+	// Timeline tools should handle invalid JSON with a parse error
+	timelineTools := []string{
+		"timeline",
 		"get_context_timeline",
 		"get_timeline_by_query",
 	}
 
-	for _, toolName := range searchTools {
+	for _, toolName := range timelineTools {
 		t.Run(toolName+"_invalid_json", func(t *testing.T) {
 			t.Parallel()
 			_, err := server.callTool(ctx, toolName, json.RawMessage(`{invalid`))
@@ -2604,37 +2628,37 @@ func TestCallTool_SearchTools(t *testing.T) {
 func TestHandleTriggerMaintenance_NilService(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	// Should return error when maintenanceService is nil
-	_, err := server.handleTriggerMaintenance(ctx)
+	_, err := server.proxyPostRaw(ctx, "/api/scoring/recalculate", nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "maintenance service not available")
+	assert.Contains(t, err.Error(), "worker unavailable")
 }
 
 // TestHandleGetMaintenanceStats_NilService tests get_maintenance_stats with nil service.
 func TestHandleGetMaintenanceStats_NilService(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	// Should return error when maintenanceService is nil
-	_, err := server.handleGetMaintenanceStats(ctx)
+	_, err := server.proxyGetRaw(ctx, "/api/stats", map[string]string{"project": ""})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "maintenance service not available")
+	assert.Contains(t, err.Error(), "worker unavailable")
 }
 
 // TestHandleTimeline_ParameterDefaultsNew tests timeline parameter defaults.
 func TestHandleTimeline_ParameterDefaultsNew(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	// Invalid JSON should fail
-	_, err := server.handleTimeline(ctx, json.RawMessage(`{invalid`))
+	_, err := server.handleTimelineProxy(ctx, json.RawMessage(`{invalid`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid timeline params")
 }
@@ -2643,7 +2667,7 @@ func TestHandleTimeline_ParameterDefaultsNew(t *testing.T) {
 func TestHandleTimelineByQuery_ValidationExtended(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -2658,20 +2682,16 @@ func TestHandleTimelineByQuery_ValidationExtended(t *testing.T) {
 			wantErr:     true,
 			errContains: "invalid timeline params",
 		},
-		{
-			name:        "missing query",
-			args:        `{}`,
-			wantErr:     true,
-			errContains: "query is required",
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleTimelineByQuery(ctx, json.RawMessage(tt.args))
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.errContains)
+			_, err := server.handleTimelineProxy(ctx, json.RawMessage(tt.args))
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			}
 		})
 	}
 }
@@ -2680,7 +2700,7 @@ func TestHandleTimelineByQuery_ValidationExtended(t *testing.T) {
 func TestHandleSuggestConsolidations_ValidationExtended(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -2700,7 +2720,7 @@ func TestHandleSuggestConsolidations_ValidationExtended(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := server.handleSuggestConsolidations(ctx, json.RawMessage(tt.args))
+			_, err := server.handleSuggestConsolidationsProxy(ctx, json.RawMessage(tt.args))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.errContains)
 		})
@@ -2715,74 +2735,66 @@ func TestHandleSuggestConsolidations_ValidationExtended(t *testing.T) {
 func TestHandleFindSimilarObservations_NilVectorClient(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// Should return error when vectorClient is nil with valid query
-	_, err := server.handleFindSimilarObservations(ctx, json.RawMessage(`{"query": "test query"}`))
+	// Should return error when client is nil (worker unavailable)
+	_, err := server.handleFindSimilarProxy(ctx, json.RawMessage(`{"query": "test query"}`))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "vector search not available")
+	assert.Contains(t, err.Error(), "worker unavailable")
 }
 
 // TestHandleGetObservationRelationships_NilRelationStore tests nil relation store handling.
 func TestHandleGetObservationRelationships_NilRelationStore(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// Should return error when relationStore is nil with valid params
-	_, err := server.handleGetObservationRelationships(ctx, json.RawMessage(`{"id": 123}`))
+	// Should return error when worker is unavailable
+	_, err := server.handleGetRelationshipsProxy(ctx, json.RawMessage(`{"id": 123}`))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "relation store not available")
+	assert.Contains(t, err.Error(), "worker unavailable")
 }
 
 // =============================================================================
 // MORE PARAM LIMIT TESTS
 // =============================================================================
 
-// TestHandleBulkBoostObservations_TooManyIDs tests the max IDs limit.
-func TestHandleBulkBoostObservations_TooManyIDs(t *testing.T) {
+// TestHandleBulkBoostObservations_EmptyIDs tests the empty IDs validation.
+func TestHandleBulkBoostObservations_EmptyIDs(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// Create array with 1001 IDs
-	ids := make([]int, 1001)
-	for i := range ids {
-		ids[i] = i + 1
-	}
-	idsJSON, _ := json.Marshal(ids)
-	argsJSON := `{"ids": ` + string(idsJSON) + `, "amount": 1}`
-
-	_, err := server.handleBulkBoostObservations(ctx, json.RawMessage(argsJSON))
+	// Empty IDs should return error
+	_, err := server.handleBulkStatusProxy(ctx, json.RawMessage(`{"ids": []}`), "boost")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "maximum 1000 IDs")
+	assert.Contains(t, err.Error(), "ids is required")
 }
 
-// TestHandleMergeObservations_SameID tests merge with same source and target.
-func TestHandleMergeObservations_SameID(t *testing.T) {
+// TestHandleMergeObservations_MissingIDs tests merge with missing IDs.
+func TestHandleMergeObservations_MissingIDs(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// source_id and target_id cannot be the same
-	_, err := server.handleMergeObservations(ctx, json.RawMessage(`{"source_id": 123, "target_id": 123}`))
+	// source_id and target_id are required
+	_, err := server.handleMergeProxy(ctx, json.RawMessage(`{"source_id": 0, "target_id": 0}`))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot be the same")
+	assert.Contains(t, err.Error(), "source_id and target_id are required")
 }
 
-// TestHandleMergeObservations_InvalidBoost tests merge with invalid boost.
-func TestHandleMergeObservations_InvalidBoost(t *testing.T) {
+// TestHandleMergeObservations_WorkerUnavailable tests merge when worker is down.
+func TestHandleMergeObservations_WorkerUnavailable(t *testing.T) {
 	t.Parallel()
 
-	server := NewServer(nil, "1.0.0", nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, "", "", "1.0.0")
 	ctx := context.Background()
 
-	// boost must be between 0 and 0.5
-	_, err := server.handleMergeObservations(ctx, json.RawMessage(`{"source_id": 1, "target_id": 2, "boost": 0.6}`))
+	// Should fail when worker is unavailable (nil client)
+	_, err := server.handleMergeProxy(ctx, json.RawMessage(`{"source_id": 1, "target_id": 2}`))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "boost must be between")
 }

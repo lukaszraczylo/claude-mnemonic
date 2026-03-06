@@ -75,6 +75,7 @@ type Manager struct {
 	onDeleted     func(int64)
 	cancel        context.CancelFunc
 	ProcessNotify chan struct{}
+	wg            sync.WaitGroup
 	mu            sync.RWMutex
 }
 
@@ -89,12 +90,14 @@ func NewManager(sessionStore *gorm.SessionStore) *Manager {
 		ProcessNotify: make(chan struct{}, 1),
 	}
 	// Start background cleanup goroutine
+	m.wg.Add(1)
 	go m.cleanupLoop()
 	return m
 }
 
 // cleanupLoop periodically removes stale sessions.
 func (m *Manager) cleanupLoop() {
+	defer m.wg.Done()
 	ticker := time.NewTicker(CleanupInterval)
 	defer ticker.Stop()
 
@@ -350,6 +353,7 @@ func (m *Manager) DeleteSession(sessionDBID int64) {
 func (m *Manager) ShutdownAll(ctx context.Context) {
 	// Stop cleanup goroutine
 	m.cancel()
+	m.wg.Wait()
 
 	m.mu.Lock()
 	sessionIDs := make([]int64, 0, len(m.sessions))

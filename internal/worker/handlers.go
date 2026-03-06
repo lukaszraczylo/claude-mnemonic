@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -142,19 +143,55 @@ func formatWarning(format string, args ...any) string {
 }
 
 // handleHealth handles health check requests.
-// Returns 200 OK immediately (even during init) so hooks can connect quickly.
-// Use /api/ready for full readiness check.
+// Returns 200 when ready, 503 when initializing or degraded.
 func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
-	status := "starting"
-	if s.ready.Load() {
-		status = "ready"
-	} else if err := s.GetInitError(); err != nil {
-		status = "error"
+	status := "ready"
+	dbStatus := "ok"
+	embeddingStatus := "ok"
+
+	if !s.ready.Load() {
+		status = "initializing"
+		if err := s.GetInitError(); err != nil {
+			status = "error"
+		}
 	}
-	writeJSON(w, map[string]any{
-		"status":  status,
-		"version": s.version,
-	})
+
+	// Check embedding service
+	if s.embedSvc == nil {
+		embeddingStatus = "unavailable"
+		if status == "ready" {
+			status = "degraded"
+		}
+	}
+
+	// Check DB
+	if s.store == nil {
+		dbStatus = "unavailable"
+		if status == "ready" {
+			status = "degraded"
+		}
+	}
+
+	activeSessions := 0
+	if s.sessionManager != nil {
+		activeSessions = s.sessionManager.GetActiveSessionCount()
+	}
+
+	resp := map[string]any{
+		"status":           status,
+		"ready":            s.ready.Load(),
+		"uptime_seconds":   int(time.Since(s.startTime).Seconds()),
+		"active_sessions":  activeSessions,
+		"db_status":        dbStatus,
+		"embedding_status": embeddingStatus,
+		"version":          s.version,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if status != "ready" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // handleVersion returns the worker version for version checking.

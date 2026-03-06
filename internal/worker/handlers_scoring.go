@@ -42,11 +42,9 @@ func (s *Service) handleObservationFeedback(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Get required components
-	s.initMu.RLock()
+	// Get required components (initMu.RLock held by requireReady middleware)
 	observationStore := s.observationStore
 	scoreCalculator := s.scoreCalculator
-	s.initMu.RUnlock()
 
 	if observationStore == nil {
 		http.Error(w, "service not ready", http.StatusServiceUnavailable)
@@ -95,10 +93,9 @@ func (s *Service) handleObservationFeedback(w http.ResponseWriter, r *http.Reque
 func (s *Service) handleGetScoringStats(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 
-	s.initMu.RLock()
+	// initMu.RLock held by requireReady middleware
 	observationStore := s.observationStore
 	recalculator := s.recalculator
-	s.initMu.RUnlock()
 
 	if observationStore == nil {
 		http.Error(w, "service not ready", http.StatusServiceUnavailable)
@@ -130,9 +127,8 @@ func (s *Service) handleGetTopObservations(w http.ResponseWriter, r *http.Reques
 	limit := parseIntParam(r, "limit", 10)
 	project := r.URL.Query().Get("project")
 
-	s.initMu.RLock()
+	// initMu.RLock held by requireReady middleware
 	observationStore := s.observationStore
-	s.initMu.RUnlock()
 
 	if observationStore == nil {
 		http.Error(w, "service not ready", http.StatusServiceUnavailable)
@@ -158,9 +154,8 @@ func (s *Service) handleGetMostRetrieved(w http.ResponseWriter, r *http.Request)
 	limit := parseIntParam(r, "limit", 10)
 	project := r.URL.Query().Get("project")
 
-	s.initMu.RLock()
+	// initMu.RLock held by requireReady middleware
 	observationStore := s.observationStore
-	s.initMu.RUnlock()
 
 	if observationStore == nil {
 		http.Error(w, "service not ready", http.StatusServiceUnavailable)
@@ -191,10 +186,9 @@ func (s *Service) handleExplainScore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.initMu.RLock()
+	// initMu.RLock held by requireReady middleware
 	observationStore := s.observationStore
 	scoreCalculator := s.scoreCalculator
-	s.initMu.RUnlock()
 
 	if observationStore == nil || scoreCalculator == nil {
 		http.Error(w, "service not ready", http.StatusServiceUnavailable)
@@ -245,10 +239,9 @@ func (s *Service) handleUpdateConceptWeight(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	s.initMu.RLock()
+	// initMu.RLock held by requireReady middleware
 	observationStore := s.observationStore
 	recalculator := s.recalculator
-	s.initMu.RUnlock()
 
 	if observationStore == nil {
 		http.Error(w, "service not ready", http.StatusServiceUnavailable)
@@ -279,9 +272,8 @@ func (s *Service) handleUpdateConceptWeight(w http.ResponseWriter, r *http.Reque
 // handleGetConceptWeights returns all concept weights.
 // GET /api/scoring/concepts
 func (s *Service) handleGetConceptWeights(w http.ResponseWriter, r *http.Request) {
-	s.initMu.RLock()
+	// initMu.RLock held by requireReady middleware
 	observationStore := s.observationStore
-	s.initMu.RUnlock()
 
 	if observationStore == nil {
 		http.Error(w, "service not ready", http.StatusServiceUnavailable)
@@ -300,19 +292,22 @@ func (s *Service) handleGetConceptWeights(w http.ResponseWriter, r *http.Request
 // handleTriggerRecalculation triggers an immediate score recalculation.
 // POST /api/scoring/recalculate
 func (s *Service) handleTriggerRecalculation(w http.ResponseWriter, r *http.Request) {
-	s.initMu.RLock()
+	// initMu.RLock held by requireReady middleware
 	recalculator := s.recalculator
-	s.initMu.RUnlock()
 
 	if recalculator == nil {
 		http.Error(w, "recalculator not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Run recalculation in background
+	// Run recalculation in background with independent context
+	s.wg.Add(1)
 	go func() {
-		if err := recalculator.RecalculateNow(r.Context()); err != nil {
-			log.Warn().Err(err).Msg("Background score recalculation failed")
+		defer s.wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := recalculator.RecalculateNow(ctx); err != nil {
+			log.Error().Err(err).Msg("Background recalculation failed")
 		}
 	}()
 
@@ -336,27 +331,24 @@ func (s *Service) incrementRetrievalCounts(ids []int64) {
 		return
 	}
 
-	s.initMu.RLock()
+	// initMu.RLock held by requireReady middleware (caller is always behind requireReady)
 	store := s.observationStore
-	s.initMu.RUnlock()
 
 	if store == nil {
 		return
 	}
 
 	// Increment in background to not block response
-	// Use service context to respect shutdown signals
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
+		// Create a new context with timeout for the background operation
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
 		if err := store.IncrementRetrievalCount(ctx, ids); err != nil {
 			// Log but don't fail - this is a background operation
-			if s.ctx.Err() == nil { // Don't log during shutdown
-				log.Debug().Err(err).Msg("Failed to increment retrieval counts")
-			}
+			_ = err // Explicitly ignore - background operation
 		}
 	}()
 }

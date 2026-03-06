@@ -4,20 +4,16 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/mcp"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/scoring"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/search"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/watcher"
-	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -28,7 +24,6 @@ var Version = "dev"
 func main() {
 	// Parse flags
 	project := flag.String("project", "", "Project name (required)")
-	dataDir := flag.String("data-dir", "", "Data directory (default: ~/.claude-mnemonic)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
@@ -43,23 +38,12 @@ func main() {
 		log.Fatal().Msg("--project is required")
 	}
 
-	// Ensure data directory and settings exist
-	if err := config.EnsureAll(); err != nil {
-		log.Fatal().Err(err).Msg("Failed to ensure data directories")
-	}
+	// Get worker port from config
+	port := config.GetWorkerPort()
+	workerURL := fmt.Sprintf("http://localhost:%d", port)
 
-	// Load config
-	cfg, err := config.Load()
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to load config, using defaults")
-		cfg = config.Default()
-	}
-
-	// Override data directory if specified
-	dbPath := cfg.DBPath
-	if *dataDir != "" {
-		dbPath = *dataDir + "/claude-mnemonic.db"
-	}
+	// Create HTTP client for worker
+	client := &http.Client{Timeout: 30 * time.Second}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -73,69 +57,12 @@ func main() {
 		cancel()
 	}()
 
-	// Initialize database store (migrations run automatically)
-	storeCfg := gorm.Config{
-		Path:     dbPath,
-		MaxConns: cfg.MaxConns,
-		// WALMode is enabled automatically by GORM
-	}
-	store, err := gorm.NewStore(storeCfg)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize database store")
-	}
-	defer store.Close()
+	// Start file watchers for config changes
+	startWatchers()
 
-	// Initialize stores
-	observationStore := gorm.NewObservationStore(store, nil, nil, nil)
-	summaryStore := gorm.NewSummaryStore(store)
-	promptStore := gorm.NewPromptStore(store, nil)
-	patternStore := gorm.NewPatternStore(store)
-	relationStore := gorm.NewRelationStore(store)
-	sessionStore := gorm.NewSessionStore(store)
-
-	// Initialize embedding service and vector client
-	var vectorClient *sqlitevec.Client
-	embedSvc, err := embedding.NewService()
-	if err != nil {
-		log.Warn().Err(err).Msg("Embedding service unavailable, vector search disabled")
-	} else {
-		defer embedSvc.Close()
-		vectorClient, err = sqlitevec.NewClient(sqlitevec.Config{DB: store.GetRawDB()}, embedSvc)
-		if err != nil {
-			log.Warn().Err(err).Msg("Vector client unavailable, vector search disabled")
-		} else {
-			log.Info().Msg("Vector search enabled via sqlite-vec")
-		}
-	}
-
-	// Initialize scoring components
-	scoreConfig := models.DefaultScoringConfig()
-	scoreCalculator := scoring.NewCalculator(scoreConfig)
-	recalculator := scoring.NewRecalculator(observationStore, scoreCalculator, log.Logger)
-	go recalculator.Start(ctx)
-	defer recalculator.Stop()
-
-	// Initialize search manager
-	searchMgr := search.NewManager(observationStore, summaryStore, promptStore, vectorClient)
-
-	// Start file watchers
-	startWatchers(ctx, dbPath)
-
-	// Create and run MCP server with all dependencies
-	// Note: maintenanceService is nil because it runs in the worker process
-	server := mcp.NewServer(
-		searchMgr,
-		Version,
-		observationStore,
-		patternStore,
-		relationStore,
-		sessionStore,
-		vectorClient,
-		scoreCalculator,
-		recalculator,
-		nil, // maintenanceService - handled by worker
-	)
-	log.Info().Str("project", *project).Str("version", Version).Msg("Starting MCP server")
+	// Create and run MCP server
+	server := mcp.NewServer(client, workerURL, *project, Version)
+	log.Info().Str("project", *project).Str("version", Version).Str("worker", workerURL).Msg("Starting MCP server")
 
 	if err := server.Run(ctx); err != nil {
 		log.Fatal().Err(err).Msg("MCP server error")
@@ -143,7 +70,7 @@ func main() {
 }
 
 // startWatchers initializes file watchers for config.
-func startWatchers(ctx context.Context, dbPath string) {
+func startWatchers() {
 	// Watch config file for changes (triggers process exit for restart)
 	configPath := config.SettingsPath()
 	configWatcher, err := watcher.New(configPath, func() {

@@ -16,6 +16,35 @@ CACHE_BASE="$HOME/.claude/plugins/cache/claude-mnemonic/claude-mnemonic"
 CACHE_PATH="$CACHE_BASE/$VERSION"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
 
+# Helper: safely write JSON via tmp file with validation
+# Usage: safe_jq_write <jq_args...> <input_file>
+# The last argument is treated as the input file, output goes to input_file.tmp
+safe_jq_write() {
+    local args=("$@")
+    local input_file="${args[-1]}"
+    local tmp_file="${input_file}.tmp"
+
+    if jq "${args[@]}" > "$tmp_file"; then
+        if jq . "$tmp_file" > /dev/null 2>&1; then
+            mv "$tmp_file" "$input_file"
+        else
+            echo "ERROR: jq produced invalid JSON for $input_file, aborting"
+            rm -f "$tmp_file"
+            return 1
+        fi
+    else
+        echo "ERROR: jq failed for $input_file, aborting"
+        rm -f "$tmp_file"
+        return 1
+    fi
+}
+
+# Check that Claude Code directory exists
+if [ ! -d "$HOME/.claude" ]; then
+    echo "Warning: $HOME/.claude directory not found. Claude Code may not be installed."
+    echo "Continuing anyway, but plugin may not function until Claude Code is installed."
+fi
+
 # Ensure plugins directory exists
 mkdir -p "$HOME/.claude/plugins"
 
@@ -42,6 +71,24 @@ fi
 
 # Check if jq is available
 if command -v jq &> /dev/null; then
+    # Validate jq version (1.6+ required for //= operator)
+    JQ_VERSION=$(jq --version 2>/dev/null | sed 's/jq-//')
+    JQ_MAJOR=$(echo "$JQ_VERSION" | cut -d. -f1)
+    JQ_MINOR=$(echo "$JQ_VERSION" | cut -d. -f2)
+    if [ -n "$JQ_MAJOR" ] && [ -n "$JQ_MINOR" ]; then
+        if [ "$JQ_MAJOR" -lt 1 ] || { [ "$JQ_MAJOR" -eq 1 ] && [ "$JQ_MINOR" -lt 6 ]; }; then
+            echo "ERROR: jq 1.6+ is required (found jq-$JQ_VERSION)"
+            echo "Please upgrade jq: brew install jq (macOS) or apt-get install jq (Linux)"
+            exit 1
+        fi
+    fi
+
+    # Validate marketplace path exists and contains expected files
+    if [ ! -d "$MARKETPLACE_PATH" ]; then
+        echo "Warning: Marketplace directory not found at $MARKETPLACE_PATH"
+        echo "Plugin files may not be copied to cache correctly."
+    fi
+
     # Ensure cache directory exists and copy plugin files
     mkdir -p "$CACHE_PATH/.claude-plugin"
     mkdir -p "$CACHE_PATH/hooks"
@@ -64,9 +111,8 @@ EOF
 )
 
     # Add or update the plugin entry in installed_plugins.json
-    jq --arg key "$PLUGIN_KEY" --argjson entry "$PLUGIN_ENTRY" \
-        '.plugins[$key] = $entry' "$PLUGINS_FILE" > "${PLUGINS_FILE}.tmp" \
-        && mv "${PLUGINS_FILE}.tmp" "$PLUGINS_FILE"
+    safe_jq_write --arg key "$PLUGIN_KEY" --argjson entry "$PLUGIN_ENTRY" \
+        '.plugins[$key] = $entry' "$PLUGINS_FILE"
 
     echo "Plugin registered in installed_plugins.json"
 
@@ -82,9 +128,8 @@ EOF
 EOF
 )
 
-    jq --arg key "$PLUGIN_KEY" --argjson statusline "$STATUSLINE_ENTRY" \
-        '.enabledPlugins //= {} | .enabledPlugins[$key] = true | .statusLine = $statusline' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" \
-        && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+    safe_jq_write --arg key "$PLUGIN_KEY" --argjson statusline "$STATUSLINE_ENTRY" \
+        '.enabledPlugins //= {} | .enabledPlugins[$key] = true | .statusLine = $statusline' "$SETTINGS_FILE"
 
     echo "Plugin enabled in settings.json"
     echo "Statusline configured in settings.json"
@@ -102,9 +147,8 @@ EOF
 EOF
 )
 
-    jq --arg key "$MARKETPLACE_NAME" --argjson entry "$MARKETPLACE_ENTRY" \
-        '.[$key] = $entry' "$MARKETPLACES_FILE" > "${MARKETPLACES_FILE}.tmp" \
-        && mv "${MARKETPLACES_FILE}.tmp" "$MARKETPLACES_FILE"
+    safe_jq_write --arg key "$MARKETPLACE_NAME" --argjson entry "$MARKETPLACE_ENTRY" \
+        '.[$key] = $entry' "$MARKETPLACES_FILE"
 
     echo "Marketplace registered in known_marketplaces.json"
 
@@ -126,13 +170,11 @@ EOF
         MCP_ENTRY=$(echo "$MCP_ENTRY" | sed "s|MCP_BINARY_PLACEHOLDER|$MCP_BINARY|g")
 
         # Add or update mcpServers field
-        if jq --arg key "claude-mnemonic" --argjson entry "$MCP_ENTRY" \
-            '.mcpServers //= {} | .mcpServers[$key] = $entry' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp"; then
-            mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+        if safe_jq_write --arg key "claude-mnemonic" --argjson entry "$MCP_ENTRY" \
+            '.mcpServers //= {} | .mcpServers[$key] = $entry' "$SETTINGS_FILE"; then
             echo "MCP server registered successfully"
         else
             echo "Warning: Failed to register MCP server (jq error)"
-            rm -f "${SETTINGS_FILE}.tmp"
         fi
     else
         echo "MCP server binary not found at $MCP_BINARY, skipping MCP registration"

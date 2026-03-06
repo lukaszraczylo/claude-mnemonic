@@ -16,6 +16,10 @@ type Input struct {
 }
 
 func main() {
+	if !hooks.IsWorkerAvailable() {
+		hooks.WriteResponse("SubagentStop", true)
+		return
+	}
 	hooks.RunHook("SubagentStop", handleSubagentStop)
 }
 

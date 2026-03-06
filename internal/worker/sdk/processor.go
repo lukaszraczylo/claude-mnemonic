@@ -19,6 +19,7 @@ import (
 
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/similarity"
 	"github.com/rs/zerolog/log"
@@ -194,6 +195,36 @@ func hashRequest(toolName, input, output string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]       // Short hash is sufficient
 }
 
+// maxStdoutBytes is the maximum number of bytes to capture from CLI stdout.
+const maxStdoutBytes = 1 * 1024 * 1024 // 1 MiB
+
+// maxStderrBytes is the maximum number of bytes to capture from CLI stderr.
+const maxStderrBytes = 64 * 1024 // 64 KiB
+
+// limitedWriter wraps a bytes.Buffer and silently discards writes beyond a maximum size.
+type limitedWriter struct {
+	buf bytes.Buffer
+	max int
+}
+
+// Write implements io.Writer. It writes up to the remaining capacity and silently discards the rest.
+func (lw *limitedWriter) Write(p []byte) (int, error) {
+	remaining := lw.max - lw.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil // Silently discard
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	lw.buf.Write(p)
+	return len(p), nil
+}
+
+// String returns the buffered content as a string.
+func (lw *limitedWriter) String() string {
+	return lw.buf.String()
+}
+
 // BroadcastFunc is a callback for broadcasting events to SSE clients.
 type BroadcastFunc func(event map[string]any)
 
@@ -212,6 +243,7 @@ const MaxVectorSyncWorkers = 8
 type Processor struct {
 	observationStore    *gorm.ObservationStore
 	summaryStore        *gorm.SummaryStore
+	vectorClient        *sqlitevec.Client
 	broadcastFunc       BroadcastFunc
 	syncObservationFunc SyncObservationFunc
 	syncSummaryFunc     SyncSummaryFunc
@@ -238,6 +270,11 @@ func (p *Processor) SetSyncObservationFunc(fn SyncObservationFunc) {
 // SetSyncSummaryFunc sets the callback for syncing summaries to vector DB.
 func (p *Processor) SetSyncSummaryFunc(fn SyncSummaryFunc) {
 	p.syncSummaryFunc = fn
+}
+
+// SetVectorClient sets the vector client for write-time deduplication.
+func (p *Processor) SetVectorClient(client *sqlitevec.Client) {
+	p.vectorClient = client
 }
 
 // broadcast sends an event via the broadcast callback if set.
@@ -429,14 +466,32 @@ func (p *Processor) ProcessObservation(ctx context.Context, sdkSessionID, projec
 		// Convert to stored observation for similarity check
 		storedObs := obs.ToStoredObservation()
 
-		// Check if this observation is too similar to existing ones
+		// Check if this observation is too similar to existing ones (text-based Jaccard)
 		if existingObs != nil && similarity.IsSimilarToAny(storedObs, existingObs, similarityThreshold) {
 			log.Debug().
 				Str("type", string(obs.Type)).
 				Str("title", obs.Title).
-				Msg("Skipping observation - too similar to existing")
+				Msg("Skipping observation - too similar to existing (text)")
 			skippedCount++
 			continue
+		}
+
+		// Check vector similarity for high-confidence dedup with merge
+		dedupResult := p.checkVectorDeduplication(ctx, obs, project)
+		if dedupResult.Action == "merge" {
+			log.Info().
+				Int64("existing_id", dedupResult.ExistingID).
+				Float64("similarity", dedupResult.Similarity).
+				Str("title", obs.Title).
+				Msg("Merging duplicate observation (vector dedup)")
+			if err := p.mergeObservation(ctx, dedupResult.ExistingID, obs); err != nil {
+				log.Warn().Err(err).Int64("existing_id", dedupResult.ExistingID).
+					Msg("Merge failed, inserting as new observation")
+				// Fall through to normal insert
+			} else {
+				skippedCount++
+				continue
+			}
 		}
 
 		id, createdAtEpoch, err := p.observationStore.StoreObservation(ctx, sdkSessionID, project, obs, promptNumber, 0)
@@ -644,10 +699,11 @@ func (p *Processor) callClaudeCLI(ctx context.Context, prompt string) (string, e
 	// Disable any plugin hooks by setting an env var that our hooks can check
 	cmd.Env = append(os.Environ(), "CLAUDE_MNEMONIC_INTERNAL=1")
 
-	// Capture output
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Capture output with size limits to prevent unbounded memory usage
+	stdout := &limitedWriter{max: maxStdoutBytes}
+	stderr := &limitedWriter{max: maxStderrBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	// Run command
 	err := cmd.Run()

@@ -952,6 +952,7 @@ func TestCleanupLoop_ExitsOnCancel(t *testing.T) {
 
 	// Start cleanup loop in goroutine
 	done := make(chan struct{})
+	manager.wg.Add(1)
 	go func() {
 		manager.cleanupLoop()
 		close(done)

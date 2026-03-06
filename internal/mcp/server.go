@@ -3,66 +3,44 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
-	"strings"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/maintenance"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/scoring"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/search"
-	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
-	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 	"github.com/rs/zerolog/log"
 )
 
-// Server is the MCP server that exposes search tools.
+// Server is the MCP server that proxies tool calls to the worker HTTP API.
 // Field order optimized for memory alignment (fieldalignment).
 type Server struct {
-	stdin              io.Reader
-	stdout             io.Writer
-	searchMgr          *search.Manager
-	observationStore   *gorm.ObservationStore
-	patternStore       *gorm.PatternStore
-	relationStore      *gorm.RelationStore
-	sessionStore       *gorm.SessionStore
-	vectorClient       *sqlitevec.Client
-	scoreCalculator    *scoring.Calculator
-	recalculator       *scoring.Recalculator
-	maintenanceService *maintenance.Service
-	version            string
+	stdin        io.Reader
+	stdout       io.Writer
+	client       *http.Client
+	workerURL    string
+	project      string
+	version      string
+	writeMu      sync.Mutex
+	lastActivity atomic.Int64
 }
 
-// NewServer creates a new MCP server.
-func NewServer(
-	searchMgr *search.Manager,
-	version string,
-	observationStore *gorm.ObservationStore,
-	patternStore *gorm.PatternStore,
-	relationStore *gorm.RelationStore,
-	sessionStore *gorm.SessionStore,
-	vectorClient *sqlitevec.Client,
-	scoreCalculator *scoring.Calculator,
-	recalculator *scoring.Recalculator,
-	maintenanceService *maintenance.Service,
-) *Server {
+// NewServer creates a new MCP server that proxies to the worker HTTP API.
+func NewServer(client *http.Client, workerURL, project, version string) *Server {
 	return &Server{
-		searchMgr:          searchMgr,
-		version:            version,
-		stdin:              os.Stdin,
-		stdout:             os.Stdout,
-		observationStore:   observationStore,
-		patternStore:       patternStore,
-		relationStore:      relationStore,
-		sessionStore:       sessionStore,
-		vectorClient:       vectorClient,
-		scoreCalculator:    scoreCalculator,
-		recalculator:       recalculator,
-		maintenanceService: maintenanceService,
+		client:    client,
+		workerURL: workerURL,
+		project:   project,
+		version:   version,
+		stdin:     os.Stdin,
+		stdout:    os.Stdout,
 	}
 }
 
@@ -105,51 +83,98 @@ type Tool struct {
 // Run starts the MCP server loop.
 func (s *Server) Run(ctx context.Context) error {
 	scanner := bufio.NewScanner(s.stdin)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024) // 1MB max message size
 
-	// Channel to signal when scanner is done
-	scanDone := make(chan error, 1)
+	lines := make(chan string)
+	scanErr := make(chan error, 1)
+
+	// Track last activity for idle timeout
+	s.lastActivity.Store(time.Now().Unix())
 
 	go func() {
+		defer close(lines)
 		for scanner.Scan() {
-			// Check for context cancellation before processing
+			lines <- scanner.Text()
+		}
+		scanErr <- scanner.Err()
+	}()
+
+	// Monitor parent process liveness and idle timeout.
+	// If the parent dies (ppid changes) or no messages arrive for 30 minutes, shut down.
+	parentPID := os.Getppid()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
 			select {
 			case <-ctx.Done():
-				scanDone <- ctx.Err()
 				return
-			default:
+			case <-ticker.C:
+				if os.Getppid() != parentPID {
+					log.Info().Msg("Parent process died, shutting down MCP server")
+					if closer, ok := s.stdin.(io.Closer); ok {
+						_ = closer.Close()
+					}
+					return
+				}
+				if time.Since(time.Unix(s.lastActivity.Load(), 0)) > 30*time.Minute {
+					log.Info().Msg("MCP server idle timeout (30m), shutting down")
+					if closer, ok := s.stdin.(io.Closer); ok {
+						_ = closer.Close()
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case line, ok := <-lines:
+			if !ok {
+				// Scanner finished, check for errors
+				err := <-scanErr
+				if err != nil {
+					if errors.Is(err, bufio.ErrTooLong) {
+						log.Error().Msg("MCP message exceeded 1MB buffer limit")
+					}
+					return fmt.Errorf("scanner error: %w", err)
+				}
+				return nil
 			}
 
-			line := scanner.Text()
+			s.lastActivity.Store(time.Now().Unix())
+
 			if line == "" {
 				continue
 			}
 
 			var req Request
 			if err := json.Unmarshal([]byte(line), &req); err != nil {
-				s.sendError(nil, -32700, "Parse error", err)
+				if werr := s.sendError(nil, -32700, "Parse error", err.Error()); werr != nil {
+					return fmt.Errorf("write error: %w", werr)
+				}
 				continue
 			}
 
 			resp := s.handleRequest(ctx, &req)
-			s.sendResponse(resp)
+			if resp != nil {
+				if werr := s.sendResponse(resp); werr != nil {
+					return fmt.Errorf("write error: %w", werr)
+				}
+			}
 		}
-		scanDone <- scanner.Err()
-	}()
-
-	// Wait for either context cancellation or scanner completion
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-scanDone:
-		if err != nil {
-			return fmt.Errorf("scanner error: %w", err)
-		}
-		return nil
 	}
 }
 
 // handleRequest dispatches the request to the appropriate handler.
 func (s *Server) handleRequest(ctx context.Context, req *Request) *Response {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req)
@@ -157,6 +182,8 @@ func (s *Server) handleRequest(ctx context.Context, req *Request) *Response {
 		return s.handleToolsList(req)
 	case "tools/call":
 		return s.handleToolsCall(ctx, req)
+	case "notifications/initialized", "notifications/cancelled":
+		return nil // Notifications don't get responses
 	default:
 		return &Response{
 			JSONRPC: "2.0",
@@ -755,137 +782,323 @@ func (s *Server) handleToolsCall(ctx context.Context, req *Request) *Response {
 	}
 }
 
-// callTool dispatches to the appropriate tool handler.
-func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
-	// Special handlers for non-search tools
-	switch name {
-	case "find_related_observations":
-		return s.handleFindRelatedObservations(ctx, args)
-	case "find_similar_observations":
-		return s.handleFindSimilarObservations(ctx, args)
-	case "get_patterns":
-		return s.handleGetPatterns(ctx, args)
-	case "get_memory_stats":
-		return s.handleGetMemoryStats(ctx)
-	case "bulk_delete_observations":
-		return s.handleBulkDeleteObservations(ctx, args)
-	case "bulk_mark_superseded":
-		return s.handleBulkMarkSuperseded(ctx, args)
-	case "bulk_boost_observations":
-		return s.handleBulkBoostObservations(ctx, args)
-	case "trigger_maintenance":
-		return s.handleTriggerMaintenance(ctx)
-	case "get_maintenance_stats":
-		return s.handleGetMaintenanceStats(ctx)
-	case "merge_observations":
-		return s.handleMergeObservations(ctx, args)
-	case "get_observation":
-		return s.handleGetObservation(ctx, args)
-	case "edit_observation":
-		return s.handleEditObservation(ctx, args)
-	case "get_observation_quality":
-		return s.handleGetObservationQuality(ctx, args)
-	case "suggest_consolidations":
-		return s.handleSuggestConsolidations(ctx, args)
-	case "tag_observation":
-		return s.handleTagObservation(ctx, args)
-	case "get_observations_by_tag":
-		return s.handleGetObservationsByTag(ctx, args)
-	case "get_temporal_trends":
-		return s.handleGetTemporalTrends(ctx, args)
-	case "get_data_quality_report":
-		return s.handleGetDataQualityReport(ctx, args)
-	case "batch_tag_by_pattern":
-		return s.handleBatchTagByPattern(ctx, args)
-	case "explain_search_ranking":
-		return s.handleExplainSearchRanking(ctx, args)
-	case "export_observations":
-		return s.handleExportObservations(ctx, args)
-	case "check_system_health":
-		return s.handleCheckSystemHealth(ctx)
-	case "analyze_search_patterns":
-		return s.handleAnalyzeSearchPatterns(ctx, args)
-	case "get_observation_relationships":
-		return s.handleGetObservationRelationships(ctx, args)
-	case "get_observation_scoring_breakdown":
-		return s.handleGetObservationScoringBreakdown(ctx, args)
-	case "analyze_observation_importance":
-		return s.handleAnalyzeObservationImportance(ctx, args)
-	}
-
-	// Original search-based tools
-	var params search.SearchParams
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	var result *search.UnifiedSearchResult
-	var err error
-
-	switch name {
-	case "search":
-		result, err = s.searchMgr.UnifiedSearch(ctx, params)
-	case "timeline":
-		result, err = s.handleTimeline(ctx, args)
-	case "decisions":
-		result, err = s.searchMgr.Decisions(ctx, params)
-	case "changes":
-		result, err = s.searchMgr.Changes(ctx, params)
-	case "how_it_works":
-		result, err = s.searchMgr.HowItWorks(ctx, params)
-	case "find_by_concept":
-		params.Type = "observations"
-		result, err = s.searchMgr.UnifiedSearch(ctx, params)
-	case "find_by_file":
-		params.Type = "observations"
-		result, err = s.searchMgr.UnifiedSearch(ctx, params)
-	case "find_by_type":
-		params.Type = "observations"
-		result, err = s.searchMgr.UnifiedSearch(ctx, params)
-	case "get_recent_context":
-		result, err = s.searchMgr.UnifiedSearch(ctx, params)
-	case "get_context_timeline":
-		result, err = s.handleTimeline(ctx, args)
-	case "get_timeline_by_query":
-		result, err = s.handleTimelineByQuery(ctx, args)
-	default:
-		return "", fmt.Errorf("unknown tool: %s", name)
-	}
-
-	if err != nil {
-		return "", err
-	}
-
-	output, err := json.Marshal(result)
-	if err != nil {
-		return "", fmt.Errorf("marshal result: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// TimelineParams represents parameters for timeline operations.
-type TimelineParams struct {
+// searchArgs holds common search parameters used by many tools.
+type searchArgs struct {
 	Query     string `json:"query"`
 	Project   string `json:"project"`
+	Type      string `json:"type"`
 	ObsType   string `json:"obs_type"`
 	Concepts  string `json:"concepts"`
 	Files     string `json:"files"`
+	DateStart any    `json:"dateStart"`
+	DateEnd   any    `json:"dateEnd"`
+	OrderBy   string `json:"orderBy"`
 	Format    string `json:"format"`
-	AnchorID  int64  `json:"anchor_id"`
-	Before    int    `json:"before"`
-	After     int    `json:"after"`
-	DateStart int64  `json:"dateStart"`
-	DateEnd   int64  `json:"dateEnd"`
+	Limit     int    `json:"limit"`
+	Offset    int    `json:"offset"`
 }
 
-// handleTimeline handles timeline requests.
-func (s *Server) handleTimeline(ctx context.Context, args json.RawMessage) (*search.UnifiedSearchResult, error) {
-	var params TimelineParams
-	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("invalid timeline params: %w", err)
+// callTool dispatches to the appropriate tool handler by proxying to the worker HTTP API.
+func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	// Parse common search params used by many tools
+	var sa searchArgs
+	// Best-effort parse; individual handlers validate as needed
+	_ = json.Unmarshal(args, &sa)
+
+	// Default project from server config
+	if sa.Project == "" {
+		sa.Project = s.project
 	}
 
+	switch name {
+	// --- Search-based tools: proxy to GET /api/context/search ---
+	case "search":
+		return s.handleSearchProxy(ctx, sa)
+	case "decisions":
+		sa.ObsType = "decision"
+		return s.handleSearchProxy(ctx, sa)
+	case "changes":
+		sa.ObsType = "code_change"
+		return s.handleSearchProxy(ctx, sa)
+	case "how_it_works":
+		sa.ObsType = "architecture"
+		return s.handleSearchProxy(ctx, sa)
+	case "find_by_concept":
+		return s.handleSearchProxy(ctx, sa)
+	case "find_by_file":
+		return s.handleSearchProxy(ctx, sa)
+	case "find_by_type":
+		return s.handleSearchProxy(ctx, sa)
+	case "get_recent_context":
+		return s.handleSearchProxy(ctx, sa)
+	case "timeline", "get_context_timeline":
+		return s.handleTimelineProxy(ctx, args)
+	case "get_timeline_by_query":
+		return s.handleTimelineProxy(ctx, args)
+
+	// --- Observation endpoints ---
+	case "get_observation":
+		return s.handleGetObservationProxy(ctx, args)
+	case "edit_observation":
+		return s.handleEditObservationProxy(ctx, args)
+	case "find_related_observations":
+		return s.handleFindRelatedProxy(ctx, args)
+	case "find_similar_observations":
+		return s.handleFindSimilarProxy(ctx, args)
+	case "get_observation_quality":
+		return s.handleGetObservationQualityProxy(ctx, args)
+	case "get_observation_relationships":
+		return s.handleGetRelationshipsProxy(ctx, args)
+	case "get_observation_scoring_breakdown":
+		return s.handleGetScoringBreakdownProxy(ctx, args)
+	case "tag_observation":
+		return s.handleTagObservationProxy(ctx, args)
+	case "get_observations_by_tag":
+		return s.handleGetObservationsByTagProxy(ctx, args)
+
+	// --- Bulk operations ---
+	case "bulk_delete_observations":
+		return s.handleBulkStatusProxy(ctx, args, "delete")
+	case "bulk_mark_superseded":
+		return s.handleBulkStatusProxy(ctx, args, "supersede")
+	case "bulk_boost_observations":
+		return s.handleBulkStatusProxy(ctx, args, "boost")
+	case "merge_observations":
+		return s.handleMergeProxy(ctx, args)
+
+	// --- Pattern endpoints ---
+	case "get_patterns":
+		return s.handleGetPatternsProxy(ctx, args)
+
+	// --- Stats and analytics endpoints ---
+	case "get_memory_stats":
+		return s.proxyGetRaw(ctx, "/api/stats", map[string]string{
+			"project": s.project,
+		})
+	case "check_system_health":
+		return s.proxyGetRaw(ctx, "/api/selfcheck", nil)
+	case "get_maintenance_stats":
+		return s.proxyGetRaw(ctx, "/api/stats", map[string]string{
+			"project": s.project,
+		})
+	case "trigger_maintenance":
+		return s.proxyPostRaw(ctx, "/api/scoring/recalculate", nil)
+	case "analyze_observation_importance":
+		return s.handleAnalyzeImportanceProxy(ctx, args)
+	case "analyze_search_patterns":
+		return s.proxyGetRaw(ctx, "/api/search/analytics", nil)
+	case "explain_search_ranking":
+		return s.handleExplainSearchProxy(ctx, args)
+	case "get_temporal_trends":
+		return s.handleGetTemporalTrendsProxy(ctx, args)
+	case "get_data_quality_report":
+		return s.handleGetDataQualityProxy(ctx, args)
+
+	// --- Export and batch tag ---
+	case "export_observations":
+		return s.handleExportProxy(ctx, args)
+	case "suggest_consolidations":
+		return s.handleSuggestConsolidationsProxy(ctx, args)
+	case "batch_tag_by_pattern":
+		return s.handleBatchTagProxy(ctx, args)
+
+	default:
+		return "", fmt.Errorf("unknown tool: %s", name)
+	}
+}
+
+// =============================================================================
+// HTTP PROXY HELPERS
+// =============================================================================
+
+// proxyGetRaw performs a GET request to the worker and returns the raw JSON response body.
+func (s *Server) proxyGetRaw(ctx context.Context, path string, params map[string]string) (string, error) {
+	if s.client == nil {
+		return "", fmt.Errorf("worker unavailable at %s: http client not configured", s.workerURL)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", s.workerURL+path, nil)
+	if err != nil {
+		return "", err
+	}
+	if len(params) > 0 {
+		q := req.URL.Query()
+		for k, v := range params {
+			if v != "" {
+				q.Set(k, v)
+			}
+		}
+		req.URL.RawQuery = q.Encode()
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("worker unavailable at %s: %w", s.workerURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read worker response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("worker returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return string(body), nil
+}
+
+// proxyPostRaw performs a POST request to the worker and returns the raw JSON response body.
+func (s *Server) proxyPostRaw(ctx context.Context, path string, payload any) (string, error) {
+	if s.client == nil {
+		return "", fmt.Errorf("worker unavailable at %s: http client not configured", s.workerURL)
+	}
+	var bodyReader io.Reader
+	if payload != nil {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", s.workerURL+path, bodyReader)
+	if err != nil {
+		return "", err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("worker unavailable at %s: %w", s.workerURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read worker response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("worker returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return string(body), nil
+}
+
+// proxyPutRaw performs a PUT request to the worker and returns the raw JSON response body.
+func (s *Server) proxyPutRaw(ctx context.Context, path string, payload any) (string, error) {
+	if s.client == nil {
+		return "", fmt.Errorf("worker unavailable at %s: http client not configured", s.workerURL)
+	}
+	var bodyReader io.Reader
+	if payload != nil {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "PUT", s.workerURL+path, bodyReader)
+	if err != nil {
+		return "", err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("worker unavailable at %s: %w", s.workerURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read worker response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("worker returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return string(body), nil
+}
+
+// anyToString converts an interface{} value to its string representation for query params.
+func anyToString(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case float64:
+		return strconv.FormatInt(int64(val), 10)
+	case int:
+		return strconv.Itoa(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// =============================================================================
+// TOOL HANDLER PROXIES
+// =============================================================================
+
+// handleSearchProxy proxies search requests to GET /api/context/search.
+func (s *Server) handleSearchProxy(ctx context.Context, args searchArgs) (string, error) {
+	params := map[string]string{
+		"project": args.Project,
+		"query":   args.Query,
+	}
+	if args.Limit > 0 {
+		params["limit"] = strconv.Itoa(args.Limit)
+	}
+	if args.ObsType != "" {
+		params["obs_type"] = args.ObsType
+	}
+	if args.Concepts != "" {
+		params["concepts"] = args.Concepts
+	}
+	if args.Files != "" {
+		params["files"] = args.Files
+	}
+	if args.DateStart != nil {
+		if ds := anyToString(args.DateStart); ds != "" {
+			params["dateStart"] = ds
+		}
+	}
+	if args.DateEnd != nil {
+		if de := anyToString(args.DateEnd); de != "" {
+			params["dateEnd"] = de
+		}
+	}
+
+	return s.proxyGetRaw(ctx, "/api/context/search", params)
+}
+
+// handleTimelineProxy proxies timeline requests. First searches for anchor, then fetches surrounding observations.
+func (s *Server) handleTimelineProxy(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		AnchorID int64  `json:"anchor_id"`
+		Query    string `json:"query"`
+		Project  string `json:"project"`
+		Before   int    `json:"before"`
+		After    int    `json:"after"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid timeline params: %w", err)
+	}
+
+	if params.Project == "" {
+		params.Project = s.project
+	}
 	if params.Before <= 0 {
 		params.Before = 10
 	}
@@ -893,697 +1106,57 @@ func (s *Server) handleTimeline(ctx context.Context, args json.RawMessage) (*sea
 		params.After = 10
 	}
 
-	// If query provided, first find anchor
+	// If query provided and no anchor, search for it first
 	if params.Query != "" && params.AnchorID == 0 {
-		searchParams := search.SearchParams{
-			Query:   params.Query,
-			Type:    "observations",
-			Project: params.Project,
-			Limit:   1,
-		}
-		result, err := s.searchMgr.UnifiedSearch(ctx, searchParams)
+		searchResult, err := s.proxyGetRaw(ctx, "/api/context/search", map[string]string{
+			"project": params.Project,
+			"query":   params.Query,
+			"limit":   "1",
+		})
 		if err != nil {
-			return nil, err
+			return "", err
 		}
-		if len(result.Results) > 0 {
-			params.AnchorID = result.Results[0].ID
+		// Extract first observation ID from search results
+		var searchResp struct {
+			Observations []struct {
+				ID int64 `json:"id"`
+			} `json:"observations"`
+		}
+		if err := json.Unmarshal([]byte(searchResult), &searchResp); err == nil && len(searchResp.Observations) > 0 {
+			params.AnchorID = searchResp.Observations[0].ID
 		}
 	}
 
 	if params.AnchorID == 0 {
-		return &search.UnifiedSearchResult{Results: []search.SearchResult{}}, nil
+		result, _ := json.Marshal(map[string]any{"observations": []any{}, "message": "no anchor found"})
+		return string(result), nil
 	}
 
-	// Fetch observations around anchor
-	searchParams := search.SearchParams{
-		Type:     "observations",
-		Project:  params.Project,
-		ObsType:  params.ObsType,
-		Concepts: params.Concepts,
-		Files:    params.Files,
-		Limit:    params.Before + params.After + 1,
-		Format:   params.Format,
-	}
-
-	return s.searchMgr.UnifiedSearch(ctx, searchParams)
+	// Get observations around the anchor
+	limit := params.Before + params.After + 1
+	return s.proxyGetRaw(ctx, "/api/observations", map[string]string{
+		"project": params.Project,
+		"limit":   strconv.Itoa(limit),
+	})
 }
 
-// handleTimelineByQuery handles combined search + timeline requests.
-func (s *Server) handleTimelineByQuery(ctx context.Context, args json.RawMessage) (*search.UnifiedSearchResult, error) {
-	var params TimelineParams
-	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("invalid timeline params: %w", err)
-	}
-
-	if params.Query == "" {
-		return nil, fmt.Errorf("query is required")
-	}
-
-	// First search
-	searchParams := search.SearchParams{
-		Query:     params.Query,
-		Type:      "observations",
-		Project:   params.Project,
-		DateStart: params.DateStart,
-		DateEnd:   params.DateEnd,
-		Limit:     1,
-	}
-
-	result, err := s.searchMgr.UnifiedSearch(ctx, searchParams)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(result.Results) == 0 {
-		return result, nil
-	}
-
-	// Now get timeline around that result
-	params.AnchorID = result.Results[0].ID
-	return s.handleTimeline(ctx, args)
-}
-
-// handleFindRelatedObservations finds observations related to a given observation ID.
-func (s *Server) handleFindRelatedObservations(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		ID            int64   `json:"id"`
-		MinConfidence float64 `json:"min_confidence"`
-		Limit         int     `json:"limit"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	if params.ID == 0 {
-		return "", fmt.Errorf("id is required")
-	}
-
-	// Use -1 as sentinel for "not provided" since 0.0 is a valid threshold
-	if params.MinConfidence < 0 {
-		params.MinConfidence = 0.5
-	}
-
-	if params.Limit == 0 {
-		params.Limit = 20
-	}
-	if params.Limit > 100 {
-		params.Limit = 100
-	}
-
-	// Get related observation IDs with confidence filter
-	relatedIDs, err := s.relationStore.GetRelatedObservationIDs(ctx, params.ID, params.MinConfidence)
-	if err != nil {
-		return "", fmt.Errorf("failed to get related observations: %w", err)
-	}
-
-	if relatedIDs == nil {
-		relatedIDs = []int64{}
-	}
-
-	// Limit results
-	if len(relatedIDs) > params.Limit {
-		relatedIDs = relatedIDs[:params.Limit]
-	}
-
-	// Fetch full observations in batch (avoids N+1 query problem)
-	observations, err := s.observationStore.GetObservationsByIDsPreserveOrder(ctx, relatedIDs)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to batch fetch related observations, falling back to individual fetch")
-		// Fallback to individual fetch if batch fails
-		observations = make([]*models.Observation, 0, len(relatedIDs))
-		for _, id := range relatedIDs {
-			obs, fetchErr := s.observationStore.GetObservationByID(ctx, id)
-			if fetchErr == nil && obs != nil {
-				observations = append(observations, obs)
-			}
-		}
-	}
-
-	response := map[string]any{
-		"observations": observations,
-		"count":        len(observations),
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// sendResponse sends a JSON-RPC response.
-func (s *Server) sendResponse(resp *Response) {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal response")
-		return
-	}
-	fmt.Fprintln(s.stdout, string(data))
-}
-
-// sendError sends a JSON-RPC error response.
-func (s *Server) sendError(id any, code int, message string, data any) {
-	resp := &Response{
-		JSONRPC: "2.0",
-		ID:      id,
-		Error: &Error{
-			Code:    code,
-			Message: message,
-			Data:    data,
-		},
-	}
-	s.sendResponse(resp)
-}
-
-// handleFindSimilarObservations finds observations semantically similar to a query.
-func (s *Server) handleFindSimilarObservations(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		Query         string  `json:"query"`
-		Project       string  `json:"project"`
-		MinSimilarity float64 `json:"min_similarity"`
-		Limit         int     `json:"limit"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	if params.Query == "" {
-		return "", fmt.Errorf("query is required")
-	}
-
-	if params.MinSimilarity == 0 {
-		params.MinSimilarity = 0.7
-	}
-	if params.Limit == 0 {
-		params.Limit = 10
-	}
-	if params.Limit > 50 {
-		params.Limit = 50
-	}
-
-	// Use vector search to find similar observations
-	if s.vectorClient == nil {
-		return "", fmt.Errorf("vector search not available")
-	}
-
-	where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeObservation, params.Project)
-	results, err := s.vectorClient.Query(ctx, params.Query, params.Limit*2, where)
-	if err != nil {
-		return "", fmt.Errorf("vector search failed: %w", err)
-	}
-
-	// Filter by similarity threshold
-	filtered := sqlitevec.FilterByThreshold(results, params.MinSimilarity, params.Limit)
-
-	// Extract observation IDs and build similarity map
-	obsIDs := sqlitevec.ExtractObservationIDs(filtered, params.Project)
-	similarityMap := make(map[int64]float64, len(filtered))
-	for _, r := range filtered {
-		if sqliteID, ok := r.Metadata["sqlite_id"].(float64); ok {
-			id := int64(sqliteID)
-			if _, exists := similarityMap[id]; !exists {
-				similarityMap[id] = r.Similarity
-			}
-		}
-	}
-
-	// Fetch full observations in batch (avoids N+1 query problem)
-	observations, err := s.observationStore.GetObservationsByIDsPreserveOrder(ctx, obsIDs)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to batch fetch similar observations, falling back to individual fetch")
-		observations = make([]*models.Observation, 0, len(obsIDs))
-		for _, id := range obsIDs {
-			obs, fetchErr := s.observationStore.GetObservationByID(ctx, id)
-			if fetchErr == nil && obs != nil {
-				observations = append(observations, obs)
-			}
-		}
-	}
-
-	// Build response with similarity scores
-	type SimilarObservation struct {
-		*models.Observation
-		Similarity float64 `json:"similarity"`
-	}
-
-	similarObs := make([]SimilarObservation, 0, len(observations))
-	for _, obs := range observations {
-		sim := similarityMap[obs.ID]
-		similarObs = append(similarObs, SimilarObservation{
-			Observation: obs,
-			Similarity:  sim,
-		})
-	}
-
-	response := map[string]any{
-		"observations":   similarObs,
-		"count":          len(similarObs),
-		"min_similarity": params.MinSimilarity,
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// handleGetPatterns returns patterns from the pattern store.
-func (s *Server) handleGetPatterns(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		Type    string `json:"type"`
-		Project string `json:"project"`
-		Query   string `json:"query"`
-		Limit   int    `json:"limit"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	if params.Limit == 0 {
-		params.Limit = 20
-	}
-	if params.Limit > 100 {
-		params.Limit = 100
-	}
-
-	var patterns []*models.Pattern
-	var err error
-
-	// Query patterns based on filters
-	if params.Query != "" {
-		// FTS search
-		patterns, err = s.patternStore.SearchPatternsFTS(ctx, params.Query, params.Limit)
-	} else if params.Type != "" {
-		// Filter by type
-		patterns, err = s.patternStore.GetPatternsByType(ctx, models.PatternType(params.Type), params.Limit)
-	} else if params.Project != "" {
-		// Filter by project
-		patterns, err = s.patternStore.GetPatternsByProject(ctx, params.Project, params.Limit)
-	} else {
-		// Get all active patterns
-		patterns, err = s.patternStore.GetActivePatterns(ctx, params.Limit)
-	}
-
-	if err != nil {
-		return "", fmt.Errorf("failed to get patterns: %w", err)
-	}
-
-	response := map[string]any{
-		"patterns": patterns,
-		"count":    len(patterns),
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// handleGetMemoryStats returns statistics about the memory system.
-func (s *Server) handleGetMemoryStats(ctx context.Context) (string, error) {
-	stats := make(map[string]any, 8) // Pre-allocate for expected stats keys
-
-	// Get vector count
-	if s.vectorClient != nil {
-		count, err := s.vectorClient.Count(ctx)
-		if err == nil {
-			stats["vector_count"] = count
-		}
-
-		// Cache stats
-		cacheSize, cacheMax := s.vectorClient.CacheStats()
-		stats["embedding_cache"] = map[string]any{
-			"size":     cacheSize,
-			"max_size": cacheMax,
-		}
-
-		// Model version
-		stats["embedding_model"] = s.vectorClient.ModelVersion()
-	}
-
-	// Get pattern stats
-	if s.patternStore != nil {
-		patternStats, err := s.patternStore.GetPatternStats(ctx)
-		if err == nil && patternStats != nil {
-			stats["patterns"] = map[string]any{
-				"total":             patternStats.Total,
-				"active":            patternStats.Active,
-				"deprecated":        patternStats.Deprecated,
-				"merged":            patternStats.Merged,
-				"total_occurrences": patternStats.TotalOccurrences,
-				"avg_confidence":    patternStats.AvgConfidence,
-			}
-		}
-	}
-
-	// Get search metrics
-	if s.searchMgr != nil {
-		searchMetrics := s.searchMgr.Metrics()
-		if searchMetrics != nil {
-			stats["search"] = searchMetrics.GetStats()
-		}
-	}
-
-	output, err := json.Marshal(stats)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// handleBulkDeleteObservations deletes multiple observations by ID.
-func (s *Server) handleBulkDeleteObservations(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		IDs           []int64 `json:"ids"`
-		DeleteVectors bool    `json:"delete_vectors"`
-	}
-	params.DeleteVectors = true // default
-
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	if len(params.IDs) == 0 {
-		return "", fmt.Errorf("ids is required")
-	}
-
-	if len(params.IDs) > 1000 {
-		return "", fmt.Errorf("maximum 1000 IDs per request")
-	}
-
-	var deleted int64
-	var errors []string
-
-	// Delete in batches
-	batchSize := 100
-	for i := 0; i < len(params.IDs); i += batchSize {
-		end := min(i+batchSize, len(params.IDs))
-		batch := params.IDs[i:end]
-
-		for _, id := range batch {
-			if err := s.observationStore.DeleteObservation(ctx, id); err != nil {
-				errors = append(errors, fmt.Sprintf("id %d: %v", id, err))
-				continue
-			}
-			deleted++
-
-			// Delete associated vectors if requested
-			if params.DeleteVectors && s.vectorClient != nil {
-				_ = s.vectorClient.DeleteByObservationID(ctx, id)
-			}
-		}
-	}
-
-	response := map[string]any{
-		"deleted": deleted,
-		"total":   len(params.IDs),
-	}
-	if len(errors) > 0 {
-		response["errors"] = errors
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	// Return error if all deletions failed (complete failure)
-	if deleted == 0 && len(errors) > 0 {
-		return string(output), fmt.Errorf("bulk delete failed: %d errors, first: %s", len(errors), errors[0])
-	}
-
-	return string(output), nil
-}
-
-// handleBulkMarkSuperseded marks multiple observations as superseded.
-func (s *Server) handleBulkMarkSuperseded(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		IDs []int64 `json:"ids"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	if len(params.IDs) == 0 {
-		return "", fmt.Errorf("ids is required")
-	}
-
-	if len(params.IDs) > 1000 {
-		return "", fmt.Errorf("maximum 1000 IDs per request")
-	}
-
-	// Use batch update for efficiency (single query instead of N queries)
-	updated, err := s.observationStore.MarkAsSupersededBatch(ctx, params.IDs)
-	if err != nil {
-		return "", fmt.Errorf("batch mark as superseded: %w", err)
-	}
-
-	response := map[string]any{
-		"updated": updated,
-		"total":   len(params.IDs),
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// handleBulkBoostObservations boosts the importance score of multiple observations.
-func (s *Server) handleBulkBoostObservations(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		IDs   []int64 `json:"ids"`
-		Boost float64 `json:"boost"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	if len(params.IDs) == 0 {
-		return "", fmt.Errorf("ids is required")
-	}
-
-	if len(params.IDs) > 1000 {
-		return "", fmt.Errorf("maximum 1000 IDs per request")
-	}
-
-	if params.Boost < -1.0 || params.Boost > 1.0 {
-		return "", fmt.Errorf("boost must be between -1.0 and 1.0")
-	}
-
-	var boosted int64
-	var errors []string
-
-	// Batch fetch all observations in one query instead of N queries
-	observations, err := s.observationStore.GetObservationsByIDs(ctx, params.IDs, "", 0)
-	if err != nil {
-		return "", fmt.Errorf("batch fetch observations: %w", err)
-	}
-
-	// Build a map for O(1) lookup
-	obsMap := make(map[int64]*models.Observation, len(observations))
-	for _, obs := range observations {
-		obsMap[obs.ID] = obs
-	}
-
-	// Calculate new scores and prepare batch update
-	scoresToUpdate := make(map[int64]float64, len(params.IDs))
-	for _, id := range params.IDs {
-		obs, found := obsMap[id]
-		if !found {
-			errors = append(errors, fmt.Sprintf("id %d: not found", id))
-			continue
-		}
-
-		// Calculate new importance score (clamp between 0 and 1)
-		newScore := obs.ImportanceScore + params.Boost
-		if newScore < 0 {
-			newScore = 0
-		}
-		if newScore > 1 {
-			newScore = 1
-		}
-		scoresToUpdate[id] = newScore
-	}
-
-	// Batch update all scores in one operation
-	if len(scoresToUpdate) > 0 {
-		if err := s.observationStore.UpdateImportanceScores(ctx, scoresToUpdate); err != nil {
-			return "", fmt.Errorf("batch update scores: %w", err)
-		}
-		boosted = int64(len(scoresToUpdate))
-	}
-
-	response := map[string]any{
-		"boosted":    boosted,
-		"total":      len(params.IDs),
-		"boost_used": params.Boost,
-	}
-	if len(errors) > 0 {
-		response["errors"] = errors
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// handleTriggerMaintenance triggers an immediate maintenance run.
-func (s *Server) handleTriggerMaintenance(ctx context.Context) (string, error) {
-	if s.maintenanceService == nil {
-		return "", fmt.Errorf("maintenance service not available")
-	}
-
-	s.maintenanceService.RunNow(ctx)
-
-	response := map[string]any{
-		"status":  "triggered",
-		"message": "Maintenance run started in background",
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// handleGetMaintenanceStats returns maintenance statistics.
-func (s *Server) handleGetMaintenanceStats(_ context.Context) (string, error) {
-	if s.maintenanceService == nil {
-		return "", fmt.Errorf("maintenance service not available")
-	}
-
-	stats := s.maintenanceService.Stats()
-
-	output, err := json.Marshal(stats)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// handleMergeObservations merges two observations, keeping the target and superseding the source.
-func (s *Server) handleMergeObservations(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		SourceID int64   `json:"source_id"`
-		TargetID int64   `json:"target_id"`
-		Boost    float64 `json:"boost"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	if params.SourceID == 0 || params.TargetID == 0 {
-		return "", fmt.Errorf("source_id and target_id are required")
-	}
-
-	if params.SourceID == params.TargetID {
-		return "", fmt.Errorf("source_id and target_id cannot be the same")
-	}
-
-	// Set default boost if not provided
-	if params.Boost == 0 {
-		params.Boost = 0.1
-	}
-	if params.Boost < 0 || params.Boost > 0.5 {
-		return "", fmt.Errorf("boost must be between 0 and 0.5")
-	}
-
-	// Get both observations to verify they exist
-	source, err := s.observationStore.GetObservationByID(ctx, params.SourceID)
-	if err != nil {
-		return "", fmt.Errorf("get source observation: %w", err)
-	}
-	if source == nil {
-		return "", fmt.Errorf("source observation %d not found", params.SourceID)
-	}
-
-	target, err := s.observationStore.GetObservationByID(ctx, params.TargetID)
-	if err != nil {
-		return "", fmt.Errorf("get target observation: %w", err)
-	}
-	if target == nil {
-		return "", fmt.Errorf("target observation %d not found", params.TargetID)
-	}
-
-	// Mark source as superseded
-	if err := s.observationStore.MarkAsSuperseded(ctx, params.SourceID); err != nil {
-		return "", fmt.Errorf("mark source as superseded: %w", err)
-	}
-
-	// Boost target's importance score
-	newScore := target.ImportanceScore + params.Boost
-	if newScore > 1.0 {
-		newScore = 1.0
-	}
-	if err := s.observationStore.UpdateImportanceScore(ctx, params.TargetID, newScore); err != nil {
-		return "", fmt.Errorf("update target score: %w", err)
-	}
-
-	response := map[string]any{
-		"merged":           true,
-		"source_id":        params.SourceID,
-		"source_title":     source.Title.String,
-		"target_id":        params.TargetID,
-		"target_title":     target.Title.String,
-		"target_new_score": newScore,
-		"target_old_score": target.ImportanceScore,
-		"boost_applied":    params.Boost,
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// handleGetObservation returns a single observation by ID.
-func (s *Server) handleGetObservation(ctx context.Context, args json.RawMessage) (string, error) {
+// handleGetObservationProxy proxies get observation by ID.
+func (s *Server) handleGetObservationProxy(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		ID int64 `json:"id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-
 	if params.ID == 0 {
 		return "", fmt.Errorf("id is required")
 	}
 
-	obs, err := s.observationStore.GetObservationByID(ctx, params.ID)
-	if err != nil {
-		return "", fmt.Errorf("get observation: %w", err)
-	}
-	if obs == nil {
-		return "", fmt.Errorf("observation %d not found", params.ID)
-	}
-
-	output, err := json.Marshal(obs)
-	if err != nil {
-		return "", fmt.Errorf("marshal observation: %w", err)
-	}
-
-	return string(output), nil
+	return s.proxyGetRaw(ctx, fmt.Sprintf("/api/observations/%d", params.ID), nil)
 }
 
-// handleEditObservation updates an existing observation with provided fields.
-func (s *Server) handleEditObservation(ctx context.Context, args json.RawMessage) (string, error) {
+// handleEditObservationProxy proxies observation edits.
+func (s *Server) handleEditObservationProxy(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Title         *string  `json:"title,omitempty"`
 		Subtitle      *string  `json:"subtitle,omitempty"`
@@ -1598,110 +1171,122 @@ func (s *Server) handleEditObservation(ctx context.Context, args json.RawMessage
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-
 	if params.ID == 0 {
 		return "", fmt.Errorf("id is required")
 	}
 
-	// Validate scope if provided
-	if params.Scope != nil && *params.Scope != "project" && *params.Scope != "global" {
-		return "", fmt.Errorf("scope must be 'project' or 'global'")
-	}
-
-	// Build update struct
-	update := &gorm.ObservationUpdate{}
-	if params.Title != nil {
-		update.Title = params.Title
-	}
-	if params.Subtitle != nil {
-		update.Subtitle = params.Subtitle
-	}
-	if params.Narrative != nil {
-		update.Narrative = params.Narrative
-	}
-	if params.Facts != nil {
-		update.Facts = &params.Facts
-	}
-	if params.Concepts != nil {
-		update.Concepts = &params.Concepts
-	}
-	if params.FilesRead != nil {
-		update.FilesRead = &params.FilesRead
-	}
-	if params.FilesModified != nil {
-		update.FilesModified = &params.FilesModified
-	}
-	if params.Scope != nil {
-		update.Scope = params.Scope
-	}
-
-	// Update the observation
-	updatedObs, err := s.observationStore.UpdateObservation(ctx, params.ID, update)
-	if err != nil {
-		return "", fmt.Errorf("update observation: %w", err)
-	}
-
-	// Note: Vector resync is handled by the worker service when available
-	// The MCP server doesn't have access to the embedding service
-
-	response := map[string]any{
-		"updated":       true,
-		"observation":   updatedObs,
-		"vector_resync": "deferred",
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
+	return s.proxyPutRaw(ctx, fmt.Sprintf("/api/observations/%d", params.ID), params)
 }
 
-// handleGetObservationQuality returns quality metrics for an observation.
-func (s *Server) handleGetObservationQuality(ctx context.Context, args json.RawMessage) (string, error) {
+// handleFindRelatedProxy proxies find related observations.
+func (s *Server) handleFindRelatedProxy(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		ID            int64   `json:"id"`
+		MinConfidence float64 `json:"min_confidence"`
+		Limit         int     `json:"limit"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if params.ID == 0 {
+		return "", fmt.Errorf("id is required")
+	}
+
+	qp := map[string]string{}
+	if params.MinConfidence > 0 {
+		qp["min_confidence"] = strconv.FormatFloat(params.MinConfidence, 'f', -1, 64)
+	}
+	if params.Limit > 0 {
+		qp["limit"] = strconv.Itoa(params.Limit)
+	}
+
+	return s.proxyGetRaw(ctx, fmt.Sprintf("/api/observations/%d/related", params.ID), qp)
+}
+
+// handleFindSimilarProxy proxies find similar observations via context search.
+func (s *Server) handleFindSimilarProxy(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		Query         string  `json:"query"`
+		Project       string  `json:"project"`
+		MinSimilarity float64 `json:"min_similarity"`
+		Limit         int     `json:"limit"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if params.Query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+	if params.Project == "" {
+		params.Project = s.project
+	}
+	if params.Limit == 0 {
+		params.Limit = 10
+	}
+
+	// Use context search which uses vector similarity
+	return s.proxyGetRaw(ctx, "/api/context/search", map[string]string{
+		"project": params.Project,
+		"query":   params.Query,
+		"limit":   strconv.Itoa(params.Limit),
+	})
+}
+
+// handleGetObservationQualityProxy proxies observation quality check.
+// Fetches the observation and computes quality metrics locally (lightweight computation).
+func (s *Server) handleGetObservationQualityProxy(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		ID int64 `json:"id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-
 	if params.ID == 0 {
 		return "", fmt.Errorf("id is required")
 	}
 
-	obs, err := s.observationStore.GetObservationByID(ctx, params.ID)
+	// Fetch the observation
+	obsJSON, err := s.proxyGetRaw(ctx, fmt.Sprintf("/api/observations/%d", params.ID), nil)
 	if err != nil {
-		return "", fmt.Errorf("get observation: %w", err)
+		return "", err
 	}
-	if obs == nil {
-		return "", fmt.Errorf("observation %d not found", params.ID)
+
+	// Parse observation for quality analysis
+	var obs struct {
+		Title           string   `json:"title"`
+		Narrative       string   `json:"narrative"`
+		Facts           []string `json:"facts"`
+		Concepts        []string `json:"concepts"`
+		FilesRead       []string `json:"files_read"`
+		FilesModified   []string `json:"files_modified"`
+		ImportanceScore float64  `json:"importance_score"`
+		RetrievalCount  int      `json:"retrieval_count"`
+		IsSuperseded    bool     `json:"is_superseded"`
+	}
+	if err := json.Unmarshal([]byte(obsJSON), &obs); err != nil {
+		return "", fmt.Errorf("parse observation: %w", err)
 	}
 
 	// Calculate completeness score
 	completenessScore := 0.0
 	maxScore := 5.0
-	suggestions := []string{}
+	var suggestions []string
 
-	// Check title (required, 1 point)
-	if obs.Title.Valid && obs.Title.String != "" {
+	if obs.Title != "" {
 		completenessScore += 1.0
 	} else {
 		suggestions = append(suggestions, "Add a descriptive title")
 	}
 
-	// Check narrative (important, 1.5 points)
-	if obs.Narrative.Valid && len(obs.Narrative.String) > 50 {
+	if len(obs.Narrative) > 50 {
 		completenessScore += 1.5
-	} else if obs.Narrative.Valid && obs.Narrative.String != "" {
+	} else if obs.Narrative != "" {
 		completenessScore += 0.5
 		suggestions = append(suggestions, "Expand the narrative to provide more context (aim for 50+ characters)")
 	} else {
 		suggestions = append(suggestions, "Add a narrative explaining the observation")
 	}
 
-	// Check facts (valuable, 1 point)
 	if len(obs.Facts) >= 2 {
 		completenessScore += 1.0
 	} else if len(obs.Facts) == 1 {
@@ -1711,7 +1296,6 @@ func (s *Server) handleGetObservationQuality(ctx context.Context, args json.RawM
 		suggestions = append(suggestions, "Add key facts to capture important details")
 	}
 
-	// Check concepts (useful, 0.75 points)
 	if len(obs.Concepts) >= 2 {
 		completenessScore += 0.75
 	} else if len(obs.Concepts) == 1 {
@@ -1721,14 +1305,12 @@ func (s *Server) handleGetObservationQuality(ctx context.Context, args json.RawM
 		suggestions = append(suggestions, "Add concept tags to categorize this observation")
 	}
 
-	// Check file references (helpful, 0.75 points)
 	if len(obs.FilesRead) > 0 || len(obs.FilesModified) > 0 {
 		completenessScore += 0.75
 	} else {
 		suggestions = append(suggestions, "Consider adding file references if applicable")
 	}
 
-	// Determine quality tier
 	qualityTier := "poor"
 	switch {
 	case completenessScore >= 4.0:
@@ -1750,9 +1332,9 @@ func (s *Server) handleGetObservationQuality(ctx context.Context, args json.RawM
 		"is_superseded":      obs.IsSuperseded,
 		"suggestions":        suggestions,
 		"field_stats": map[string]any{
-			"has_title":            obs.Title.Valid && obs.Title.String != "",
-			"has_narrative":        obs.Narrative.Valid && obs.Narrative.String != "",
-			"narrative_length":     len(obs.Narrative.String),
+			"has_title":            obs.Title != "",
+			"has_narrative":        obs.Narrative != "",
+			"narrative_length":     len(obs.Narrative),
 			"facts_count":          len(obs.Facts),
 			"concepts_count":       len(obs.Concepts),
 			"files_read_count":     len(obs.FilesRead),
@@ -1768,185 +1350,77 @@ func (s *Server) handleGetObservationQuality(ctx context.Context, args json.RawM
 	return string(output), nil
 }
 
-// handleSuggestConsolidations finds observations that could be merged.
-func (s *Server) handleSuggestConsolidations(ctx context.Context, args json.RawMessage) (string, error) {
+// handleGetRelationshipsProxy proxies observation relationship graph requests.
+func (s *Server) handleGetRelationshipsProxy(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
-		Project       string  `json:"project"`
-		MinSimilarity float64 `json:"min_similarity"`
-		Limit         int     `json:"limit"`
+		ID       int64 `json:"id"`
+		MaxDepth int   `json:"max_depth"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid params: %w", err)
+	}
+	if params.ID <= 0 {
+		return "", fmt.Errorf("id is required and must be positive")
+	}
+
+	qp := map[string]string{}
+	if params.MaxDepth > 0 {
+		qp["max_depth"] = strconv.Itoa(params.MaxDepth)
+	}
+
+	return s.proxyGetRaw(ctx, fmt.Sprintf("/api/observations/%d/graph", params.ID), qp)
+}
+
+// handleGetScoringBreakdownProxy proxies observation scoring breakdown requests.
+func (s *Server) handleGetScoringBreakdownProxy(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		ID int64 `json:"id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-
-	// Set defaults
-	if params.MinSimilarity == 0 {
-		params.MinSimilarity = 0.8
-	}
-	if params.Limit == 0 {
-		params.Limit = 10
-	}
-	if params.MinSimilarity < 0.5 || params.MinSimilarity > 1.0 {
-		return "", fmt.Errorf("min_similarity must be between 0.5 and 1.0")
+	if params.ID <= 0 {
+		return "", fmt.Errorf("id is required and must be positive")
 	}
 
-	// Get recent observations to analyze
-	obs, err := s.observationStore.GetRecentObservations(ctx, params.Project, 200)
-	if err != nil {
-		return "", fmt.Errorf("get observations: %w", err)
-	}
-
-	if len(obs) < 2 {
-		response := map[string]any{
-			"groups":  []any{},
-			"message": "Not enough observations to analyze",
-		}
-		output, _ := json.Marshal(response)
-		return string(output), nil
-	}
-
-	// Find similar pairs using vector search if available
-	type consolidationGroup struct {
-		Primary    *models.Observation   `json:"primary"`
-		Reason     string                `json:"reason"`
-		Similar    []*models.Observation `json:"similar"`
-		Similarity float64               `json:"avg_similarity"`
-	}
-
-	groups := []consolidationGroup{}
-	seen := make(map[int64]bool)
-
-	// For each observation, find similar ones
-	for _, primary := range obs {
-		if seen[primary.ID] {
-			continue
-		}
-
-		// Build search text from observation
-		searchText := primary.Title.String
-		if primary.Narrative.Valid {
-			searchText += " " + primary.Narrative.String
-		}
-
-		if searchText == "" || s.vectorClient == nil {
-			continue
-		}
-
-		// Query for similar observations
-		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeObservation, params.Project)
-		results, err := s.vectorClient.Query(ctx, searchText, 10, where)
-		if err != nil {
-			continue
-		}
-
-		// Find similar observations above threshold
-		similar := []*models.Observation{}
-		totalSimilarity := 0.0
-
-		for _, r := range results {
-			// Extract observation ID from metadata
-			sqliteID, ok := r.Metadata["sqlite_id"].(float64)
-			if !ok {
-				continue
-			}
-			obsID := int64(sqliteID)
-
-			if obsID == primary.ID || seen[obsID] {
-				continue
-			}
-			if r.Similarity >= params.MinSimilarity {
-				// Fetch the similar observation
-				simObs, err := s.observationStore.GetObservationByID(ctx, obsID)
-				if err != nil || simObs == nil {
-					continue
-				}
-				similar = append(similar, simObs)
-				totalSimilarity += r.Similarity
-				seen[obsID] = true
-			}
-		}
-
-		if len(similar) > 0 {
-			seen[primary.ID] = true
-			avgSimilarity := totalSimilarity / float64(len(similar))
-
-			// Determine consolidation reason
-			reason := "Content similarity detected"
-			if len(primary.Concepts) > 0 && len(similar) > 0 {
-				// Check for concept overlap
-				conceptMap := make(map[string]bool)
-				for _, c := range primary.Concepts {
-					conceptMap[c] = true
-				}
-				for _, sim := range similar {
-					for _, c := range sim.Concepts {
-						if conceptMap[c] {
-							reason = "Similar content with shared concepts"
-							break
-						}
-					}
-				}
-			}
-
-			groups = append(groups, consolidationGroup{
-				Primary:    primary,
-				Similar:    similar,
-				Similarity: avgSimilarity,
-				Reason:     reason,
-			})
-
-			if len(groups) >= params.Limit {
-				break
-			}
-		}
-	}
-
-	response := map[string]any{
-		"groups":         groups,
-		"total_analyzed": len(obs),
-		"groups_found":   len(groups),
-		"min_similarity": params.MinSimilarity,
-		"recommendation": "Review each group and use merge_observations to consolidate where appropriate",
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
+	return s.proxyGetRaw(ctx, fmt.Sprintf("/api/observations/%d/score", params.ID), nil)
 }
 
-// handleTagObservation adds, removes, or sets tags on an observation.
-func (s *Server) handleTagObservation(ctx context.Context, args json.RawMessage) (string, error) {
+// handleTagObservationProxy proxies tag operations on observations.
+// Fetches current tags, computes new tag set, then updates via PUT.
+func (s *Server) handleTagObservationProxy(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Mode string   `json:"mode"`
 		Tags []string `json:"tags"`
 		ID   int64    `json:"id"`
 	}
-	params.Mode = "add" // default
-
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-
 	if params.ID == 0 {
 		return "", fmt.Errorf("id is required")
 	}
 	if len(params.Tags) == 0 {
 		return "", fmt.Errorf("tags is required")
 	}
+	if params.Mode == "" {
+		params.Mode = "add"
+	}
 	if params.Mode != "add" && params.Mode != "remove" && params.Mode != "set" {
 		return "", fmt.Errorf("mode must be 'add', 'remove', or 'set'")
 	}
 
-	// Get current observation
-	obs, err := s.observationStore.GetObservationByID(ctx, params.ID)
+	// Fetch current observation to compute new tags
+	obsJSON, err := s.proxyGetRaw(ctx, fmt.Sprintf("/api/observations/%d", params.ID), nil)
 	if err != nil {
 		return "", fmt.Errorf("get observation: %w", err)
 	}
-	if obs == nil {
-		return "", fmt.Errorf("observation %d not found", params.ID)
+
+	var obs struct {
+		Concepts []string `json:"concepts"`
+	}
+	if err := json.Unmarshal([]byte(obsJSON), &obs); err != nil {
+		return "", fmt.Errorf("parse observation: %w", err)
 	}
 
 	// Compute new tags
@@ -1955,7 +1429,6 @@ func (s *Server) handleTagObservation(ctx context.Context, args json.RawMessage)
 	case "set":
 		newTags = params.Tags
 	case "add":
-		// Add new tags, avoiding duplicates
 		tagSet := make(map[string]bool)
 		for _, t := range obs.Concepts {
 			tagSet[t] = true
@@ -1963,12 +1436,10 @@ func (s *Server) handleTagObservation(ctx context.Context, args json.RawMessage)
 		}
 		for _, t := range params.Tags {
 			if !tagSet[t] {
-				tagSet[t] = true
 				newTags = append(newTags, t)
 			}
 		}
 	case "remove":
-		// Remove specified tags
 		removeSet := make(map[string]bool)
 		for _, t := range params.Tags {
 			removeSet[t] = true
@@ -1980,22 +1451,22 @@ func (s *Server) handleTagObservation(ctx context.Context, args json.RawMessage)
 		}
 	}
 
-	// Update using existing UpdateObservation method
-	update := &gorm.ObservationUpdate{
-		Concepts: &newTags,
+	// Update via PUT
+	updatePayload := map[string]any{
+		"concepts": newTags,
 	}
-	updatedObs, err := s.observationStore.UpdateObservation(ctx, params.ID, update)
+	result, err := s.proxyPutRaw(ctx, fmt.Sprintf("/api/observations/%d", params.ID), updatePayload)
 	if err != nil {
 		return "", fmt.Errorf("update observation: %w", err)
 	}
 
+	// Wrap response
 	response := map[string]any{
 		"id":           params.ID,
 		"mode":         params.Mode,
 		"tags_applied": params.Tags,
-		"current_tags": updatedObs.Concepts,
+		"result":       json.RawMessage(result),
 	}
-
 	output, err := json.Marshal(response)
 	if err != nil {
 		return "", fmt.Errorf("marshal response: %w", err)
@@ -2004,63 +1475,99 @@ func (s *Server) handleTagObservation(ctx context.Context, args json.RawMessage)
 	return string(output), nil
 }
 
-// handleGetObservationsByTag retrieves observations with a specific concept tag.
-func (s *Server) handleGetObservationsByTag(ctx context.Context, args json.RawMessage) (string, error) {
+// handleGetObservationsByTagProxy proxies tag-based observation lookup.
+func (s *Server) handleGetObservationsByTagProxy(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Tag     string `json:"tag"`
 		Project string `json:"project"`
 		Limit   int    `json:"limit"`
 	}
-	params.Limit = 50 // default
-
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-
 	if params.Tag == "" {
 		return "", fmt.Errorf("tag is required")
 	}
-	if params.Limit < 1 || params.Limit > 200 {
+	if params.Project == "" {
+		params.Project = s.project
+	}
+	if params.Limit == 0 {
 		params.Limit = 50
 	}
 
-	// Use search with concept filter
-	searchParams := search.SearchParams{
-		Query:    params.Tag,
-		Type:     "observations",
-		Project:  params.Project,
-		Limit:    params.Limit,
-		Concepts: params.Tag,
+	return s.proxyGetRaw(ctx, "/api/context/search", map[string]string{
+		"project":  params.Project,
+		"query":    params.Tag,
+		"concepts": params.Tag,
+		"limit":    strconv.Itoa(params.Limit),
+	})
+}
+
+// handleBulkStatusProxy proxies bulk status update operations.
+func (s *Server) handleBulkStatusProxy(ctx context.Context, args json.RawMessage, action string) (string, error) {
+	var params struct {
+		IDs           []int64 `json:"ids"`
+		Boost         float64 `json:"boost"`
+		DeleteVectors bool    `json:"delete_vectors"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if len(params.IDs) == 0 {
+		return "", fmt.Errorf("ids is required")
 	}
 
-	result, err := s.searchMgr.UnifiedSearch(ctx, searchParams)
+	payload := map[string]any{
+		"ids":    params.IDs,
+		"action": action,
+	}
+	if action == "boost" {
+		payload["boost"] = params.Boost
+	}
+	if action == "delete" {
+		payload["delete_vectors"] = params.DeleteVectors
+	}
+
+	return s.proxyPostRaw(ctx, "/api/observations/bulk-status", payload)
+}
+
+// handleMergeProxy proxies merge observations request.
+func (s *Server) handleMergeProxy(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		SourceID int64   `json:"source_id"`
+		TargetID int64   `json:"target_id"`
+		Boost    float64 `json:"boost"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if params.SourceID == 0 || params.TargetID == 0 {
+		return "", fmt.Errorf("source_id and target_id are required")
+	}
+
+	// Merge = mark source as superseded + boost target
+	// Step 1: Mark source as superseded
+	_, err := s.proxyPostRaw(ctx, "/api/observations/bulk-status", map[string]any{
+		"ids":    []int64{params.SourceID},
+		"action": "supersede",
+	})
 	if err != nil {
-		return "", fmt.Errorf("search: %w", err)
+		return "", fmt.Errorf("mark source as superseded: %w", err)
 	}
 
-	// Filter results to only include observations with the exact tag in metadata
-	var filtered []search.SearchResult
-	for _, r := range result.Results {
-		if r.Type != "observation" {
-			continue
-		}
-		// Check if concepts metadata contains the tag
-		if concepts, ok := r.Metadata["concepts"].([]any); ok {
-			for _, c := range concepts {
-				if cs, ok := c.(string); ok && cs == params.Tag {
-					filtered = append(filtered, r)
-					break
-				}
-			}
-		}
+	// Step 2: Boost target via feedback
+	_, err = s.proxyPostRaw(ctx, fmt.Sprintf("/api/observations/%d/feedback", params.TargetID), map[string]any{
+		"feedback": "positive",
+	})
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to boost target observation after merge")
 	}
 
 	response := map[string]any{
-		"tag":          params.Tag,
-		"observations": filtered,
-		"count":        len(filtered),
+		"merged":    true,
+		"source_id": params.SourceID,
+		"target_id": params.TargetID,
 	}
-
 	output, err := json.Marshal(response)
 	if err != nil {
 		return "", fmt.Errorf("marshal response: %w", err)
@@ -2069,282 +1576,225 @@ func (s *Server) handleGetObservationsByTag(ctx context.Context, args json.RawMe
 	return string(output), nil
 }
 
-// handleGetTemporalTrends analyzes observation creation patterns over time.
-func (s *Server) handleGetTemporalTrends(ctx context.Context, args json.RawMessage) (string, error) {
+// handleGetPatternsProxy proxies pattern queries.
+func (s *Server) handleGetPatternsProxy(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
+		Type    string `json:"type"`
 		Project string `json:"project"`
-		GroupBy string `json:"group_by"`
-		Days    int    `json:"days"`
+		Query   string `json:"query"`
+		Limit   int    `json:"limit"`
 	}
-	params.Days = 30
-	params.GroupBy = "day"
-
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	if params.Days < 1 || params.Days > 365 {
-		params.Days = 30
+	qp := map[string]string{}
+	if params.Type != "" {
+		qp["type"] = params.Type
+	}
+	if params.Project != "" {
+		qp["project"] = params.Project
+	}
+	if params.Limit > 0 {
+		qp["limit"] = strconv.Itoa(params.Limit)
 	}
 
-	// Get observations for analysis
-	obs, err := s.observationStore.GetRecentObservations(ctx, params.Project, params.Days*50) // Rough estimate
-	if err != nil {
-		return "", fmt.Errorf("get observations: %w", err)
+	// Use search endpoint if query provided, otherwise get all
+	if params.Query != "" {
+		qp["query"] = params.Query
+		return s.proxyGetRaw(ctx, "/api/patterns/search", qp)
 	}
 
-	// Calculate time range
-	now := time.Now()
-	startTime := now.AddDate(0, 0, -params.Days)
-	startEpoch := startTime.UnixMilli()
-
-	// Group observations by time bucket
-	buckets := make(map[string]int)
-	typeDistribution := make(map[string]int)
-	conceptCounts := make(map[string]int)
-	totalInRange := 0
-
-	for _, o := range obs {
-		if o.CreatedAtEpoch < startEpoch {
-			continue
-		}
-		totalInRange++
-
-		created := time.UnixMilli(o.CreatedAtEpoch)
-		var key string
-		switch params.GroupBy {
-		case "week":
-			year, week := created.ISOWeek()
-			key = fmt.Sprintf("%d-W%02d", year, week)
-		case "hour_of_day":
-			key = fmt.Sprintf("%02d:00", created.Hour())
-		default: // day
-			key = created.Format("2006-01-02")
-		}
-		buckets[key]++
-
-		// Track type distribution
-		typeDistribution[string(o.Type)]++
-
-		// Track top concepts
-		for _, c := range o.Concepts {
-			conceptCounts[c]++
-		}
-	}
-
-	// Find peak period
-	peakPeriod := ""
-	peakCount := 0
-	for k, v := range buckets {
-		if v > peakCount {
-			peakCount = v
-			peakPeriod = k
-		}
-	}
-
-	// Sort and get top concepts
-	type conceptEntry struct {
-		name  string
-		count int
-	}
-	var topConcepts []conceptEntry
-	for name, count := range conceptCounts {
-		topConcepts = append(topConcepts, conceptEntry{name, count})
-	}
-	// Simple sort - just take top 10
-	for i := 0; i < len(topConcepts) && i < 10; i++ {
-		for j := i + 1; j < len(topConcepts); j++ {
-			if topConcepts[j].count > topConcepts[i].count {
-				topConcepts[i], topConcepts[j] = topConcepts[j], topConcepts[i]
-			}
-		}
-	}
-	if len(topConcepts) > 10 {
-		topConcepts = topConcepts[:10]
-	}
-	topConceptsMap := make([]map[string]any, len(topConcepts))
-	for i, c := range topConcepts {
-		topConceptsMap[i] = map[string]any{"concept": c.name, "count": c.count}
-	}
-
-	response := map[string]any{
-		"period": map[string]any{
-			"start":    startTime.Format("2006-01-02"),
-			"end":      now.Format("2006-01-02"),
-			"days":     params.Days,
-			"group_by": params.GroupBy,
-		},
-		"summary": map[string]any{
-			"total_observations": totalInRange,
-			"daily_average":      float64(totalInRange) / float64(params.Days),
-			"peak_period":        peakPeriod,
-			"peak_count":         peakCount,
-		},
-		"distribution":      buckets,
-		"type_distribution": typeDistribution,
-		"top_concepts":      topConceptsMap,
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
+	return s.proxyGetRaw(ctx, "/api/patterns", qp)
 }
 
-// handleGetDataQualityReport generates a comprehensive quality assessment.
-func (s *Server) handleGetDataQualityReport(ctx context.Context, args json.RawMessage) (string, error) {
+// handleAnalyzeImportanceProxy proxies importance analysis.
+func (s *Server) handleAnalyzeImportanceProxy(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Project string `json:"project"`
 		Limit   int    `json:"limit"`
 	}
-	params.Limit = 100
-
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-
-	if params.Limit < 10 || params.Limit > 500 {
-		params.Limit = 100
+	if params.Project == "" {
+		params.Project = s.project
+	}
+	if params.Limit == 0 {
+		params.Limit = 10
 	}
 
-	// Get observations for analysis
-	obs, err := s.observationStore.GetRecentObservations(ctx, params.Project, params.Limit)
-	if err != nil {
-		return "", fmt.Errorf("get observations: %w", err)
+	qp := map[string]string{
+		"project": params.Project,
+		"limit":   strconv.Itoa(params.Limit),
 	}
 
-	if len(obs) == 0 {
-		return `{"error": "no observations found", "analyzed": 0}`, nil
-	}
-
-	// Quality analysis
-	qualityScores := make([]float64, 0, len(obs))
-	issuesFound := make(map[string]int)
-	improvements := make(map[string]int)
-	scoreDistribution := map[string]int{"excellent": 0, "good": 0, "fair": 0, "poor": 0}
-
-	for _, o := range obs {
-		score := 0.0
-		maxScore := 5.0
-
-		// Check completeness
-		if o.Title.Valid && o.Title.String != "" {
-			score += 1.0
-		} else {
-			issuesFound["missing_title"]++
-			improvements["add_title"]++
-		}
-
-		if o.Narrative.Valid && o.Narrative.String != "" {
-			score += 1.0
-		} else {
-			issuesFound["missing_narrative"]++
-			improvements["add_narrative"]++
-		}
-
-		if len(o.Facts) > 0 {
-			score += 1.0
-			if len(o.Facts) >= 3 {
-				score += 0.5 // Bonus for multiple facts
-			}
-		} else {
-			issuesFound["no_facts"]++
-			improvements["add_facts"]++
-		}
-
-		if len(o.Concepts) > 0 {
-			score += 1.0
-		} else {
-			issuesFound["no_concepts"]++
-			improvements["add_concepts"]++
-		}
-
-		if len(o.FilesRead) > 0 || len(o.FilesModified) > 0 {
-			score += 0.5
-		}
-
-		normalized := (score / maxScore) * 100
-		qualityScores = append(qualityScores, normalized)
-
-		// Categorize
-		switch {
-		case normalized >= 80:
-			scoreDistribution["excellent"]++
-		case normalized >= 60:
-			scoreDistribution["good"]++
-		case normalized >= 40:
-			scoreDistribution["fair"]++
-		default:
-			scoreDistribution["poor"]++
-		}
-	}
-
-	// Calculate average
-	var avgScore float64
-	for _, s := range qualityScores {
-		avgScore += s
-	}
-	avgScore /= float64(len(qualityScores))
-
-	// Build top issues list
-	type issueEntry struct {
-		name  string
-		count int
-	}
-	var topIssues []issueEntry
-	for name, count := range issuesFound {
-		topIssues = append(topIssues, issueEntry{name, count})
-	}
-	for i := 0; i < len(topIssues) && i < 5; i++ {
-		for j := i + 1; j < len(topIssues); j++ {
-			if topIssues[j].count > topIssues[i].count {
-				topIssues[i], topIssues[j] = topIssues[j], topIssues[i]
-			}
-		}
-	}
-	if len(topIssues) > 5 {
-		topIssues = topIssues[:5]
-	}
-
-	// Convert top issues to response format
-	topIssuesList := make([]map[string]any, 0, len(topIssues))
-	for _, issue := range topIssues {
-		topIssuesList = append(topIssuesList, map[string]any{
-			"issue": issue.name,
-			"count": issue.count,
-		})
-	}
-
+	// Combine results from multiple endpoints
 	response := map[string]any{
-		"analyzed": len(obs),
-		"project":  params.Project,
-		"quality_summary": map[string]any{
-			"average_score": fmt.Sprintf("%.1f%%", avgScore),
-			"distribution":  scoreDistribution,
-		},
-		"issues_found": issuesFound,
-		"top_issues":   topIssuesList,
-		"improvements": improvements,
-		"recommendations": []string{
-			"Add titles to observations for better discoverability",
-			"Include narratives to provide context",
-			"Add concept tags for better organization",
-			"Include at least 2-3 key facts per observation",
-		},
+		"project": params.Project,
+	}
+
+	// Get top-scoring observations
+	topScored, err := s.proxyGetRaw(ctx, "/api/observations/top", qp)
+	if err == nil {
+		response["top_scoring"] = json.RawMessage(topScored)
+	}
+
+	// Get most-retrieved observations
+	mostRetrieved, err := s.proxyGetRaw(ctx, "/api/observations/most-retrieved", qp)
+	if err == nil {
+		response["most_retrieved"] = json.RawMessage(mostRetrieved)
+	}
+
+	// Get scoring stats
+	scoringStats, err := s.proxyGetRaw(ctx, "/api/scoring/stats", qp)
+	if err == nil {
+		response["scoring_stats"] = json.RawMessage(scoringStats)
+	}
+
+	// Get concept weights
+	conceptWeights, err := s.proxyGetRaw(ctx, "/api/scoring/concepts", nil)
+	if err == nil {
+		response["concept_weights"] = json.RawMessage(conceptWeights)
 	}
 
 	output, err := json.Marshal(response)
 	if err != nil {
 		return "", fmt.Errorf("marshal response: %w", err)
 	}
-
 	return string(output), nil
 }
 
-// handleBatchTagByPattern applies tags to observations matching a pattern.
-func (s *Server) handleBatchTagByPattern(ctx context.Context, args json.RawMessage) (string, error) {
+// handleExplainSearchProxy proxies search ranking explanation.
+func (s *Server) handleExplainSearchProxy(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		Query   string `json:"query"`
+		Project string `json:"project"`
+		TopN    int    `json:"top_n"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if params.Query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+	if params.Project == "" {
+		params.Project = s.project
+	}
+	if params.TopN == 0 {
+		params.TopN = 5
+	}
+
+	return s.proxyGetRaw(ctx, "/api/context/search", map[string]string{
+		"project": params.Project,
+		"query":   params.Query,
+		"limit":   strconv.Itoa(params.TopN),
+	})
+}
+
+// handleGetTemporalTrendsProxy proxies temporal trend analysis.
+func (s *Server) handleGetTemporalTrendsProxy(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		Project string `json:"project"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if params.Project == "" {
+		params.Project = s.project
+	}
+
+	return s.proxyGetRaw(ctx, "/api/stats", map[string]string{
+		"project": params.Project,
+	})
+}
+
+// handleGetDataQualityProxy proxies data quality report.
+func (s *Server) handleGetDataQualityProxy(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		Project string `json:"project"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if params.Project == "" {
+		params.Project = s.project
+	}
+
+	return s.proxyGetRaw(ctx, "/api/stats", map[string]string{
+		"project": params.Project,
+	})
+}
+
+// handleExportProxy proxies observation export requests.
+func (s *Server) handleExportProxy(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		Format    string `json:"format"`
+		Project   string `json:"project"`
+		ObsType   string `json:"obs_type"`
+		Limit     int    `json:"limit"`
+		DateStart int64  `json:"date_start"`
+		DateEnd   int64  `json:"date_end"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	qp := map[string]string{}
+	if params.Format != "" {
+		qp["format"] = params.Format
+	}
+	if params.Project != "" {
+		qp["project"] = params.Project
+	} else {
+		qp["project"] = s.project
+	}
+	if params.ObsType != "" {
+		qp["obs_type"] = params.ObsType
+	}
+	if params.Limit > 0 {
+		qp["limit"] = strconv.Itoa(params.Limit)
+	}
+	if params.DateStart > 0 {
+		qp["date_start"] = strconv.FormatInt(params.DateStart, 10)
+	}
+	if params.DateEnd > 0 {
+		qp["date_end"] = strconv.FormatInt(params.DateEnd, 10)
+	}
+
+	return s.proxyGetRaw(ctx, "/api/observations/export", qp)
+}
+
+// handleSuggestConsolidationsProxy proxies consolidation suggestions via duplicates endpoint.
+func (s *Server) handleSuggestConsolidationsProxy(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		Project       string  `json:"project"`
+		MinSimilarity float64 `json:"min_similarity"`
+		Limit         int     `json:"limit"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if params.Project == "" {
+		params.Project = s.project
+	}
+
+	qp := map[string]string{
+		"project": params.Project,
+	}
+	if params.MinSimilarity > 0 {
+		qp["min_similarity"] = strconv.FormatFloat(params.MinSimilarity, 'f', -1, 64)
+	}
+	if params.Limit > 0 {
+		qp["limit"] = strconv.Itoa(params.Limit)
+	}
+
+	return s.proxyGetRaw(ctx, "/api/observations/duplicates", qp)
+}
+
+// handleBatchTagProxy proxies batch tag operations.
+// Searches for matching observations and applies tags via PUT endpoint.
+func (s *Server) handleBatchTagProxy(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Pattern    string   `json:"pattern"`
 		Project    string   `json:"project"`
@@ -2358,72 +1808,53 @@ func (s *Server) handleBatchTagByPattern(ctx context.Context, args json.RawMessa
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-
 	if params.Pattern == "" {
 		return "", fmt.Errorf("pattern is required")
 	}
 	if len(params.Tags) == 0 {
 		return "", fmt.Errorf("tags is required")
 	}
-	if params.MaxMatches < 1 || params.MaxMatches > 500 {
-		params.MaxMatches = 100
+	if params.Project == "" {
+		params.Project = s.project
 	}
 
-	// Search for matching observations using the pattern
-	searchParams := search.SearchParams{
-		Query:   params.Pattern,
-		Type:    "observations",
-		Project: params.Project,
-		Limit:   params.MaxMatches,
-	}
-
-	result, err := s.searchMgr.UnifiedSearch(ctx, searchParams)
+	// Search for matching observations
+	searchResult, err := s.proxyGetRaw(ctx, "/api/context/search", map[string]string{
+		"project": params.Project,
+		"query":   params.Pattern,
+		"limit":   strconv.Itoa(params.MaxMatches),
+	})
 	if err != nil {
 		return "", fmt.Errorf("search: %w", err)
 	}
 
-	// Collect matching observation IDs
-	var matches []map[string]any
+	var searchResp struct {
+		Observations []struct {
+			ID    int64  `json:"id"`
+			Title string `json:"title"`
+		} `json:"observations"`
+	}
+	if err := json.Unmarshal([]byte(searchResult), &searchResp); err != nil {
+		return "", fmt.Errorf("parse search results: %w", err)
+	}
+
+	matches := make([]map[string]any, 0, len(searchResp.Observations))
 	var taggedCount int
 
-	for _, r := range result.Results {
-		if r.Type != "observation" {
-			continue
-		}
+	for _, obs := range searchResp.Observations {
+		matches = append(matches, map[string]any{
+			"id":    obs.ID,
+			"title": obs.Title,
+		})
 
-		match := map[string]any{
-			"id":    r.ID,
-			"title": r.Title,
-			"score": r.Score,
-		}
-		matches = append(matches, match)
-
-		// Apply tags if not dry run
 		if !params.DryRun {
-			obs, err := s.observationStore.GetObservationByID(ctx, r.ID)
-			if err != nil || obs == nil {
-				continue
-			}
-
-			// Merge existing tags with new tags (avoid duplicates)
-			tagSet := make(map[string]bool)
-			newTags := make([]string, 0, len(obs.Concepts)+len(params.Tags))
-			for _, t := range obs.Concepts {
-				tagSet[t] = true
-				newTags = append(newTags, t)
-			}
-			for _, t := range params.Tags {
-				if !tagSet[t] {
-					tagSet[t] = true
-					newTags = append(newTags, t)
-				}
-			}
-
-			update := &gorm.ObservationUpdate{
-				Concepts: &newTags,
-			}
-			_, err = s.observationStore.UpdateObservation(ctx, r.ID, update)
-			if err == nil {
+			tagArgs, _ := json.Marshal(map[string]any{
+				"id":   obs.ID,
+				"tags": params.Tags,
+				"mode": "add",
+			})
+			_, tagErr := s.handleTagObservationProxy(ctx, tagArgs)
+			if tagErr == nil {
 				taggedCount++
 			}
 		}
@@ -2436,7 +1867,6 @@ func (s *Server) handleBatchTagByPattern(ctx context.Context, args json.RawMessa
 		"matches_found": len(matches),
 		"matches":       matches,
 	}
-
 	if !params.DryRun {
 		response["tagged_count"] = taggedCount
 	}
@@ -2449,827 +1879,33 @@ func (s *Server) handleBatchTagByPattern(ctx context.Context, args json.RawMessa
 	return string(output), nil
 }
 
-// handleExplainSearchRanking explains why each observation ranked where it did in search results.
-func (s *Server) handleExplainSearchRanking(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		Query   string `json:"query"`
-		Project string `json:"project"`
-		TopN    int    `json:"top_n"`
-	}
-	params.TopN = 5 // default
-
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	if params.Query == "" {
-		return "", fmt.Errorf("query is required")
-	}
-	if params.TopN < 1 || params.TopN > 20 {
-		params.TopN = 5
-	}
-
-	// Perform search to get results
-	searchParams := search.SearchParams{
-		Query:   params.Query,
-		Type:    "observations",
-		Project: params.Project,
-		Limit:   params.TopN,
-		OrderBy: "relevance",
-	}
-
-	result, err := s.searchMgr.UnifiedSearch(ctx, searchParams)
+// sendResponse sends a JSON-RPC response. Returns an error if writing fails.
+func (s *Server) sendResponse(resp *Response) error {
+	data, err := json.Marshal(resp)
 	if err != nil {
-		return "", fmt.Errorf("search: %w", err)
+		log.Error().Err(err).Msg("Failed to marshal response")
+		return nil
 	}
-
-	// Build detailed explanations for each result
-	type RankExplanation struct {
-		ScoreBreakdown map[string]float64 `json:"score_breakdown"`
-		Metadata       map[string]any     `json:"metadata,omitempty"`
-		Title          string             `json:"title"`
-		Type           string             `json:"type"`
-		MatchedFields  []string           `json:"matched_fields"`
-		Rank           int                `json:"rank"`
-		ID             int64              `json:"id"`
-		Score          float64            `json:"score"`
+	s.writeMu.Lock()
+	_, err = fmt.Fprintln(s.stdout, string(data))
+	s.writeMu.Unlock()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to write response to stdout")
+		return err
 	}
+	return nil
+}
 
-	explanations := make([]RankExplanation, 0, len(result.Results))
-	for i, r := range result.Results {
-		exp := RankExplanation{
-			Rank:     i + 1,
-			ID:       r.ID,
-			Title:    r.Title,
-			Type:     r.Type,
-			Score:    r.Score,
-			Metadata: r.Metadata,
-		}
-
-		// Build score breakdown from available metadata
-		exp.ScoreBreakdown = make(map[string]float64)
-		if vs, ok := r.Metadata["vector_score"].(float64); ok {
-			exp.ScoreBreakdown["vector_similarity"] = vs
-		}
-		if is, ok := r.Metadata["importance_score"].(float64); ok {
-			exp.ScoreBreakdown["importance"] = is
-		}
-		if ts, ok := r.Metadata["text_score"].(float64); ok {
-			exp.ScoreBreakdown["text_match"] = ts
-		}
-		if rs, ok := r.Metadata["recency_score"].(float64); ok {
-			exp.ScoreBreakdown["recency"] = rs
-		}
-		// Add base score estimate if breakdown is incomplete
-		if len(exp.ScoreBreakdown) == 0 {
-			exp.ScoreBreakdown["combined_score"] = r.Score
-		}
-
-		// Determine matched fields
-		exp.MatchedFields = []string{}
-		if r.Metadata["field_type"] != nil {
-			if ft, ok := r.Metadata["field_type"].(string); ok && ft != "" {
-				exp.MatchedFields = append(exp.MatchedFields, ft)
-			}
-		}
-
-		explanations = append(explanations, exp)
-	}
-
-	response := map[string]any{
-		"query":        params.Query,
-		"project":      params.Project,
-		"result_count": len(explanations),
-		"explanations": explanations,
-		"tips": []string{
-			"Higher vector_similarity indicates better semantic match with query",
-			"Importance score reflects user feedback and retrieval history",
-			"Recency boosts newer observations slightly",
-			"Use tag_observation to boost important observations",
+// sendError sends a JSON-RPC error response. Returns an error if writing fails.
+func (s *Server) sendError(id any, code int, message string, data any) error {
+	resp := &Response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &Error{
+			Code:    code,
+			Message: message,
+			Data:    data,
 		},
 	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-
-	return string(output), nil
-}
-
-// handleExportObservations exports observations in various formats.
-func (s *Server) handleExportObservations(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		Format    string `json:"format"`
-		Project   string `json:"project"`
-		ObsType   string `json:"obs_type"`
-		Limit     int    `json:"limit"`
-		DateStart int64  `json:"date_start"`
-		DateEnd   int64  `json:"date_end"`
-	}
-	params.Format = "json"
-	params.Limit = 100
-
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	if params.Limit < 1 || params.Limit > 1000 {
-		params.Limit = 100
-	}
-
-	// Build search params to fetch observations
-	searchParams := search.SearchParams{
-		Type:      "observations",
-		Project:   params.Project,
-		Limit:     params.Limit,
-		OrderBy:   "date_desc",
-		DateStart: params.DateStart,
-		DateEnd:   params.DateEnd,
-		ObsType:   params.ObsType,
-	}
-
-	result, err := s.searchMgr.UnifiedSearch(ctx, searchParams)
-	if err != nil {
-		return "", fmt.Errorf("search: %w", err)
-	}
-
-	// Fetch full observation data for export
-	ids := make([]int64, 0, len(result.Results))
-	for _, r := range result.Results {
-		if r.Type == "observation" {
-			ids = append(ids, r.ID)
-		}
-	}
-
-	observations, err := s.observationStore.GetObservationsByIDs(ctx, ids, "", 0)
-	if err != nil {
-		return "", fmt.Errorf("get observations: %w", err)
-	}
-
-	// Format output based on requested format
-	var output string
-	switch params.Format {
-	case "jsonl":
-		// JSON Lines format - one JSON object per line
-		var lines []string
-		for _, obs := range observations {
-			line, err := json.Marshal(obs)
-			if err != nil {
-				continue
-			}
-			lines = append(lines, string(line))
-		}
-		// Use proper JSON marshaling to avoid injection issues
-		jsonlOutput := struct {
-			Format string `json:"format"`
-			Data   string `json:"data"`
-			Count  int    `json:"count"`
-		}{
-			Format: "jsonl",
-			Count:  len(observations),
-			Data:   strings.Join(lines, "\n"),
-		}
-		outputBytes, err := json.Marshal(jsonlOutput)
-		if err != nil {
-			return "", fmt.Errorf("marshal jsonl output: %w", err)
-		}
-		output = string(outputBytes)
-
-	case "markdown":
-		// Markdown format for human reading
-		var md strings.Builder
-		md.WriteString("# Observations Export\n\n")
-		md.WriteString(fmt.Sprintf("Total: %d observations\n\n", len(observations)))
-		md.WriteString("---\n\n")
-
-		for _, obs := range observations {
-			title := ""
-			if obs.Title.Valid {
-				title = obs.Title.String
-			}
-			md.WriteString(fmt.Sprintf("## [%s] %s\n\n", obs.Type, title))
-			if obs.Subtitle.Valid && obs.Subtitle.String != "" {
-				md.WriteString(fmt.Sprintf("*%s*\n\n", obs.Subtitle.String))
-			}
-			if obs.Narrative.Valid && obs.Narrative.String != "" {
-				md.WriteString(fmt.Sprintf("%s\n\n", obs.Narrative.String))
-			}
-			if len(obs.Facts) > 0 {
-				md.WriteString("### Key Facts\n")
-				for _, fact := range obs.Facts {
-					md.WriteString(fmt.Sprintf("- %s\n", fact))
-				}
-				md.WriteString("\n")
-			}
-			if len(obs.Concepts) > 0 {
-				md.WriteString(fmt.Sprintf("**Tags:** %s\n\n", strings.Join(obs.Concepts, ", ")))
-			}
-			md.WriteString(fmt.Sprintf("**ID:** %d | **Created:** %s | **Importance:** %.2f\n\n",
-				obs.ID, obs.CreatedAt, obs.ImportanceScore))
-			md.WriteString("---\n\n")
-		}
-
-		// Wrap markdown in JSON response
-		response := map[string]any{
-			"format": "markdown",
-			"count":  len(observations),
-			"data":   md.String(),
-		}
-		outputBytes, err := json.Marshal(response)
-		if err != nil {
-			return "", fmt.Errorf("marshal response: %w", err)
-		}
-		output = string(outputBytes)
-
-	default: // json
-		response := map[string]any{
-			"format":       "json",
-			"count":        len(observations),
-			"observations": observations,
-		}
-		outputBytes, err := json.Marshal(response)
-		if err != nil {
-			return "", fmt.Errorf("marshal response: %w", err)
-		}
-		output = string(outputBytes)
-	}
-
-	return output, nil
-}
-
-// handleCheckSystemHealth performs comprehensive system health checks.
-func (s *Server) handleCheckSystemHealth(ctx context.Context) (string, error) {
-	type SubsystemHealth struct {
-		Status   string         `json:"status"` // "healthy", "degraded", "unhealthy"
-		Message  string         `json:"message,omitempty"`
-		Metrics  map[string]any `json:"metrics,omitempty"`
-		Warnings []string       `json:"warnings,omitempty"`
-	}
-
-	type HealthReport struct {
-		Timestamp     time.Time                   `json:"timestamp"`
-		Subsystems    map[string]*SubsystemHealth `json:"subsystems"`
-		OverallStatus string                      `json:"overall_status"`
-		Actions       []string                    `json:"recommended_actions,omitempty"`
-		HealthScore   int                         `json:"health_score"`
-	}
-
-	report := &HealthReport{
-		OverallStatus: "healthy",
-		HealthScore:   100,
-		Timestamp:     time.Now(),
-		Subsystems:    make(map[string]*SubsystemHealth),
-		Actions:       []string{},
-	}
-
-	// Check database health
-	dbHealth := &SubsystemHealth{
-		Status:  "healthy",
-		Metrics: make(map[string]any),
-	}
-	if s.observationStore != nil {
-		// Count observations
-		count, err := s.observationStore.GetObservationCount(ctx, "")
-		if err != nil {
-			dbHealth.Status = "unhealthy"
-			dbHealth.Message = "Database query failed: " + err.Error()
-			report.HealthScore -= 30
-		} else {
-			dbHealth.Metrics["total_observations"] = count
-			dbHealth.Message = "Database operational"
-		}
-
-		// Check for recent activity
-		recent, err := s.observationStore.GetAllRecentObservations(ctx, 1)
-		if err == nil && len(recent) > 0 {
-			dbHealth.Metrics["last_observation"] = recent[0].CreatedAt
-			// Check epoch for staleness warning
-			if recent[0].CreatedAtEpoch > 0 {
-				lastActivityTime := time.UnixMilli(recent[0].CreatedAtEpoch)
-				if time.Since(lastActivityTime) > 7*24*time.Hour {
-					dbHealth.Warnings = append(dbHealth.Warnings, "No observations in the last 7 days")
-				}
-			}
-		}
-	} else {
-		dbHealth.Status = "unhealthy"
-		dbHealth.Message = "Observation store not initialized"
-		report.HealthScore -= 50
-	}
-	report.Subsystems["database"] = dbHealth
-
-	// Check vector store health
-	vectorHealth := &SubsystemHealth{
-		Status:  "healthy",
-		Metrics: make(map[string]any),
-	}
-	if s.vectorClient != nil {
-		stats, err := s.vectorClient.GetHealthStats(ctx)
-		if err != nil {
-			vectorHealth.Status = "degraded"
-			vectorHealth.Message = "Could not get vector stats: " + err.Error()
-			report.HealthScore -= 15
-		} else {
-			vectorHealth.Metrics["total_vectors"] = stats.TotalVectors
-			vectorHealth.Metrics["stale_vectors"] = stats.StaleVectors
-			vectorHealth.Metrics["current_model"] = stats.CurrentModel
-			vectorHealth.Metrics["needs_rebuild"] = stats.NeedsRebuild
-
-			if stats.NeedsRebuild {
-				vectorHealth.Status = "degraded"
-				vectorHealth.Warnings = append(vectorHealth.Warnings, "Vector rebuild recommended: "+stats.RebuildReason)
-				report.Actions = append(report.Actions, "Run vector rebuild to update embeddings")
-				report.HealthScore -= 10
-			}
-
-			// Check stale ratio
-			if stats.TotalVectors > 0 {
-				staleRatio := float64(stats.StaleVectors) / float64(stats.TotalVectors)
-				if staleRatio > 0.2 {
-					vectorHealth.Warnings = append(vectorHealth.Warnings,
-						fmt.Sprintf("%.1f%% of vectors are stale", staleRatio*100))
-					report.HealthScore -= 5
-				}
-			}
-		}
-
-		// Check cache performance
-		cacheStats := s.vectorClient.GetCacheStats()
-		vectorHealth.Metrics["cache_hit_rate"] = fmt.Sprintf("%.1f%%", cacheStats.HitRate())
-		vectorHealth.Metrics["embedding_hits"] = cacheStats.EmbeddingHits
-		vectorHealth.Metrics["embedding_misses"] = cacheStats.EmbeddingMisses
-		vectorHealth.Metrics["result_hits"] = cacheStats.ResultHits
-		vectorHealth.Metrics["result_misses"] = cacheStats.ResultMisses
-
-		if cacheStats.HitRate() < 20 && (cacheStats.EmbeddingHits+cacheStats.EmbeddingMisses) > 100 {
-			vectorHealth.Warnings = append(vectorHealth.Warnings, "Low cache hit rate - consider cache tuning")
-		}
-	} else {
-		vectorHealth.Status = "unhealthy"
-		vectorHealth.Message = "Vector client not initialized"
-		report.HealthScore -= 30
-	}
-	report.Subsystems["vectors"] = vectorHealth
-
-	// Check pattern detection health
-	patternHealth := &SubsystemHealth{
-		Status:  "healthy",
-		Metrics: make(map[string]any),
-	}
-	if s.patternStore != nil {
-		patterns, err := s.patternStore.GetActivePatterns(ctx, 100)
-		if err != nil {
-			patternHealth.Status = "degraded"
-			patternHealth.Message = "Could not query patterns: " + err.Error()
-		} else {
-			patternHealth.Metrics["total_patterns"] = len(patterns)
-
-			// Count by type
-			typeCounts := make(map[string]int)
-			for _, p := range patterns {
-				typeCounts[string(p.Type)]++
-			}
-			patternHealth.Metrics["patterns_by_type"] = typeCounts
-		}
-	}
-	report.Subsystems["patterns"] = patternHealth
-
-	// Check session store health
-	sessionHealth := &SubsystemHealth{
-		Status:  "healthy",
-		Metrics: make(map[string]any),
-	}
-	if s.sessionStore != nil {
-		sessionsToday, err := s.sessionStore.GetSessionsToday(ctx)
-		if err != nil {
-			sessionHealth.Status = "degraded"
-			sessionHealth.Message = "Could not query sessions: " + err.Error()
-		} else {
-			sessionHealth.Metrics["sessions_today"] = sessionsToday
-		}
-	}
-	report.Subsystems["sessions"] = sessionHealth
-
-	// Determine overall status
-	unhealthyCount := 0
-	degradedCount := 0
-	for _, sub := range report.Subsystems {
-		switch sub.Status {
-		case "unhealthy":
-			unhealthyCount++
-		case "degraded":
-			degradedCount++
-		}
-	}
-
-	if unhealthyCount > 0 {
-		report.OverallStatus = "unhealthy"
-	} else if degradedCount > 0 {
-		report.OverallStatus = "degraded"
-	}
-
-	// Cap health score
-	if report.HealthScore < 0 {
-		report.HealthScore = 0
-	}
-
-	// Add recommended actions based on issues
-	if report.HealthScore < 70 {
-		report.Actions = append(report.Actions, "System needs attention - check subsystem details")
-	}
-
-	output, err := json.Marshal(report)
-	if err != nil {
-		return "", fmt.Errorf("marshal health report: %w", err)
-	}
-	return string(output), nil
-}
-
-// handleAnalyzeSearchPatterns analyzes search query patterns.
-func (s *Server) handleAnalyzeSearchPatterns(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		Days int `json:"days"`
-		TopN int `json:"top_n"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid params: %w", err)
-	}
-
-	if params.Days <= 0 {
-		params.Days = 7
-	}
-	if params.TopN <= 0 {
-		params.TopN = 10
-	}
-
-	type QueryPattern struct {
-		Query       string  `json:"query"`
-		LastUsed    string  `json:"last_used"`
-		Count       int     `json:"count"`
-		AvgResults  float64 `json:"avg_results"`
-		ZeroResults int     `json:"zero_result_count"`
-	}
-
-	type PatternAnalysis struct {
-		Period            string         `json:"period"`
-		TopQueries        []QueryPattern `json:"top_queries"`
-		ZeroResultQueries []string       `json:"zero_result_queries,omitempty"`
-		Insights          []string       `json:"insights,omitempty"`
-		TotalSearches     int            `json:"total_searches"`
-		UniqueQueries     int            `json:"unique_queries"`
-	}
-
-	analysis := &PatternAnalysis{
-		Period:            fmt.Sprintf("Last %d days", params.Days),
-		TopQueries:        []QueryPattern{},
-		ZeroResultQueries: []string{},
-		Insights:          []string{},
-	}
-
-	// Get search stats from the search manager if available
-	if s.searchMgr != nil {
-		metrics := s.searchMgr.Metrics()
-		if metrics != nil {
-			stats := metrics.GetStats()
-			if totalSearches, ok := stats["total_searches"].(int); ok && totalSearches > 0 {
-				analysis.TotalSearches = totalSearches
-				analysis.Insights = append(analysis.Insights,
-					fmt.Sprintf("Total searches: %d", totalSearches))
-			}
-			if avgLatency, ok := stats["avg_latency_ms"].(float64); ok {
-				analysis.Insights = append(analysis.Insights,
-					fmt.Sprintf("Average search latency: %.2fms", avgLatency))
-			}
-		}
-
-		// Get cache stats
-		cacheStats := s.searchMgr.CacheStats()
-		if hitRate, ok := cacheStats["hit_rate"].(float64); ok {
-			analysis.Insights = append(analysis.Insights,
-				fmt.Sprintf("Cache hit rate: %.1f%%", hitRate*100))
-		}
-	}
-
-	// Analyze observation patterns to suggest search improvements
-	if s.observationStore != nil {
-		// Get recent observations to understand content patterns
-		observations, err := s.observationStore.GetAllRecentObservations(ctx, 100)
-		if err == nil {
-			analysis.UniqueQueries = len(observations)
-
-			// Analyze observation types
-			typeCounts := make(map[string]int)
-			for _, obs := range observations {
-				typeCounts[string(obs.Type)]++
-			}
-
-			// Find most common types
-			mostCommon := ""
-			maxCount := 0
-			for t, c := range typeCounts {
-				if c > maxCount {
-					mostCommon = t
-					maxCount = c
-				}
-			}
-			if mostCommon != "" {
-				analysis.Insights = append(analysis.Insights,
-					fmt.Sprintf("Most common observation type: %s (%d occurrences)", mostCommon, maxCount))
-			}
-
-			// Check for concept coverage
-			conceptCounts := make(map[string]int)
-			for _, obs := range observations {
-				for _, c := range obs.Concepts {
-					conceptCounts[c]++
-				}
-			}
-			if len(conceptCounts) > 0 {
-				analysis.Insights = append(analysis.Insights,
-					fmt.Sprintf("%d unique concepts across %d observations", len(conceptCounts), len(observations)))
-			}
-		}
-	}
-
-	// Add general recommendations
-	if len(analysis.Insights) == 0 {
-		analysis.Insights = append(analysis.Insights, "Insufficient data for pattern analysis")
-	}
-
-	output, err := json.Marshal(analysis)
-	if err != nil {
-		return "", fmt.Errorf("marshal analysis: %w", err)
-	}
-	return string(output), nil
-}
-
-// handleGetObservationRelationships returns the relationship graph for an observation.
-func (s *Server) handleGetObservationRelationships(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		ID       int64 `json:"id"`
-		MaxDepth int   `json:"max_depth"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid params: %w", err)
-	}
-
-	if params.ID <= 0 {
-		return "", fmt.Errorf("id is required and must be positive")
-	}
-	if params.MaxDepth <= 0 {
-		params.MaxDepth = 2
-	}
-	if params.MaxDepth > 5 {
-		params.MaxDepth = 5
-	}
-
-	if s.relationStore == nil {
-		return "", fmt.Errorf("relation store not available")
-	}
-
-	// Get the relationship graph
-	graph, err := s.relationStore.GetRelationGraph(ctx, params.ID, params.MaxDepth)
-	if err != nil {
-		return "", fmt.Errorf("get relation graph: %w", err)
-	}
-
-	// Build response with additional context
-	type RelationInfo struct {
-		Type        string  `json:"type"`
-		SourceTitle string  `json:"source_title,omitempty"`
-		TargetTitle string  `json:"target_title,omitempty"`
-		SourceType  string  `json:"source_type,omitempty"`
-		TargetType  string  `json:"target_type,omitempty"`
-		ID          int64   `json:"id"`
-		SourceID    int64   `json:"source_id"`
-		TargetID    int64   `json:"target_id"`
-		Confidence  float64 `json:"confidence"`
-	}
-
-	type GraphResponse struct {
-		Relations      []RelationInfo `json:"relations"`
-		UniqueNodes    []int64        `json:"unique_nodes"`
-		CenterID       int64          `json:"center_id"`
-		MaxDepth       int            `json:"max_depth"`
-		TotalRelations int            `json:"total_relations"`
-	}
-
-	// Collect unique node IDs
-	nodeSet := make(map[int64]bool)
-	nodeSet[params.ID] = true
-
-	relations := make([]RelationInfo, 0, len(graph.Relations))
-	for _, r := range graph.Relations {
-		nodeSet[r.Relation.SourceID] = true
-		nodeSet[r.Relation.TargetID] = true
-
-		relations = append(relations, RelationInfo{
-			ID:          r.Relation.ID,
-			SourceID:    r.Relation.SourceID,
-			TargetID:    r.Relation.TargetID,
-			Type:        string(r.Relation.RelationType),
-			Confidence:  r.Relation.Confidence,
-			SourceTitle: r.SourceTitle,
-			TargetTitle: r.TargetTitle,
-			SourceType:  string(r.SourceType),
-			TargetType:  string(r.TargetType),
-		})
-	}
-
-	// Convert node set to slice
-	nodes := make([]int64, 0, len(nodeSet))
-	for id := range nodeSet {
-		nodes = append(nodes, id)
-	}
-
-	response := GraphResponse{
-		CenterID:       params.ID,
-		MaxDepth:       params.MaxDepth,
-		TotalRelations: len(relations),
-		Relations:      relations,
-		UniqueNodes:    nodes,
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-	return string(output), nil
-}
-
-// handleGetObservationScoringBreakdown returns detailed scoring breakdown for an observation.
-func (s *Server) handleGetObservationScoringBreakdown(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		ID int64 `json:"id"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	if params.ID <= 0 {
-		return "", fmt.Errorf("id is required and must be positive")
-	}
-
-	// Get the observation
-	obs, err := s.observationStore.GetObservationByID(ctx, params.ID)
-	if err != nil {
-		return "", fmt.Errorf("get observation: %w", err)
-	}
-	if obs == nil {
-		return "", fmt.Errorf("observation not found: %d", params.ID)
-	}
-
-	// Calculate scoring components
-	if s.scoreCalculator == nil {
-		return "", fmt.Errorf("score calculator not initialized")
-	}
-
-	components := s.scoreCalculator.CalculateComponents(obs, time.Now())
-
-	// Build response with observation context
-	response := map[string]any{
-		"observation": map[string]any{
-			"id":         obs.ID,
-			"title":      obs.Title.String,
-			"type":       string(obs.Type),
-			"project":    obs.Project,
-			"created_at": obs.CreatedAtEpoch,
-		},
-		"scoring": map[string]any{
-			"final_score":       components.FinalScore,
-			"type_weight":       components.TypeWeight,
-			"recency_decay":     components.RecencyDecay,
-			"core_score":        components.CoreScore,
-			"feedback_contrib":  components.FeedbackContrib,
-			"concept_contrib":   components.ConceptContrib,
-			"retrieval_contrib": components.RetrievalContrib,
-			"age_days":          components.AgeDays,
-		},
-		"explanation": map[string]any{
-			"type_impact":      fmt.Sprintf("Observation type '%s' has weight %.2f", obs.Type, components.TypeWeight),
-			"recency_impact":   fmt.Sprintf("%.1f days old, decay factor %.2f", components.AgeDays, components.RecencyDecay),
-			"feedback_impact":  fmt.Sprintf("User feedback contributes %.2f to score", components.FeedbackContrib),
-			"concept_impact":   fmt.Sprintf("Concept tags contribute %.2f to score", components.ConceptContrib),
-			"retrieval_impact": fmt.Sprintf("Retrieval frequency contributes %.2f to score", components.RetrievalContrib),
-		},
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-	return string(output), nil
-}
-
-// handleAnalyzeObservationImportance returns importance analysis for a project's observations.
-func (s *Server) handleAnalyzeObservationImportance(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		IncludeTopScored      *bool  `json:"include_top_scored"`
-		IncludeMostRetrieved  *bool  `json:"include_most_retrieved"`
-		IncludeConceptWeights *bool  `json:"include_concept_weights"`
-		Project               string `json:"project"`
-		Limit                 int    `json:"limit"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	// Set defaults
-	if params.Limit <= 0 {
-		params.Limit = 10
-	}
-	if params.Limit > 50 {
-		params.Limit = 50
-	}
-	includeTopScored := params.IncludeTopScored == nil || *params.IncludeTopScored
-	includeMostRetrieved := params.IncludeMostRetrieved == nil || *params.IncludeMostRetrieved
-	includeConceptWeights := params.IncludeConceptWeights == nil || *params.IncludeConceptWeights
-
-	response := make(map[string]any)
-	response["project"] = params.Project
-	if params.Project == "" {
-		response["project"] = "(all projects)"
-	}
-
-	// Get feedback statistics
-	stats, err := s.observationStore.GetObservationFeedbackStats(ctx, params.Project)
-	if err != nil {
-		return "", fmt.Errorf("get feedback stats: %w", err)
-	}
-	response["feedback_stats"] = stats
-
-	// Get top-scoring observations
-	if includeTopScored {
-		topScored, err := s.observationStore.GetTopScoringObservations(ctx, params.Project, params.Limit)
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to get top-scoring observations")
-		} else {
-			topScoredSummary := make([]map[string]any, 0, len(topScored))
-			for _, obs := range topScored {
-				topScoredSummary = append(topScoredSummary, map[string]any{
-					"id":               obs.ID,
-					"title":            obs.Title.String,
-					"type":             string(obs.Type),
-					"importance_score": obs.ImportanceScore,
-				})
-			}
-			response["top_scoring_observations"] = topScoredSummary
-		}
-	}
-
-	// Get most-retrieved observations
-	if includeMostRetrieved {
-		mostRetrieved, err := s.observationStore.GetMostRetrievedObservations(ctx, params.Project, params.Limit)
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to get most-retrieved observations")
-		} else {
-			mostRetrievedSummary := make([]map[string]any, 0, len(mostRetrieved))
-			for _, obs := range mostRetrieved {
-				mostRetrievedSummary = append(mostRetrievedSummary, map[string]any{
-					"id":              obs.ID,
-					"title":           obs.Title.String,
-					"type":            string(obs.Type),
-					"retrieval_count": obs.RetrievalCount,
-				})
-			}
-			response["most_retrieved_observations"] = mostRetrievedSummary
-		}
-	}
-
-	// Get concept weights
-	if includeConceptWeights {
-		conceptWeights, err := s.observationStore.GetConceptWeights(ctx)
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to get concept weights")
-		} else if len(conceptWeights) > 0 {
-			response["concept_weights"] = conceptWeights
-		}
-	}
-
-	// Generate insights
-	insights := []string{}
-	if stats != nil {
-		if stats.Positive > 0 {
-			insights = append(insights, fmt.Sprintf("%d observations marked as valuable (positive feedback)", stats.Positive))
-		}
-		if stats.Negative > 0 {
-			insights = append(insights, fmt.Sprintf("%d observations marked as not helpful (negative feedback)", stats.Negative))
-		}
-		if stats.AvgScore > 0 {
-			insights = append(insights, fmt.Sprintf("Average importance score: %.2f", stats.AvgScore))
-		}
-		if stats.AvgRetrieval > 0 {
-			insights = append(insights, fmt.Sprintf("Average retrieval count: %.1f", stats.AvgRetrieval))
-		}
-	}
-	if len(insights) > 0 {
-		response["insights"] = insights
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		return "", fmt.Errorf("marshal response: %w", err)
-	}
-	return string(output), nil
+	return s.sendResponse(resp)
 }

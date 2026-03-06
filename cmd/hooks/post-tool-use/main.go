@@ -2,8 +2,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/hooks"
 )
@@ -51,6 +53,10 @@ var skipTools = map[string]bool{
 }
 
 func main() {
+	if !hooks.IsWorkerAvailable() {
+		hooks.WriteResponse("PostToolUse", true)
+		return
+	}
 	hooks.RunHook("PostToolUse", handlePostToolUse)
 }
 
@@ -63,15 +69,31 @@ func handlePostToolUse(ctx *hooks.HookContext, input *Input) (string, error) {
 
 	fmt.Fprintf(os.Stderr, "[post-tool-use] %s\n", input.ToolName)
 
-	// Send observation to worker
-	_, err := hooks.POST(ctx.Port, "/api/sessions/observations", map[string]interface{}{
-		"claudeSessionId": ctx.SessionID,
-		"project":         ctx.Project,
-		"tool_name":       input.ToolName,
-		"tool_input":      input.ToolInput,
-		"tool_response":   input.ToolResponse,
-		"cwd":             ctx.CWD,
-	})
+	// Fire-and-forget: send the observation without waiting for the response.
+	// The worker just queues it -- we don't need the response data.
+	// Use a short-lived context to ensure the request body is at least sent
+	// before this process exits.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sendCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		_ = hooks.POSTWithContext(sendCtx, ctx.Port, "/api/sessions/observations", map[string]interface{}{
+			"claudeSessionId": ctx.SessionID,
+			"project":         ctx.Project,
+			"tool_name":       input.ToolName,
+			"tool_input":      input.ToolInput,
+			"tool_response":   input.ToolResponse,
+			"cwd":             ctx.CWD,
+		})
+	}()
 
-	return "", err
+	// Wait briefly for the TCP connection to be established and request sent,
+	// but don't block the hook for the full response.
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	return "", nil
 }
