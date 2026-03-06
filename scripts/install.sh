@@ -194,29 +194,32 @@ download_release() {
     fi
 
     # Verify download integrity via checksum
-    local checksum_url="${download_url}.sha256"
+    local checksums_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/checksums.txt"
     info "Verifying download integrity..."
-    if curl -sSL -o "$tmp_dir/checksum.sha256" "$checksum_url" 2>/dev/null; then
+    if curl -fsSL -o "$tmp_dir/checksums.txt" "$checksums_url" 2>/dev/null; then
         local expected_hash actual_hash
-        expected_hash=$(awk '{print $1}' "$tmp_dir/checksum.sha256")
-        if command -v shasum &> /dev/null; then
-            actual_hash=$(shasum -a 256 "$tmp_dir/release.${archive_ext}" | awk '{print $1}')
-        elif command -v sha256sum &> /dev/null; then
-            actual_hash=$(sha256sum "$tmp_dir/release.${archive_ext}" | awk '{print $1}')
+        expected_hash=$(grep "${archive_name}" "$tmp_dir/checksums.txt" | awk '{print $1}')
+        if [[ -z "$expected_hash" ]]; then
+            warn "Archive ${archive_name} not found in checksums.txt, skipping verification"
         else
-            warn "No SHA256 tool found (shasum or sha256sum), skipping checksum verification"
-            actual_hash=""
-        fi
-        if [[ -n "$actual_hash" ]]; then
-            if [[ "$expected_hash" != "$actual_hash" ]]; then
-                error "Checksum verification failed! Expected: $expected_hash Got: $actual_hash"
+            if command -v shasum &> /dev/null; then
+                actual_hash=$(shasum -a 256 "$tmp_dir/release.${archive_ext}" | awk '{print $1}')
+            elif command -v sha256sum &> /dev/null; then
+                actual_hash=$(sha256sum "$tmp_dir/release.${archive_ext}" | awk '{print $1}')
+            else
+                warn "No SHA256 tool found (shasum or sha256sum), skipping checksum verification"
+                actual_hash=""
             fi
-            success "Checksum verified"
+            if [[ -n "$actual_hash" ]]; then
+                if [[ "$expected_hash" != "$actual_hash" ]]; then
+                    error "Checksum verification failed! Expected: $expected_hash Got: $actual_hash"
+                fi
+                success "Checksum verified"
+            fi
         fi
     else
-        warn "No checksum file available at $checksum_url, skipping verification"
+        warn "No checksum file available, skipping verification"
     fi
-
     info "Extracting archive..."
     if [[ "$archive_ext" == "zip" ]]; then
         if ! command -v unzip &> /dev/null; then
