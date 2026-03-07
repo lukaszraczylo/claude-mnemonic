@@ -6,7 +6,7 @@
 
 set -e
 
-ONNX_VERSION="1.23.2"
+ONNX_VERSION="1.24.3"
 ASSETS_DIR="internal/embedding/assets/lib"
 PLATFORM="${1:-all}"
 FORCE_DOWNLOAD=false
