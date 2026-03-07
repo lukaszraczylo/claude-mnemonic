@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/hooks"
+	"github.com/lukaszraczylo/claude-mnemonic/pkg/sanitize"
 )
 
 // Input is the hook input from Claude Code.
@@ -148,14 +149,14 @@ func handleUserPrompt(ctx *hooks.HookContext, input *Input) (string, error) {
 					obsText += "Key facts:\n"
 					for _, fact := range facts {
 						if factStr, ok := fact.(string); ok {
-							obsText += fmt.Sprintf("- %s\n", factStr)
+							obsText += fmt.Sprintf("- %s\n", sanitize.StripSystemXML(factStr))
 						}
 					}
 					obsText += "\n"
 				}
 
 				if narrative, ok := obsMap["narrative"].(string); ok && narrative != "" {
-					obsText += narrative + "\n\n"
+					obsText += sanitize.StripSystemXML(narrative) + "\n\n"
 				}
 
 				obsTokens := estimateTokens(obsText)

@@ -49,6 +49,10 @@ func BuildObservationPrompt(exec ToolExecution) string {
 	inputJSON, _ := json.MarshalIndent(toolInput, "  ", "  ")
 	outputJSON, _ := json.MarshalIndent(toolOutput, "  ", "  ")
 
+	// Strip system XML artifacts from tool data before building prompt
+	cleanInput := StripSystemXML(string(inputJSON))
+	cleanOutput := StripSystemXML(string(outputJSON))
+
 	timestamp := time.UnixMilli(exec.CreatedAtEpoch).Format(time.RFC3339)
 
 	var sb strings.Builder
@@ -58,8 +62,8 @@ func BuildObservationPrompt(exec ToolExecution) string {
 	if exec.CWD != "" {
 		sb.WriteString(fmt.Sprintf("  <working_directory>%s</working_directory>\n", exec.CWD))
 	}
-	sb.WriteString(fmt.Sprintf("  <parameters>%s</parameters>\n", truncate(string(inputJSON), 3000)))
-	sb.WriteString(fmt.Sprintf("  <outcome>%s</outcome>\n", truncate(string(outputJSON), 5000)))
+	sb.WriteString(fmt.Sprintf("  <parameters>%s</parameters>\n", truncate(cleanInput, 3000)))
+	sb.WriteString(fmt.Sprintf("  <outcome>%s</outcome>\n", truncate(cleanOutput, 5000)))
 	sb.WriteString("</observed_from_primary_session>")
 
 	return sb.String()
@@ -84,8 +88,10 @@ func BuildSummaryPrompt(req SummaryRequest) string {
 	sb.WriteString("Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write \"next_steps\" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.\n\n")
 
 	if req.LastAssistantMessage != "" {
+		// Strip system XML artifacts from captured transcript content
+		cleanMsg := StripSystemXML(req.LastAssistantMessage)
 		sb.WriteString("Claude's Full Response to User:\n")
-		sb.WriteString(truncate(req.LastAssistantMessage, 4000))
+		sb.WriteString(truncate(cleanMsg, 4000))
 		sb.WriteString("\n\n")
 	}
 
