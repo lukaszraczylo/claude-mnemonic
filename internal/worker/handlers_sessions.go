@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -44,7 +45,30 @@ func (s *Service) handleSessionInit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Reject requests from internal CLI calls (callClaudeCLI runs from /tmp with no session ID).
+	// These are the memory extraction agent's own prompts, not real user prompts.
+	if req.ClaudeSessionID == "" {
+		log.Debug().Str("project", req.Project).Msg("Rejecting session init with empty claude session ID (internal call)")
+		writeJSON(w, SessionInitResponse{
+			Skipped: true,
+			Reason:  "internal",
+		})
+		return
+	}
 
+	// Reject prompts that contain the internal system prompt (from SDK processor).
+	// The SDK processor sets CLAUDE_MNEMONIC_INTERNAL=1 on the subprocess env,
+	// but Claude Code does NOT propagate custom env vars to hook subprocesses,
+	// so that guard fails and the system prompt leaks into the database as a
+	// regular user prompt. This server-side check catches those cases reliably.
+	if strings.Contains(req.Prompt, "You are a memory extraction agent for Claude Code sessions") {
+		log.Debug().Str("project", req.Project).Msg("Rejecting session init with internal system prompt")
+		writeJSON(w, SessionInitResponse{
+			Skipped: true,
+			Reason:  "internal",
+		})
+		return
+	}
 	// Privacy check
 	if privacy.IsEntirelyPrivate(req.Prompt) {
 		// Create session but skip processing
@@ -77,6 +101,24 @@ func (s *Service) handleSessionInit(w http.ResponseWriter, r *http.Request) {
 			Msg("Duplicate prompt detected - returning existing")
 
 		// Return existing prompt data without incrementing or saving again
+		writeJSON(w, SessionInitResponse{
+			SessionDBID:  sessionID,
+			PromptNumber: existingNum,
+		})
+		return
+	}
+
+	// CROSS-SESSION DUPLICATE DETECTION: Same prompt text from ANY session within the window.
+	// This catches duplicates when the SDK processor's callClaudeCLI subprocess fires
+	// UserPromptSubmit with a different Claude session ID than the original hook.
+	if _, existingNum, found := s.promptStore.FindRecentPromptByTextGlobal(r.Context(), cleanedPrompt, DuplicatePromptWindowSeconds); found {
+		sessionID, _ := s.sessionStore.CreateSDKSession(r.Context(), req.ClaudeSessionID, req.Project, cleanedPrompt)
+
+		log.Debug().
+			Int64("sessionId", sessionID).
+			Int("promptNumber", existingNum).
+			Msg("Cross-session duplicate prompt detected")
+
 		writeJSON(w, SessionInitResponse{
 			SessionDBID:  sessionID,
 			PromptNumber: existingNum,
@@ -210,6 +252,12 @@ func (s *Service) handleObservation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Reject requests from internal CLI calls (no session ID = internal callClaudeCLI)
+	if req.ClaudeSessionID == "" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 
 	// Find session
 	sess, err := s.sessionStore.FindAnySDKSession(r.Context(), req.ClaudeSessionID)

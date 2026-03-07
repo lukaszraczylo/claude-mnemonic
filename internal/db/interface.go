@@ -57,6 +57,7 @@ type PromptReader interface {
 	GetAllPrompts(ctx context.Context) ([]*models.UserPromptWithSession, error)
 	GetRecentUserPromptsByProject(ctx context.Context, project string, limit int) ([]*models.UserPromptWithSession, error)
 	FindRecentPromptByText(ctx context.Context, claudeSessionID, promptText string, withinSeconds int) (int64, int, bool)
+	FindRecentPromptByTextGlobal(ctx context.Context, promptText string, withinSeconds int) (int64, int, bool)
 }
 
 // PromptWriter defines write operations for prompts.

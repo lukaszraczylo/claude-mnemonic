@@ -264,6 +264,28 @@ func (s *PromptStore) FindRecentPromptByText(ctx context.Context, claudeSessionI
 	return prompt.ID, prompt.PromptNumber, true
 }
 
+// FindRecentPromptByTextGlobal finds a recent prompt by exact text match within a time window
+// across ALL sessions (not scoped to a single claude session ID).
+// This catches duplicates when the same prompt arrives from different session IDs,
+// e.g. when the SDK processor's callClaudeCLI subprocess fires with a different session ID.
+// Returns (promptID, promptNumber, found).
+func (s *PromptStore) FindRecentPromptByTextGlobal(ctx context.Context, promptText string, withinSeconds int) (int64, int, bool) {
+	cutoffEpoch := time.Now().Add(-time.Duration(withinSeconds) * time.Second).UnixMilli()
+
+	var prompt UserPrompt
+	err := s.db.WithContext(ctx).
+		Where("prompt_text = ? AND created_at_epoch >= ?",
+			promptText, cutoffEpoch).
+		Order("created_at_epoch DESC").
+		First(&prompt).Error
+
+	if err != nil {
+		return 0, 0, false
+	}
+
+	return prompt.ID, prompt.PromptNumber, true
+}
+
 // GetRecentUserPromptsByProject retrieves recent user prompts for a specific project.
 func (s *PromptStore) GetRecentUserPromptsByProject(ctx context.Context, project string, limit int) ([]*models.UserPromptWithSession, error) {
 	var results []struct {

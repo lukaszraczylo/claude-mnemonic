@@ -410,14 +410,25 @@ func findWorkerBinary() string {
 	locations := []string{
 		"./worker",
 		"./bin/worker",
-		filepath.Join(home, ".claude/plugins/cache/claude-mnemonic/claude-mnemonic/1.0.0/worker"),
-		filepath.Join(home, ".claude/plugins/marketplaces/claude-mnemonic/worker"),
 	}
 
 	for _, loc := range locations {
 		if _, err := os.Stat(loc); err == nil {
 			return loc
 		}
+	}
+
+	// Try cache directory with any version (glob returns lexically sorted matches)
+	matches, _ := filepath.Glob(filepath.Join(home, ".claude/plugins/cache/claude-mnemonic/claude-mnemonic/*/worker"))
+	if len(matches) > 0 {
+		// Use the last match (latest version due to lexical sorting)
+		return matches[len(matches)-1]
+	}
+
+	// Try marketplaces directory
+	marketplacePath := filepath.Join(home, ".claude/plugins/marketplaces/claude-mnemonic/worker")
+	if _, err := os.Stat(marketplacePath); err == nil {
+		return marketplacePath
 	}
 
 	// Try PATH

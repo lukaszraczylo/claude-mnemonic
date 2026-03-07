@@ -69,7 +69,101 @@ if [ ! -f "$MARKETPLACES_FILE" ]; then
     echo '{}' > "$MARKETPLACES_FILE"
 fi
 
-# Check if jq is available
+# Validate marketplace path exists and contains expected files
+if [ ! -d "$MARKETPLACE_PATH" ]; then
+    echo "Warning: Marketplace directory not found at $MARKETPLACE_PATH"
+    echo "Plugin files may not be copied to cache correctly."
+fi
+
+# Ensure cache directory exists and copy plugin files
+mkdir -p "$CACHE_PATH/.claude-plugin"
+mkdir -p "$CACHE_PATH/hooks"
+mkdir -p "$CACHE_PATH/commands"
+
+# Copy files from marketplace to cache
+if ! cp -r "$MARKETPLACE_PATH/"* "$CACHE_PATH/" 2>/dev/null; then
+    echo "ERROR: Failed to copy plugin files to cache directory"
+    exit 1
+fi
+
+# Verify critical files exist in cache
+for f in worker mcp-server hooks/hooks.json .claude-plugin/plugin.json; do
+    if [ ! -f "$CACHE_PATH/$f" ]; then
+        echo "WARNING: Expected file $f not found in cache after copy"
+    fi
+done
+
+# --- JSON registration ---
+# Uses jq if available, falls back to python3 for systems without jq.
+
+STATUSLINE_CMD="\${CLAUDE_PLUGIN_ROOT}/hooks/statusline"
+
+# Helper: register plugin using python3 (jq-free fallback)
+register_with_python() {
+    python3 - "$PLUGINS_FILE" "$SETTINGS_FILE" "$MARKETPLACES_FILE" \
+        "$PLUGIN_KEY" "$CACHE_PATH" "$VERSION" "$TIMESTAMP" \
+        "$STATUSLINE_CMD" "$MARKETPLACE_NAME" "$MARKETPLACE_PATH" <<'PYEOF'
+import json, sys, os
+
+plugins_file, settings_file, marketplaces_file = sys.argv[1], sys.argv[2], sys.argv[3]
+plugin_key, cache_path, version, timestamp = sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7]
+statusline_cmd, marketplace_name, marketplace_path = sys.argv[8], sys.argv[9], sys.argv[10]
+
+def load_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {}
+
+def save_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+# 1. installed_plugins.json
+plugins = load_json(plugins_file)
+plugins.setdefault("version", 2)
+plugins.setdefault("plugins", {})
+plugins["plugins"][plugin_key] = [{
+    "scope": "user",
+    "installPath": cache_path,
+    "version": version,
+    "installedAt": timestamp,
+    "lastUpdated": timestamp,
+    "isLocal": True
+}]
+save_json(plugins_file, plugins)
+print("Plugin registered in installed_plugins.json")
+
+# 2. settings.json
+settings = load_json(settings_file)
+settings.setdefault("enabledPlugins", {})
+settings["enabledPlugins"][plugin_key] = True
+settings["statusLine"] = {
+    "type": "command",
+    "command": statusline_cmd,
+    "padding": 0
+}
+save_json(settings_file, settings)
+print("Plugin enabled in settings.json")
+print("Statusline configured in settings.json")
+
+# 3. known_marketplaces.json
+marketplaces = load_json(marketplaces_file)
+marketplaces[marketplace_name] = {
+    "source": {"source": "directory", "path": marketplace_path},
+    "installLocation": marketplace_path,
+    "lastUpdated": timestamp
+}
+save_json(marketplaces_file, marketplaces)
+print("Marketplace registered in known_marketplaces.json")
+PYEOF
+}
+
+# Detect JSON tool and register
 if command -v jq &> /dev/null; then
     # Validate jq version (1.6+ required for //= operator)
     JQ_VERSION=$(jq --version 2>/dev/null | sed 's/jq-//')
@@ -77,25 +171,17 @@ if command -v jq &> /dev/null; then
     JQ_MINOR=$(echo "$JQ_VERSION" | cut -d. -f2)
     if [ -n "$JQ_MAJOR" ] && [ -n "$JQ_MINOR" ]; then
         if [ "$JQ_MAJOR" -lt 1 ] || { [ "$JQ_MAJOR" -eq 1 ] && [ "$JQ_MINOR" -lt 6 ]; }; then
-            echo "ERROR: jq 1.6+ is required (found jq-$JQ_VERSION)"
-            echo "Please upgrade jq: brew install jq (macOS) or apt-get install jq (Linux)"
-            exit 1
+            echo "jq $JQ_VERSION found but too old (need 1.6+), trying python3..."
+            if command -v python3 &> /dev/null; then
+                register_with_python
+            else
+                echo "ERROR: jq 1.6+ or python3 is required for plugin registration"
+                exit 1
+            fi
+            echo "Plugin registered successfully using python3"
+            exit 0
         fi
     fi
-
-    # Validate marketplace path exists and contains expected files
-    if [ ! -d "$MARKETPLACE_PATH" ]; then
-        echo "Warning: Marketplace directory not found at $MARKETPLACE_PATH"
-        echo "Plugin files may not be copied to cache correctly."
-    fi
-
-    # Ensure cache directory exists and copy plugin files
-    mkdir -p "$CACHE_PATH/.claude-plugin"
-    mkdir -p "$CACHE_PATH/hooks"
-    mkdir -p "$CACHE_PATH/commands"
-
-    # Copy files from marketplace to cache
-    cp -r "$MARKETPLACE_PATH/"* "$CACHE_PATH/" 2>/dev/null || true
 
     # Use jq for proper JSON manipulation
     PLUGIN_ENTRY=$(cat <<EOF
@@ -117,8 +203,6 @@ EOF
     echo "Plugin registered in installed_plugins.json"
 
     # Enable the plugin in settings.json and configure statusline
-    # First ensure enabledPlugins object exists, then add our plugin
-    STATUSLINE_CMD="$MARKETPLACE_PATH/hooks/statusline"
     STATUSLINE_ENTRY=$(cat <<EOF
 {
     "type": "command",
@@ -151,38 +235,13 @@ EOF
         '.[$key] = $entry' "$MARKETPLACES_FILE"
 
     echo "Marketplace registered in known_marketplaces.json"
-
-    # Register MCP server in settings.json
-    MCP_BINARY="$MARKETPLACE_PATH/mcp-server"
-    if [ -f "$MCP_BINARY" ]; then
-        echo "Registering MCP server in settings.json..."
-
-        # MCP server entry - note the escaped ${CLAUDE_PROJECT}
-        MCP_ENTRY=$(cat <<'EOF'
-{
-    "command": "MCP_BINARY_PLACEHOLDER",
-    "args": ["--project", "${CLAUDE_PROJECT}"],
-    "env": {}
-}
-EOF
-)
-        # Replace placeholder with actual path
-        MCP_ENTRY=$(echo "$MCP_ENTRY" | sed "s|MCP_BINARY_PLACEHOLDER|$MCP_BINARY|g")
-
-        # Add or update mcpServers field
-        if safe_jq_write --arg key "claude-mnemonic" --argjson entry "$MCP_ENTRY" \
-            '.mcpServers //= {} | .mcpServers[$key] = $entry' "$SETTINGS_FILE"; then
-            echo "MCP server registered successfully"
-        else
-            echo "Warning: Failed to register MCP server (jq error)"
-        fi
-    else
-        echo "MCP server binary not found at $MCP_BINARY, skipping MCP registration"
-    fi
-
     echo "Plugin registered successfully using jq"
+
+elif command -v python3 &> /dev/null; then
+    register_with_python
+    echo "Plugin registered successfully using python3"
 else
-    echo "ERROR: jq is required for plugin registration"
-    echo "Please install jq: brew install jq (macOS) or apt-get install jq (Linux)"
+    echo "ERROR: jq or python3 is required for plugin registration"
+    echo "Please install one: brew install jq (macOS) or apt-get install jq (Linux)"
     exit 1
 fi

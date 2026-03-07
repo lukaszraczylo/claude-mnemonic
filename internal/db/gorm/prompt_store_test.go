@@ -333,6 +333,39 @@ func TestPromptStore_FindRecentPromptByText(t *testing.T) {
 	assert.False(t, notFound, "Should not find prompt outside time window")
 }
 
+func TestPromptStore_FindRecentPromptByTextGlobal(t *testing.T) {
+	promptStore, _, cleanup := testPromptStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Save a prompt under session "claude-1"
+	id, err := promptStore.SaveUserPromptWithMatches(ctx, "claude-1", 1, "What is the architecture?", 3)
+	require.NoError(t, err)
+
+	// Global search should find it without specifying session ID
+	foundID, foundNumber, found := promptStore.FindRecentPromptByTextGlobal(ctx, "What is the architecture?", 60)
+	assert.True(t, found, "Should find the prompt globally")
+	assert.Equal(t, id, foundID)
+	assert.Equal(t, 1, foundNumber)
+
+	// Global search should find it even when a different session ID would have been used
+	// (This is the core cross-session dedup scenario)
+	foundID2, foundNumber2, found2 := promptStore.FindRecentPromptByTextGlobal(ctx, "What is the architecture?", 60)
+	assert.True(t, found2, "Should find the prompt from any session")
+	assert.Equal(t, id, foundID2)
+	assert.Equal(t, 1, foundNumber2)
+
+	// Different text should not match
+	_, _, notFound := promptStore.FindRecentPromptByTextGlobal(ctx, "Different text", 60)
+	assert.False(t, notFound, "Should not find a different prompt")
+
+	// Should not find prompt outside time window
+	time.Sleep(100 * time.Millisecond)
+	_, _, notFound = promptStore.FindRecentPromptByTextGlobal(ctx, "What is the architecture?", 0)
+	assert.False(t, notFound, "Should not find prompt outside time window")
+}
+
 func TestPromptStore_GetRecentUserPromptsByProject(t *testing.T) {
 	promptStore, store, cleanup := testPromptStore(t)
 	defer cleanup()

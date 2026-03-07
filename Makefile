@@ -14,7 +14,7 @@ GOARCH ?= $(shell go env GOARCH)
 export CGO_ENABLED=1
 BUILD_TAGS := -tags "fts5"
 
-.PHONY: all build clean test install lint hooks worker mcp stop-worker start-worker restart-worker dashboard website dev-website setup-libs
+.PHONY: all build clean test install lint hooks worker mcp stop-worker start-worker restart-worker dashboard website dev-website setup-libs update-version
 
 all: build
 
@@ -22,8 +22,20 @@ all: build
 setup-libs:
 	@./scripts/download-onnx-libs.sh all
 
+# Update root plugin metadata with current version
+update-version:
+	@mkdir -p .claude-plugin
+	@sed 's/{{ .Version }}/$(VERSION)/g; s/{{.Version}}/$(VERSION)/g' $(PLUGIN_DIR)/.claude-plugin/plugin.json.tpl > .claude-plugin/plugin.json
+	@echo "Updated .claude-plugin/plugin.json to version $(VERSION)"
+	@# marketplace.json contains release-specific data (URLs, SHA256 hashes) that requires manual update per release.
+	@# Only the top-level version field is updated here.
+	@if [ -f marketplace.json ]; then \
+		sed 's/"version": "[^"]*"/"version": "$(VERSION)"/' marketplace.json > marketplace.json.tmp && mv marketplace.json.tmp marketplace.json; \
+		echo "Updated marketplace.json version fields to $(VERSION)"; \
+	fi
+
 # Build all binaries
-build: setup-libs dashboard worker hooks mcp
+build: setup-libs update-version dashboard worker hooks mcp
 
 # Build Vue dashboard
 dashboard:
@@ -235,6 +247,7 @@ help:
 	@echo "  make fmt            - Format code"
 	@echo "  make clean          - Clean build artifacts"
 	@echo "  make dev            - Run worker in development mode"
+	@echo "  make update-version - Update version in plugin metadata files"
 	@echo "  make deps           - Download dependencies"
 	@echo "  make website        - Build website for production"
 	@echo "  make dev-website    - Run website dev server"

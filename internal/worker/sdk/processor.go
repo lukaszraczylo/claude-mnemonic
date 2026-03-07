@@ -696,7 +696,12 @@ func (p *Processor) callClaudeCLI(ctx context.Context, prompt string) (string, e
 	// (hooks are triggered based on working directory)
 	cmd.Dir = "/tmp"
 
-	// Disable any plugin hooks by setting an env var that our hooks can check
+	// Disable any plugin hooks by setting an env var that our hooks can check.
+	// NOTE: This env var is NOT reliably propagated to hook subprocesses because
+	// Claude Code constructs its own environment for hooks. The server-side check
+	// in handleSessionInit (handlers_sessions.go) provides the reliable guard by
+	// detecting the system prompt signature in the prompt text. This env var is
+	// kept as a best-effort defense-in-depth measure for cases where it does work.
 	cmd.Env = append(os.Environ(), "CLAUDE_MNEMONIC_INTERNAL=1")
 
 	// Capture output with size limits to prevent unbounded memory usage
