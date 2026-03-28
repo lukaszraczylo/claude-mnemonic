@@ -11,7 +11,7 @@ require (
 	github.com/go-gormigrate/gormigrate/v2 v2.1.5
 	github.com/goccy/go-json v0.10.6
 	github.com/mattn/go-sqlite3 v1.14.37
-	github.com/rs/zerolog v1.34.0
+	github.com/rs/zerolog v1.35.0
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/stretchr/testify v1.11.1
 	github.com/sugarme/tokenizer v0.3.0
