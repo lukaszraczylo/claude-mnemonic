@@ -13,6 +13,7 @@ import (
 
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/mcp"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/telemetry"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/watcher"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -59,6 +60,8 @@ func main() {
 
 	// Start file watchers for config changes
 	startWatchers()
+
+	telemetry.Ping("claude-mnemonic", Version)
 
 	// Create and run MCP server
 	server := mcp.NewServer(client, workerURL, *project, Version)
