@@ -151,10 +151,11 @@ func (s *Service) runMaintenance(ctx context.Context) {
 	}
 
 	// Task 3: Optimize database
+	var optimized bool
 	if err := s.store.Optimize(ctx); err != nil {
 		s.log.Error().Err(err).Msg("Failed to optimize database")
 	} else {
-		s.totalOptimizeRun++
+		optimized = true
 	}
 
 	// Task 4: Clean up old prompts (keep last 1000 per session)
@@ -170,6 +171,9 @@ func (s *Service) runMaintenance(ctx context.Context) {
 	s.lastRunTime = time.Now()
 	s.lastRunDuration = time.Since(start)
 	s.totalCleanedObs += totalCleaned
+	if optimized {
+		s.totalOptimizeRun++
+	}
 	s.mu.Unlock()
 
 	s.log.Info().
