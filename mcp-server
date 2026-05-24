@@ -1,0 +1,6 @@
+#!/bin/sh
+BIN="$HOME/.claude-mnemonic/bin/mcp-server"
+[ -x "$BIN" ] && exec "$BIN" "$@"
+echo "claude-mnemonic: mcp-server not found at $BIN" >&2
+echo "Install: cd $(dirname "$0") && make install" >&2
+exit 1

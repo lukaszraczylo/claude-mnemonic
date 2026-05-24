@@ -1,0 +1,4 @@
+#!/bin/sh
+BIN="$HOME/.claude-mnemonic/bin/hooks/subagent-stop"
+[ -x "$BIN" ] && exec "$BIN" "$@"
+exit 0

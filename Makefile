@@ -5,6 +5,7 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 LDFLAGS := -ldflags "-X main.Version=$(VERSION) -X github.com/lukaszraczylo/claude-mnemonic/pkg/hooks.Version=$(VERSION) -s -w" -buildvcs=false
 BUILD_DIR := bin
 PLUGIN_DIR := plugin
+STABLE_BIN := $(HOME)/.claude-mnemonic/bin
 
 # Go settings
 GOOS ?= $(shell go env GOOS)
@@ -22,13 +23,12 @@ all: build
 setup-libs:
 	@./scripts/download-onnx-libs.sh all
 
-# Update root plugin metadata with current version
+# Update version in committed plugin metadata
 update-version:
-	@mkdir -p .claude-plugin
-	@sed 's/{{ .Version }}/$(VERSION)/g; s/{{.Version}}/$(VERSION)/g' $(PLUGIN_DIR)/.claude-plugin/plugin.json.tpl > .claude-plugin/plugin.json
-	@echo "Updated .claude-plugin/plugin.json to version $(VERSION)"
-	@# marketplace.json contains release-specific data (URLs, SHA256 hashes) that requires manual update per release.
-	@# Only the top-level version field is updated here.
+	@if [ -f .claude-plugin/plugin.json ]; then \
+		sed 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/plugin.json > .claude-plugin/plugin.json.tmp && mv .claude-plugin/plugin.json.tmp .claude-plugin/plugin.json; \
+		echo "Updated .claude-plugin/plugin.json to version $(VERSION)"; \
+	fi
 	@if [ -f marketplace.json ]; then \
 		sed 's/"version": "[^"]*"/"version": "$(VERSION)"/' marketplace.json > marketplace.json.tmp && mv marketplace.json.tmp marketplace.json; \
 		echo "Updated marketplace.json version fields to $(VERSION)"; \
@@ -121,9 +121,11 @@ build-windows:
 stop-worker:
 	@echo "Stopping worker..."
 	@-pkill -TERM -f 'claude-mnemonic.*worker' 2>/dev/null || true
+	@-pkill -TERM -f '\.claude-mnemonic/bin/worker' 2>/dev/null || true
 	@-pkill -TERM -f '\.claude/plugins/.*/worker' 2>/dev/null || true
 	@sleep 1
 	@-pkill -9 -f 'claude-mnemonic.*worker' 2>/dev/null || true
+	@-pkill -9 -f '\.claude-mnemonic/bin/worker' 2>/dev/null || true
 	@-pkill -9 -f '\.claude/plugins/.*/worker' 2>/dev/null || true
 	@-lsof -ti :37777 | xargs kill -9 2>/dev/null || true
 	@sleep 1
@@ -131,12 +133,7 @@ stop-worker:
 # Start worker in background
 start-worker:
 	@echo "Starting worker..."
-	@# Prefer cache directory (where Claude Code looks), fall back to marketplaces
-	@if [ -f "$(HOME)/.claude/plugins/cache/claude-mnemonic/claude-mnemonic/$(VERSION)/worker" ]; then \
-		nohup $(HOME)/.claude/plugins/cache/claude-mnemonic/claude-mnemonic/$(VERSION)/worker > /tmp/claude-mnemonic-worker.log 2>&1 & \
-	else \
-		nohup $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/worker > /tmp/claude-mnemonic-worker.log 2>&1 & \
-	fi
+	@nohup $(STABLE_BIN)/worker > /tmp/claude-mnemonic-worker.log 2>&1 &
 	@sleep 1
 	@if curl -s http://localhost:37777/health > /dev/null 2>&1; then \
 		echo "Worker started successfully (http://localhost:37777)"; \
@@ -147,26 +144,31 @@ start-worker:
 # Restart worker
 restart-worker: stop-worker start-worker
 
-# Install to Claude plugins directory
+# Install to stable binary location and register with Claude Code
 install: build stop-worker
-	@echo "Installing to Claude plugins directory..."
+	@echo "Installing claude-mnemonic..."
 	@# Verify build output binaries exist
 	@test -f $(BUILD_DIR)/worker || { echo "ERROR: $(BUILD_DIR)/worker not found. Build may have failed."; exit 1; }
 	@test -f $(BUILD_DIR)/mcp-server || { echo "ERROR: $(BUILD_DIR)/mcp-server not found. Build may have failed."; exit 1; }
 	@test -d $(BUILD_DIR)/hooks || { echo "ERROR: $(BUILD_DIR)/hooks not found. Build may have failed."; exit 1; }
-	@# Install to marketplaces directory (for direct installs)
-	@mkdir -p $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks
+	@# Install binaries to stable location (survives Claude Code updates)
+	@mkdir -p $(STABLE_BIN)/hooks
+	cp $(BUILD_DIR)/worker $(STABLE_BIN)/
+	cp $(BUILD_DIR)/mcp-server $(STABLE_BIN)/
+	cp $(BUILD_DIR)/hooks/* $(STABLE_BIN)/hooks/
+	@echo "Binaries installed to $(STABLE_BIN)"
+	@# Set up marketplace directory with wrapper scripts and metadata
 	@mkdir -p $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin
+	@mkdir -p $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks
 	@mkdir -p $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/commands
-	cp $(BUILD_DIR)/worker $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/
-	cp $(BUILD_DIR)/mcp-server $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/
-	cp $(BUILD_DIR)/hooks/* $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks/
-	cp $(PLUGIN_DIR)/hooks/hooks.json $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks/
-	@# Copy slash commands if they exist
-	@if [ -d "$(PLUGIN_DIR)/commands" ]; then cp -r $(PLUGIN_DIR)/commands/* $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/commands/ 2>/dev/null || true; fi
-	@# Update plugin.json and marketplace.json with current version to prevent stale version directories
-	@sed 's/{{ .Version }}/$(VERSION)/g; s/{{.Version}}/$(VERSION)/g' $(PLUGIN_DIR)/.claude-plugin/plugin.json.tpl > $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/plugin.json
-	@sed 's/{{ .Version }}/$(VERSION)/g; s/{{.Version}}/$(VERSION)/g' $(PLUGIN_DIR)/.claude-plugin/marketplace.json.tpl > $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/marketplace.json
+	@cp .claude-plugin/plugin.json $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/
+	@cp marketplace.json $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/.claude-plugin/marketplace.json 2>/dev/null || true
+	@cp hooks/hooks.json $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks/
+	@cp hooks/session-start hooks/user-prompt hooks/post-tool-use hooks/stop hooks/subagent-stop hooks/statusline $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks/
+	@chmod +x $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/hooks/*
+	@cp mcp-server $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/
+	@chmod +x $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/mcp-server
+	@cp commands/restart.md $(HOME)/.claude/plugins/marketplaces/claude-mnemonic/commands/
 	@echo "Registering plugin with Claude Code..."
 	@./scripts/register-plugin.sh "$(VERSION)"
 	@$(MAKE) start-worker

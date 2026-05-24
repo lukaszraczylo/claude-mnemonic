@@ -1,5 +1,6 @@
 #!/bin/bash
 # Register claude-mnemonic plugin with Claude Code
+# Ensures plugin survives CLI updates via extraKnownMarketplaces in settings.json
 
 set -e
 
@@ -9,6 +10,7 @@ MARKETPLACES_FILE="$HOME/.claude/plugins/known_marketplaces.json"
 PLUGIN_KEY="claude-mnemonic@claude-mnemonic"
 MARKETPLACE_NAME="claude-mnemonic"
 MARKETPLACE_PATH="$HOME/.claude/plugins/marketplaces/claude-mnemonic"
+STABLE_BIN="$HOME/.claude-mnemonic/bin"
 
 # Get version from git tags (same as Makefile), or use argument if provided
 VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
@@ -21,7 +23,8 @@ TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
 # The last argument is treated as the input file, output goes to input_file.tmp
 safe_jq_write() {
     local args=("$@")
-    local input_file="${args[-1]}"
+    local last_idx=$((${#args[@]} - 1))
+    local input_file="${args[$last_idx]}"
     local tmp_file="${input_file}.tmp"
 
     if jq "${args[@]}" > "$tmp_file"; then
@@ -69,29 +72,21 @@ if [ ! -f "$MARKETPLACES_FILE" ]; then
     echo '{}' > "$MARKETPLACES_FILE"
 fi
 
-# Validate marketplace path exists and contains expected files
-if [ ! -d "$MARKETPLACE_PATH" ]; then
-    echo "Warning: Marketplace directory not found at $MARKETPLACE_PATH"
-    echo "Plugin files may not be copied to cache correctly."
-fi
-
-# Ensure cache directory exists and copy plugin files
+# Ensure cache directory exists and copy plugin files (wrapper scripts + metadata)
 mkdir -p "$CACHE_PATH/.claude-plugin"
 mkdir -p "$CACHE_PATH/hooks"
 mkdir -p "$CACHE_PATH/commands"
 
-# Copy files from marketplace to cache
-if ! cp -r "$MARKETPLACE_PATH/"* "$CACHE_PATH/" 2>/dev/null; then
-    echo "ERROR: Failed to copy plugin files to cache directory"
-    exit 1
+# Copy wrapper scripts and metadata from marketplace to cache
+if [ -d "$MARKETPLACE_PATH" ]; then
+    cp -r "$MARKETPLACE_PATH/"* "$CACHE_PATH/" 2>/dev/null || true
 fi
 
-# Verify critical files exist in cache
-for f in worker mcp-server hooks/hooks.json .claude-plugin/plugin.json; do
-    if [ ! -f "$CACHE_PATH/$f" ]; then
-        echo "WARNING: Expected file $f not found in cache after copy"
-    fi
-done
+# Also ensure actual binaries are available via the wrapper scripts
+# The wrappers delegate to $STABLE_BIN which has the real binaries
+if [ ! -x "$STABLE_BIN/mcp-server" ]; then
+    echo "WARNING: Binaries not found at $STABLE_BIN. Run 'make install' from the source directory."
+fi
 
 # --- JSON registration ---
 # Uses jq if available, falls back to python3 for systems without jq.
@@ -132,13 +127,12 @@ plugins["plugins"][plugin_key] = [{
     "installPath": cache_path,
     "version": version,
     "installedAt": timestamp,
-    "lastUpdated": timestamp,
-    "isLocal": True
+    "lastUpdated": timestamp
 }]
 save_json(plugins_file, plugins)
 print("Plugin registered in installed_plugins.json")
 
-# 2. settings.json
+# 2. settings.json — enable plugin AND add to extraKnownMarketplaces for persistence
 settings = load_json(settings_file)
 settings.setdefault("enabledPlugins", {})
 settings["enabledPlugins"][plugin_key] = True
@@ -147,14 +141,26 @@ settings["statusLine"] = {
     "command": statusline_cmd,
     "padding": 0
 }
+# extraKnownMarketplaces ensures plugin survives Claude Code CLI updates
+settings.setdefault("extraKnownMarketplaces", {})
+settings["extraKnownMarketplaces"][marketplace_name] = {
+    "source": {
+        "repo": "lukaszraczylo/claude-mnemonic",
+        "source": "github"
+    }
+}
 save_json(settings_file, settings)
 print("Plugin enabled in settings.json")
+print("Added to extraKnownMarketplaces for persistence")
 print("Statusline configured in settings.json")
 
 # 3. known_marketplaces.json
 marketplaces = load_json(marketplaces_file)
 marketplaces[marketplace_name] = {
-    "source": {"source": "directory", "path": marketplace_path},
+    "source": {
+        "source": "github",
+        "repo": "lukaszraczylo/claude-mnemonic"
+    },
     "installLocation": marketplace_path,
     "lastUpdated": timestamp
 }
@@ -190,8 +196,7 @@ if command -v jq &> /dev/null; then
     "installPath": "$CACHE_PATH",
     "version": "$VERSION",
     "installedAt": "$TIMESTAMP",
-    "lastUpdated": "$TIMESTAMP",
-    "isLocal": true
+    "lastUpdated": "$TIMESTAMP"
 }]
 EOF
 )
@@ -202,7 +207,7 @@ EOF
 
     echo "Plugin registered in installed_plugins.json"
 
-    # Enable the plugin in settings.json and configure statusline
+    # Enable the plugin in settings.json, configure statusline, and add to extraKnownMarketplaces
     STATUSLINE_ENTRY=$(cat <<EOF
 {
     "type": "command",
@@ -212,18 +217,30 @@ EOF
 EOF
 )
 
+    MARKETPLACE_SOURCE=$(cat <<EOF
+{
+    "source": {
+        "repo": "lukaszraczylo/claude-mnemonic",
+        "source": "github"
+    }
+}
+EOF
+)
+
     safe_jq_write --arg key "$PLUGIN_KEY" --argjson statusline "$STATUSLINE_ENTRY" \
-        '.enabledPlugins //= {} | .enabledPlugins[$key] = true | .statusLine = $statusline' "$SETTINGS_FILE"
+        --arg mkname "$MARKETPLACE_NAME" --argjson mksource "$MARKETPLACE_SOURCE" \
+        '.enabledPlugins //= {} | .enabledPlugins[$key] = true | .statusLine = $statusline | .extraKnownMarketplaces //= {} | .extraKnownMarketplaces[$mkname] = $mksource' "$SETTINGS_FILE"
 
     echo "Plugin enabled in settings.json"
+    echo "Added to extraKnownMarketplaces for persistence"
     echo "Statusline configured in settings.json"
 
-    # Register the marketplace in known_marketplaces.json
+    # Register the marketplace in known_marketplaces.json (GitHub source)
     MARKETPLACE_ENTRY=$(cat <<EOF
 {
     "source": {
-        "source": "directory",
-        "path": "$MARKETPLACE_PATH"
+        "source": "github",
+        "repo": "lukaszraczylo/claude-mnemonic"
     },
     "installLocation": "$MARKETPLACE_PATH",
     "lastUpdated": "$TIMESTAMP"

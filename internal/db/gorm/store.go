@@ -513,13 +513,6 @@ func (s *Store) ExecWithTimeout(ctx context.Context, timeout time.Duration, quer
 	return nil
 }
 
-// QueryRowWithTimeout executes a row query with timeout.
-func (s *Store) QueryRowWithTimeout(ctx context.Context, timeout time.Duration, query string, args ...any) *sql.Row {
-	timeoutCtx, cancel := s.WithTimeout(ctx, timeout, "query_row")
-	// Note: cancel will be called when row.Scan() completes or errors
-	_ = cancel // Caller must ensure proper cleanup
-	return s.sqlDB.QueryRowContext(timeoutCtx, query, args...)
-}
 
 // TransactionWithTimeout wraps a transaction function with timeout handling.
 // The transaction is automatically rolled back if the context times out.

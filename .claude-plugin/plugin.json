@@ -1,0 +1,22 @@
+{
+  "name": "claude-mnemonic",
+  "version": "v0.11.57-dirty",
+  "description": "Persistent memory system for Claude Code with SQLite, FTS5, and vector search",
+  "author": {
+    "name": "lukaszraczylo",
+    "email": "lukaszraczylo@users.noreply.github.com",
+    "url": "https://github.com/lukaszraczylo"
+  },
+  "homepage": "https://github.com/lukaszraczylo/claude-mnemonic",
+  "repository": "https://github.com/lukaszraczylo/claude-mnemonic",
+  "license": "MIT",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": {
+    "claude-mnemonic": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/mcp-server",
+      "args": ["--project", "${CLAUDE_PROJECT}"],
+      "env": {}
+    }
+  },
+  "commands": ["./commands/restart.md"]
+}

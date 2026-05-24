@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "claude-mnemonic",
-  "version": "1.0.0",
+  "version": "v0.11.57-dirty",
   "description": "Persistent memory system for Claude Code - stores observations, session summaries, and user prompts with semantic search",
   "owner": {
     "name": "lukaszraczylo",
@@ -12,7 +12,7 @@
   "plugins": [
     {
       "name": "claude-mnemonic",
-      "description": "Persistent memory system for Claude Code - Go implementation with SQLite and ChromaDB vector search",
+      "description": "Persistent memory system for Claude Code - Go implementation with SQLite and sqlite-vec vector search",
       "version": "0.11.105",
       "author": {
         "name": "lukaszraczylo",

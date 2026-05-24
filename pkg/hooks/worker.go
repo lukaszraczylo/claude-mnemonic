@@ -397,7 +397,15 @@ func KillProcessOnPort(port int) error {
 
 // findWorkerBinary finds the worker binary path.
 func findWorkerBinary() string {
-	// Check CLAUDE_PLUGIN_ROOT first (set by Claude Code when running hooks)
+	home := os.Getenv("HOME")
+
+	// Stable binary location (primary, survives Claude Code updates)
+	stablePath := filepath.Join(home, ".claude-mnemonic", "bin", "worker")
+	if _, err := os.Stat(stablePath); err == nil {
+		return stablePath
+	}
+
+	// Check CLAUDE_PLUGIN_ROOT (set by Claude Code when running hooks)
 	if pluginRoot := os.Getenv("CLAUDE_PLUGIN_ROOT"); pluginRoot != "" {
 		workerPath := filepath.Join(pluginRoot, "worker")
 		if _, err := os.Stat(workerPath); err == nil {
@@ -406,7 +414,6 @@ func findWorkerBinary() string {
 	}
 
 	// Check common locations
-	home := os.Getenv("HOME")
 	locations := []string{
 		"./worker",
 		"./bin/worker",
@@ -418,10 +425,9 @@ func findWorkerBinary() string {
 		}
 	}
 
-	// Try cache directory with any version (glob returns lexically sorted matches)
+	// Try cache directory with any version
 	matches, _ := filepath.Glob(filepath.Join(home, ".claude/plugins/cache/claude-mnemonic/claude-mnemonic/*/worker"))
 	if len(matches) > 0 {
-		// Use the last match (latest version due to lexical sorting)
 		return matches[len(matches)-1]
 	}
 

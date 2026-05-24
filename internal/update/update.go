@@ -532,13 +532,20 @@ func (u *Updater) replaceBinaries(extractDir string) error {
 func (u *Updater) getInstallDirectories() []string {
 	dirs := []string{u.installDir}
 
-	// Also check cache directories where Claude Code looks for plugins
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return dirs
 	}
 
-	// Look for cache directories under ~/.claude/plugins/cache/claude-mnemonic/claude-mnemonic/
+	// Primary stable binary location (survives Claude Code updates)
+	stableBin := filepath.Join(home, ".claude-mnemonic", "bin")
+	if stableBin != u.installDir {
+		if _, err := os.Stat(stableBin); err == nil {
+			dirs = append(dirs, stableBin)
+		}
+	}
+
+	// Also check cache directories where Claude Code looks for plugins
 	cacheBase := filepath.Join(home, ".claude/plugins/cache/claude-mnemonic/claude-mnemonic")
 	entries, err := os.ReadDir(cacheBase)
 	if err != nil {
@@ -548,7 +555,6 @@ func (u *Updater) getInstallDirectories() []string {
 	for _, entry := range entries {
 		if entry.IsDir() {
 			cacheDir := filepath.Join(cacheBase, entry.Name())
-			// Only add if it's different from installDir and contains a worker binary
 			if cacheDir != u.installDir {
 				workerPath := filepath.Join(cacheDir, "worker")
 				if _, err := os.Stat(workerPath); err == nil {
