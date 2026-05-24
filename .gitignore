@@ -1,5 +1,7 @@
 # Binaries
 bin/
+/mcp
+/worker
 *.exe
 *.exe~
 *.dll
