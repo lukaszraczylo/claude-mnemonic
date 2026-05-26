@@ -1246,7 +1246,12 @@ func (s *Service) setupRoutes() {
 	s.router.Get("/api/selfcheck", s.handleSelfCheck)
 
 	// SSE endpoint (works before DB is ready)
-	s.router.Get("/api/events", s.sseBroadcaster.HandleSSE)
+	// Wrap with middleware that disables write deadline since SSE connections are long-lived
+	s.router.Get("/api/events", func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		_ = rc.SetWriteDeadline(time.Time{}) // no deadline for SSE
+		s.sseBroadcaster.HandleSSE(w, r)
+	})
 
 	// Routes that require DB to be ready
 	s.router.Group(func(r chi.Router) {
@@ -1546,7 +1551,7 @@ func (s *Service) Start() error {
 		Handler:           s.router,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      0, // Disabled for SSE (long-lived connections)
+		WriteTimeout:      60 * time.Second, // Default for API routes; SSE handler extends per-request
 		IdleTimeout:       120 * time.Second,
 	}
 

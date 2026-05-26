@@ -129,13 +129,22 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Semaphore limits concurrent request goroutines.
+	const maxConcurrent = 10
+	sem := make(chan struct{}, maxConcurrent)
+
+	var wg sync.WaitGroup
+
 	for {
 		select {
 		case <-ctx.Done():
+			// Drain in-flight requests before returning.
+			wg.Wait()
 			return ctx.Err()
 		case line, ok := <-lines:
 			if !ok {
-				// Scanner finished, check for errors
+				// Scanner finished — drain in-flight requests, then check for errors.
+				wg.Wait()
 				err := <-scanErr
 				if err != nil {
 					if errors.Is(err, bufio.ErrTooLong) {
@@ -154,18 +163,27 @@ func (s *Server) Run(ctx context.Context) error {
 
 			var req Request
 			if err := json.Unmarshal([]byte(line), &req); err != nil {
+				// Parse errors are cheap — send inline, no goroutine needed.
 				if werr := s.sendError(nil, -32700, "Parse error", err.Error()); werr != nil {
 					return fmt.Errorf("write error: %w", werr)
 				}
 				continue
 			}
 
-			resp := s.handleRequest(ctx, &req)
-			if resp != nil {
-				if werr := s.sendResponse(resp); werr != nil {
-					return fmt.Errorf("write error: %w", werr)
+			// Dispatch request to its own goroutine.
+			wg.Add(1)
+			sem <- struct{}{} // acquire semaphore slot
+			go func(r Request) {
+				defer wg.Done()
+				defer func() { <-sem }() // release semaphore slot
+
+				resp := s.handleRequest(ctx, &r)
+				if resp != nil {
+					if werr := s.sendResponse(resp); werr != nil {
+						log.Error().Err(werr).Msg("Failed to send response")
+					}
 				}
-			}
+			}(req)
 		}
 	}
 }

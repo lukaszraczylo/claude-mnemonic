@@ -23,6 +23,10 @@ import (
 // IMPORTANT: This is on the critical startup path - must be fast!
 // No synchronous verification - just filter by staleness and return.
 func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
+	// Add request-scoped timeout to prevent indefinite blocking on DB operations
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
 	project := r.URL.Query().Get("project")
 	query := r.URL.Query().Get("query")
 	cwd := r.URL.Query().Get("cwd")
@@ -54,7 +58,7 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 	var expandedQueries []expansion.ExpandedQuery
 	var detectedIntent string
 	if s.queryExpander != nil {
-		expandCtx, expandCancel := context.WithTimeout(r.Context(), 5*time.Second)
+		expandCtx, expandCancel := context.WithTimeout(ctx, 5*time.Second)
 		cfg := expansion.DefaultConfig()
 		cfg.EnableVocabularyExpansion = false // Vocabulary expansion is optional
 		expandedQueries = s.queryExpander.Expand(expandCtx, query, cfg)
@@ -83,7 +87,7 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 		var vectorErrors int
 
 		for _, eq := range expandedQueries {
-			vectorResults, vecErr := s.vectorClient.Query(r.Context(), eq.Query, limit*2, where)
+			vectorResults, vecErr := s.vectorClient.Query(ctx, eq.Query, limit*2, where)
 			if vecErr != nil {
 				vectorErrors++
 				log.Debug().Err(vecErr).Str("query", eq.Query).Msg("Vector query failed")
@@ -125,7 +129,7 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 
 			if len(obsIDs) > 0 {
 				// Fetch full observations from SQLite
-				observations, err = s.observationStore.GetObservationsByIDs(r.Context(), obsIDs, "date_desc", limit)
+				observations, err = s.observationStore.GetObservationsByIDs(ctx, obsIDs, "date_desc", limit)
 				if err == nil {
 					usedVector = true
 				}
@@ -138,11 +142,11 @@ func (s *Service) handleSearchByPrompt(w http.ResponseWriter, r *http.Request) {
 		if vectorSearchFailed {
 			log.Info().Str("project", project).Msg("Using FTS fallback due to vector search failure")
 		}
-		observations, err = s.observationStore.SearchObservationsFTS(r.Context(), query, project, limit)
+		observations, err = s.observationStore.SearchObservationsFTS(ctx, query, project, limit)
 		if err != nil {
 			// FTS might fail if query has special chars, try without
 			log.Warn().Err(err).Str("query", query).Msg("FTS search failed, falling back to recent")
-			observations, err = s.observationStore.GetRecentObservations(r.Context(), project, limit)
+			observations, err = s.observationStore.GetRecentObservations(ctx, project, limit)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -354,7 +358,9 @@ func (s *Service) handleFileContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Search for observations related to each file in parallel
-	ctx := r.Context()
+	// Add request-scoped timeout to prevent indefinite blocking on DB operations
+	ctx, ctxCancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer ctxCancel()
 
 	// Check if vector search is available
 	if s.vectorClient == nil || !s.vectorClient.IsConnected() {
@@ -562,6 +568,10 @@ func splitCamelCase(s string) string {
 // IMPORTANT: This is on the critical startup path - must be fast!
 // No synchronous verification - just filter by staleness and return.
 func (s *Service) handleContextInject(w http.ResponseWriter, r *http.Request) {
+	// Add request-scoped timeout to prevent indefinite blocking on DB operations
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
 	project := r.URL.Query().Get("project")
 	if project == "" {
 		http.Error(w, "project required", http.StatusBadRequest)
@@ -592,7 +602,7 @@ func (s *Service) handleContextInject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get recent observations
-	observations, err := s.observationStore.GetRecentObservations(r.Context(), project, limit)
+	observations, err := s.observationStore.GetRecentObservations(ctx, project, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -658,13 +668,17 @@ func (s *Service) handleContextInject(w http.ResponseWriter, r *http.Request) {
 
 // handleContextCount returns the count of observations for a project.
 func (s *Service) handleContextCount(w http.ResponseWriter, r *http.Request) {
+	// Add request-scoped timeout to prevent indefinite blocking on DB operations
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
 	project := r.URL.Query().Get("project")
 	if project == "" {
 		http.Error(w, "project required", http.StatusBadRequest)
 		return
 	}
 
-	count, err := s.getCachedObservationCount(r.Context(), project)
+	count, err := s.getCachedObservationCount(ctx, project)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

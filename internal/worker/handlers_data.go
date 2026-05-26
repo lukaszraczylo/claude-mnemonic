@@ -2,6 +2,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"runtime"
@@ -20,6 +21,10 @@ import (
 // Supports optional query parameter for semantic search via sqlite-vec.
 // Supports pagination via limit and offset query parameters.
 func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) {
+	// Add request-scoped timeout to prevent indefinite blocking on DB operations
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
 	pagination := gorm.ParsePaginationParams(r, DefaultObservationsLimit)
 	project := r.URL.Query().Get("project")
 	query := r.URL.Query().Get("query")
@@ -38,11 +43,11 @@ func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) 
 	// Use vector search if query is provided and vector client is available
 	if query != "" && s.vectorClient != nil && s.vectorClient.IsConnected() {
 		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeObservation, "")
-		vectorResults, vecErr := s.vectorClient.Query(r.Context(), query, pagination.Limit*2, where)
+		vectorResults, vecErr := s.vectorClient.Query(ctx, query, pagination.Limit*2, where)
 		if vecErr == nil && len(vectorResults) > 0 {
 			obsIDs := sqlitevec.ExtractObservationIDs(vectorResults, project)
 			if len(obsIDs) > 0 {
-				observations, err = s.observationStore.GetObservationsByIDs(r.Context(), obsIDs, "date_desc", pagination.Limit)
+				observations, err = s.observationStore.GetObservationsByIDs(ctx, obsIDs, "date_desc", pagination.Limit)
 				if err == nil {
 					usedVector = true
 					total = int64(len(observations)) // Vector search doesn't have total, use returned count
@@ -55,10 +60,10 @@ func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) 
 	if !usedVector {
 		if project != "" {
 			// Strict project filtering for dashboard - only observations from this project
-			observations, total, err = s.observationStore.GetObservationsByProjectStrictPaginated(r.Context(), project, pagination.Limit, pagination.Offset)
+			observations, total, err = s.observationStore.GetObservationsByProjectStrictPaginated(ctx, project, pagination.Limit, pagination.Offset)
 		} else {
 			// All projects
-			observations, total, err = s.observationStore.GetAllRecentObservationsPaginated(r.Context(), pagination.Limit, pagination.Offset)
+			observations, total, err = s.observationStore.GetAllRecentObservationsPaginated(ctx, pagination.Limit, pagination.Offset)
 		}
 	}
 
@@ -90,6 +95,10 @@ func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) 
 // handleGetSummaries returns recent summaries.
 // Supports optional query parameter for semantic search via sqlite-vec.
 func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
+	// Add request-scoped timeout to prevent indefinite blocking on DB operations
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
 	limit := gorm.ParseLimitParam(r, DefaultSummariesLimit)
 	project := r.URL.Query().Get("project")
 	query := r.URL.Query().Get("query")
@@ -107,11 +116,11 @@ func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
 	// Use vector search if query is provided and vector client is available
 	if query != "" && s.vectorClient != nil && s.vectorClient.IsConnected() {
 		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeSessionSummary, "")
-		vectorResults, vecErr := s.vectorClient.Query(r.Context(), query, limit*2, where)
+		vectorResults, vecErr := s.vectorClient.Query(ctx, query, limit*2, where)
 		if vecErr == nil && len(vectorResults) > 0 {
 			summaryIDs := sqlitevec.ExtractSummaryIDs(vectorResults, project)
 			if len(summaryIDs) > 0 {
-				summaries, err = s.summaryStore.GetSummariesByIDs(r.Context(), summaryIDs, "date_desc", limit)
+				summaries, err = s.summaryStore.GetSummariesByIDs(ctx, summaryIDs, "date_desc", limit)
 				if err == nil {
 					usedVector = true
 				}
@@ -122,9 +131,9 @@ func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
 	// Fall back to SQLite if vector search not used
 	if !usedVector {
 		if project != "" {
-			summaries, err = s.summaryStore.GetRecentSummaries(r.Context(), project, limit)
+			summaries, err = s.summaryStore.GetRecentSummaries(ctx, project, limit)
 		} else {
-			summaries, err = s.summaryStore.GetAllRecentSummaries(r.Context(), limit)
+			summaries, err = s.summaryStore.GetAllRecentSummaries(ctx, limit)
 		}
 	}
 
@@ -143,6 +152,10 @@ func (s *Service) handleGetSummaries(w http.ResponseWriter, r *http.Request) {
 // handleGetPrompts returns recent user prompts.
 // Supports optional query parameter for semantic search via sqlite-vec.
 func (s *Service) handleGetPrompts(w http.ResponseWriter, r *http.Request) {
+	// Add request-scoped timeout to prevent indefinite blocking on DB operations
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
 	limit := gorm.ParseLimitParam(r, DefaultPromptsLimit)
 	project := r.URL.Query().Get("project")
 	query := r.URL.Query().Get("query")
@@ -160,11 +173,11 @@ func (s *Service) handleGetPrompts(w http.ResponseWriter, r *http.Request) {
 	// Use vector search if query is provided and vector client is available
 	if query != "" && s.vectorClient != nil && s.vectorClient.IsConnected() {
 		where := sqlitevec.BuildWhereFilter(sqlitevec.DocTypeUserPrompt, "")
-		vectorResults, vecErr := s.vectorClient.Query(r.Context(), query, limit*2, where)
+		vectorResults, vecErr := s.vectorClient.Query(ctx, query, limit*2, where)
 		if vecErr == nil && len(vectorResults) > 0 {
 			promptIDs := sqlitevec.ExtractPromptIDs(vectorResults, project)
 			if len(promptIDs) > 0 {
-				prompts, err = s.promptStore.GetPromptsByIDs(r.Context(), promptIDs, "date_desc", limit)
+				prompts, err = s.promptStore.GetPromptsByIDs(ctx, promptIDs, "date_desc", limit)
 				if err == nil {
 					usedVector = true
 				}
@@ -175,9 +188,9 @@ func (s *Service) handleGetPrompts(w http.ResponseWriter, r *http.Request) {
 	// Fall back to SQLite if vector search not used
 	if !usedVector {
 		if project != "" {
-			prompts, err = s.promptStore.GetRecentUserPromptsByProject(r.Context(), project, limit)
+			prompts, err = s.promptStore.GetRecentUserPromptsByProject(ctx, project, limit)
 		} else {
-			prompts, err = s.promptStore.GetAllRecentUserPrompts(r.Context(), limit)
+			prompts, err = s.promptStore.GetAllRecentUserPrompts(ctx, limit)
 		}
 	}
 

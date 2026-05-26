@@ -2,6 +2,7 @@
 package embedding
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
@@ -43,6 +44,14 @@ type EmbeddingModel interface {
 
 	// EmbedBatch generates embeddings for multiple texts.
 	EmbedBatch(texts []string) ([][]float32, error)
+
+	// EmbedWithContext generates an embedding for a single text with context-aware cancellation.
+	// The context controls mutex acquisition timeout — if ctx is cancelled while waiting
+	// for the model lock, the call returns immediately with ctx.Err().
+	EmbedWithContext(ctx context.Context, text string) ([]float32, error)
+
+	// EmbedBatchWithContext generates embeddings for multiple texts with context-aware cancellation.
+	EmbedBatchWithContext(ctx context.Context, texts []string) ([][]float32, error)
 
 	// Close releases model resources.
 	Close() error

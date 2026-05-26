@@ -3,6 +3,7 @@ package embedding
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -206,6 +207,103 @@ func (m *bgeModel) EmbedBatch(texts []string) ([][]float32, error) {
 		}
 		return results, nil
 	}
+
+	// Compute embeddings for non-empty texts
+	embeddings, err := m.computeBatch(nonEmpty)
+	if err != nil {
+		return nil, fmt.Errorf("compute batch embeddings: %w", err)
+	}
+
+	// Build result with zero vectors for empty texts
+	results := make([][]float32, len(texts))
+	for i := range results {
+		results[i] = make([]float32, EmbeddingDim)
+	}
+	for i, idx := range indices {
+		results[idx] = embeddings[i]
+	}
+
+	return results, nil
+}
+
+// acquireMutex attempts to acquire the model mutex, respecting context cancellation.
+// On success the caller MUST call the returned unlock function.
+// If ctx is cancelled while waiting, returns ctx.Err() and no unlock is needed.
+func (m *bgeModel) acquireMutex(ctx context.Context) (unlock func(), err error) {
+	acquired := make(chan struct{})
+	go func() {
+		m.mu.Lock()
+		close(acquired)
+	}()
+
+	select {
+	case <-acquired:
+		// Got the lock normally.
+		return m.mu.Unlock, nil
+	case <-ctx.Done():
+		// Context cancelled while waiting. The goroutine above will eventually
+		// acquire the mutex — we must ensure it gets unlocked.
+		go func() {
+			<-acquired
+			m.mu.Unlock()
+		}()
+		return nil, ctx.Err()
+	}
+}
+
+// EmbedWithContext generates an embedding for a single text with context-aware mutex acquisition.
+// If ctx is cancelled while waiting for the model lock, returns immediately with ctx.Err().
+func (m *bgeModel) EmbedWithContext(ctx context.Context, text string) ([]float32, error) {
+	if text == "" {
+		return make([]float32, EmbeddingDim), nil
+	}
+
+	unlock, err := m.acquireMutex(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire embedding lock: %w", err)
+	}
+	defer unlock()
+
+	results, err := m.computeBatch([]string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return make([]float32, EmbeddingDim), nil
+	}
+	return results[0], nil
+}
+
+// EmbedBatchWithContext generates embeddings for multiple texts with context-aware mutex acquisition.
+func (m *bgeModel) EmbedBatchWithContext(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	// Filter out empty texts and track indices
+	nonEmpty := make([]string, 0, len(texts))
+	indices := make([]int, 0, len(texts))
+	for i, t := range texts {
+		if t != "" {
+			nonEmpty = append(nonEmpty, t)
+			indices = append(indices, i)
+		}
+	}
+
+	// If all texts are empty, return zero vectors
+	if len(nonEmpty) == 0 {
+		results := make([][]float32, len(texts))
+		for i := range results {
+			results[i] = make([]float32, EmbeddingDim)
+		}
+		return results, nil
+	}
+
+	unlock, err := m.acquireMutex(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire embedding lock: %w", err)
+	}
+	defer unlock()
 
 	// Compute embeddings for non-empty texts
 	embeddings, err := m.computeBatch(nonEmpty)
@@ -507,6 +605,17 @@ func (s *Service) Embed(text string) ([]float32, error) {
 // EmbedBatch generates embeddings for multiple texts.
 func (s *Service) EmbedBatch(texts []string) ([][]float32, error) {
 	return s.model.EmbedBatch(texts)
+}
+
+// EmbedWithContext generates an embedding with context-aware cancellation.
+// If ctx is cancelled while waiting for the model lock, returns immediately.
+func (s *Service) EmbedWithContext(ctx context.Context, text string) ([]float32, error) {
+	return s.model.EmbedWithContext(ctx, text)
+}
+
+// EmbedBatchWithContext generates embeddings with context-aware cancellation.
+func (s *Service) EmbedBatchWithContext(ctx context.Context, texts []string) ([][]float32, error) {
+	return s.model.EmbedBatchWithContext(ctx, texts)
 }
 
 // Close releases model resources.
