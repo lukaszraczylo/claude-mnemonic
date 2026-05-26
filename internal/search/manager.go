@@ -46,7 +46,7 @@ const (
 	cacheWarmingInterval     = 20 * time.Second // Run warming cycle every 20 seconds
 	frequencyCleanupInterval = 5 * time.Minute  // Cleanup stale entries every 5 minutes
 	cacheCleanupInterval     = time.Minute      // Cleanup expired cache every minute
-	warmingQueryTimeout      = 5 * time.Second  // Timeout for warming queries
+	warmingQueryTimeout      = 2 * time.Second  // Timeout for warming queries (kept short to minimize mutex hold)
 	warmingBatchSize         = 5                // Warm top 5 queries per cycle
 	minRecencyFactor         = 0.1              // Minimum recency factor for scoring
 
@@ -127,6 +127,7 @@ type Manager struct {
 	queryFrequency   map[string]*queryFrequencyInfo
 	cacheTTL         time.Duration
 	cacheMaxSize     int
+	activeQueries    atomic.Int32 // tracks in-flight user queries to yield embedding mutex
 	resultCacheMu    sync.RWMutex
 	queryFrequencyMu sync.RWMutex
 }
@@ -256,7 +257,14 @@ func (m *Manager) cleanupStaleFrequencyEntries() {
 }
 
 // warmFrequentQueries pre-executes frequently used queries to warm the cache.
+// Skips warming entirely when user queries are in-flight to avoid competing
+// for the embedding model mutex on throttled hardware.
 func (m *Manager) warmFrequentQueries() {
+	if m.activeQueries.Load() > 0 {
+		log.Debug().Msg("Skipping cache warming: user queries in flight")
+		return
+	}
+
 	m.queryFrequencyMu.RLock()
 	// Find top N most frequent queries that aren't recently cached
 	type queryScore struct {
@@ -687,30 +695,40 @@ func (m *Manager) UnifiedSearch(ctx context.Context, params SearchParams) (*Unif
 		params.OrderBy = defaultOrderBy
 	}
 
+	// Track active user queries so cache warming can yield the embedding mutex
+	m.activeQueries.Add(1)
+	defer m.activeQueries.Add(-1)
+
 	// Check cache first
 	cacheKey := m.getCacheKey(params)
 	if cached, ok := m.getFromCache(cacheKey); ok {
 		return cached, nil
 	}
 
-	// Use singleflight to coalesce concurrent identical requests
-	result, err, _ := m.searchGroup.Do(cacheKey, func() (any, error) {
+	// Use singleflight DoChan to coalesce concurrent identical requests.
+	// DoChan + select allows per-caller context cancellation: waiting callers
+	// can bail out when their context expires without blocking on a slow first call.
+	ch := m.searchGroup.DoChan(cacheKey, func() (any, error) {
 		return m.executeSearch(ctx, params)
 	})
 
-	if err != nil {
-		return nil, err
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		searchResult := res.Val.(*UnifiedSearchResult)
+
+		// Cache the result
+		m.putInCache(cacheKey, searchResult)
+
+		// Track query frequency for cache warming
+		m.trackQueryFrequency(params)
+
+		return searchResult, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-
-	searchResult := result.(*UnifiedSearchResult)
-
-	// Cache the result
-	m.putInCache(cacheKey, searchResult)
-
-	// Track query frequency for cache warming
-	m.trackQueryFrequency(params)
-
-	return searchResult, nil
 }
 
 // executeSearch performs the actual search without caching/coalescing.

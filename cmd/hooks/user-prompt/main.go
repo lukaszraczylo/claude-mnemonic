@@ -177,15 +177,27 @@ func handleUserPrompt(ctx *hooks.HookContext, input *Input) (string, error) {
 	if initErr != nil {
 		return "", initErr
 	}
+	if initResult == nil {
+		return contextToInject, nil // Non-JSON response from worker, skip session init
+	}
 
 	// Check if skipped due to privacy
 	if skipped, ok := initResult["skipped"].(bool); ok && skipped {
 		fmt.Fprintf(os.Stderr, "[user-prompt] Session skipped (private)\n")
-		return "", nil
+		return contextToInject, nil
 	}
 
-	sessionID := int64(initResult["sessionDbId"].(float64))
-	promptNumber := int(initResult["promptNumber"].(float64))
+	sessionDBIDVal, ok := initResult["sessionDbId"].(float64)
+	if !ok {
+		return contextToInject, nil // Missing or wrong type, skip gracefully
+	}
+	sessionID := int64(sessionDBIDVal)
+
+	promptNumberVal, ok := initResult["promptNumber"].(float64)
+	if !ok {
+		return contextToInject, nil
+	}
+	promptNumber := int(promptNumberVal)
 
 	fmt.Fprintf(os.Stderr, "[user-prompt] Session %d, prompt #%d\n", sessionID, promptNumber)
 

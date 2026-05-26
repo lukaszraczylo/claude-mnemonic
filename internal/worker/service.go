@@ -1651,11 +1651,15 @@ func (s *Service) processAllSessions() {
 				defer wg.Done()
 				defer func() { <-sem }()
 
+				// Timeout prevents a hung subprocess from blocking the queue processor forever
+				procCtx, procCancel := context.WithTimeout(s.ctx, 60*time.Second)
+				defer procCancel()
+
 				switch msg.Type {
 				case session.MessageTypeObservation:
 					if msg.Observation != nil {
 						err := proc.ProcessObservation(
-							s.ctx,
+							procCtx,
 							sess.SDKSessionID,
 							sess.Project,
 							msg.Observation.ToolName,
@@ -1674,7 +1678,7 @@ func (s *Service) processAllSessions() {
 				case session.MessageTypeSummarize:
 					if msg.Summarize != nil {
 						err := proc.ProcessSummary(
-							s.ctx,
+							procCtx,
 							sess.SessionDBID,
 							sess.SDKSessionID,
 							sess.Project,

@@ -88,3 +88,4 @@ docs/dist
 # Non-template plugin configs (keep only .tpl files in plugin/ dir)
 plugin/.claude-plugin/plugin.json
 plugin/.claude-plugin/marketplace.json
+user-prompt

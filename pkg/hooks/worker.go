@@ -29,7 +29,11 @@ const (
 	HealthCheckTimeout = 2 * time.Second
 
 	// StartupTimeout is the timeout for worker startup.
-	StartupTimeout = 30 * time.Second
+	StartupTimeout = 10 * time.Second
+
+	// EnsureWorkerDeadline is the hard overall deadline for EnsureWorkerRunning.
+	// Must fit within Claude Code's hook timeout budget.
+	EnsureWorkerDeadline = 15 * time.Second
 
 	// workerCacheMaxAge is how long the worker cache is considered fresh.
 	workerCacheMaxAge = 10 * time.Second
@@ -48,6 +52,26 @@ var (
 	// circuitBreakerMu protects lastStartupFailure.
 	circuitBreakerMu   sync.Mutex
 	lastStartupFailure time.Time
+
+	// hookClient is a shared HTTP client for hook->worker requests.
+	// DisableKeepAlives prevents TIME_WAIT connection leaks since each hook
+	// is a separate OS process that exits quickly.
+	hookClient = &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+			MaxIdleConns:      1,
+		},
+	}
+
+	// healthClient is a shared HTTP client for health/version checks.
+	healthClient = &http.Client{
+		Timeout: HealthCheckTimeout,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+			MaxIdleConns:      1,
+		},
+	}
 )
 
 // IsWorkerAvailable performs a fast check without network calls.
@@ -86,8 +110,7 @@ func GetWorkerPort() int {
 // Parses the JSON health response to check the "ready" field when available.
 // Falls back to HTTP status code check for backwards compatibility.
 func IsWorkerRunning(port int) bool {
-	client := &http.Client{Timeout: HealthCheckTimeout}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+	resp, err := healthClient.Get(fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
 	if err != nil {
 		return false
 	}
@@ -200,7 +223,25 @@ func isWorkerRunningWithRetries(port int) bool {
 // EnsureWorkerRunning ensures the worker is running, starting it if necessary.
 // If a worker is already running and healthy with matching version, it reuses it.
 // If version mismatch or unhealthy, it kills the old worker and starts fresh.
+// A hard deadline of EnsureWorkerDeadline prevents exceeding Claude Code's hook timeout.
 func EnsureWorkerRunning() (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), EnsureWorkerDeadline)
+	defer cancel()
+
+	return ensureWorkerRunningCtx(ctx)
+}
+
+// sleepCtx sleeps for d or returns early if ctx is cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	select {
+	case <-time.After(d):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func ensureWorkerRunningCtx(ctx context.Context) (int, error) {
 	port := GetWorkerPort()
 
 	// Fast path: check PID cache before making any HTTP calls.
@@ -208,6 +249,10 @@ func EnsureWorkerRunning() (int, error) {
 		if isProcessAlive(entry.PID) {
 			return port, nil
 		}
+	}
+
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
 	}
 
 	// Circuit breaker: if we failed to start recently, don't retry immediately.
@@ -232,7 +277,9 @@ func EnsureWorkerRunning() (int, error) {
 				if err := KillProcessOnPort(port); err != nil {
 					fmt.Fprintf(os.Stderr, "[claude-mnemonic] Warning: failed to kill old worker: %v\n", err)
 				}
-				time.Sleep(500 * time.Millisecond)
+				if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
+					return 0, err
+				}
 			} else {
 				// Version matches, reuse existing worker
 				updateCacheFromPort(port)
@@ -245,14 +292,20 @@ func EnsureWorkerRunning() (int, error) {
 		}
 	}
 
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+
 	// Port is in use but health check failed -- worker may be slow, not dead.
 	if IsPortInUse(port) {
 		// The port is responding to TCP but health check timed out.
 		// Don't kill it -- it's likely just under load. Give it more time.
 		fmt.Fprintf(os.Stderr, "[claude-mnemonic] Worker on port %d is slow to respond, waiting...\n", port)
-		// Try a few more times with longer delays before giving up
-		for i := 0; i < 3; i++ {
-			time.Sleep(500 * time.Millisecond)
+		// Try a couple more times with shorter delays before giving up
+		for i := 0; i < 2; i++ {
+			if err := sleepCtx(ctx, 300*time.Millisecond); err != nil {
+				return 0, err
+			}
 			if IsWorkerRunning(port) {
 				updateCacheFromPort(port)
 				return port, nil
@@ -263,7 +316,13 @@ func EnsureWorkerRunning() (int, error) {
 		if err := KillProcessOnPort(port); err != nil {
 			fmt.Fprintf(os.Stderr, "[claude-mnemonic] Warning: failed to kill unhealthy process on port %d: %v\n", port, err)
 		}
-		time.Sleep(500 * time.Millisecond)
+		if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
+			return 0, err
+		}
+	}
+
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
 	}
 
 	// Find worker binary
@@ -272,8 +331,10 @@ func EnsureWorkerRunning() (int, error) {
 		return 0, fmt.Errorf("worker binary not found")
 	}
 
-	// Start worker
+	// Start worker -- detach from hook's process group so Claude Code
+	// killing the hook doesn't take the worker down with it.
 	cmd := exec.Command(workerPath) // #nosec G204 -- workerPath is from internal findWorkerBinary
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -286,27 +347,32 @@ func EnsureWorkerRunning() (int, error) {
 	pid := cmd.Process.Pid
 
 	// Wait for worker to be ready with exponential backoff
-	deadline := time.Now().Add(StartupTimeout)
 	backoff := 50 * time.Millisecond
 	maxBackoff := 500 * time.Millisecond
 
-	for time.Now().Before(deadline) {
+	for {
+		if ctx.Err() != nil {
+			circuitBreakerMu.Lock()
+			lastStartupFailure = time.Now()
+			circuitBreakerMu.Unlock()
+			return 0, fmt.Errorf("worker failed to start within deadline: %w", ctx.Err())
+		}
 		if IsWorkerRunning(port) {
 			writeWorkerCache(port, pid)
 			return port, nil
 		}
-		time.Sleep(backoff)
+		if err := sleepCtx(ctx, backoff); err != nil {
+			circuitBreakerMu.Lock()
+			lastStartupFailure = time.Now()
+			circuitBreakerMu.Unlock()
+			return 0, fmt.Errorf("worker failed to start within deadline: %w", err)
+		}
 		// Exponential backoff with cap
 		backoff = backoff * 2
 		if backoff > maxBackoff {
 			backoff = maxBackoff
 		}
 	}
-
-	circuitBreakerMu.Lock()
-	lastStartupFailure = time.Now()
-	circuitBreakerMu.Unlock()
-	return 0, fmt.Errorf("worker failed to start within timeout")
 }
 
 // updateCacheFromPort finds the PID of the process on the port and updates the cache.
@@ -330,8 +396,7 @@ func updateCacheFromPort(port int) {
 
 // GetWorkerVersion gets the version of the running worker.
 func GetWorkerVersion(port int) string {
-	client := &http.Client{Timeout: HealthCheckTimeout}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/version", port))
+	resp, err := healthClient.Get(fmt.Sprintf("http://127.0.0.1:%d/api/version", port))
 	if err != nil {
 		return ""
 	}
@@ -447,14 +512,12 @@ func findWorkerBinary() string {
 
 // POST sends a POST request to the worker.
 func POST(port int, path string, body interface{}) (map[string]interface{}, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := client.Post(
+	resp, err := hookClient.Post(
 		fmt.Sprintf("http://127.0.0.1:%d%s", port, path),
 		"application/json",
 		bytes.NewReader(jsonBody),
@@ -493,8 +556,7 @@ func POSTWithContext(ctx context.Context, port int, path string, body interface{
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := hookClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -504,9 +566,7 @@ func POSTWithContext(ctx context.Context, port int, path string, body interface{
 
 // GET sends a GET request to the worker.
 func GET(port int, path string) (map[string]interface{}, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", port, path))
+	resp, err := hookClient.Get(fmt.Sprintf("http://127.0.0.1:%d%s", port, path))
 	if err != nil {
 		return nil, err
 	}

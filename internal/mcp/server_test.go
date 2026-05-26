@@ -1665,6 +1665,7 @@ func TestToolListContainsExpectedSchemas(t *testing.T) {
 }
 
 // TestHandleToolsCall_UnknownTool tests tools/call with unknown tool name.
+// After Fix #5: tool errors use Result with isError, not top-level Error.
 func TestHandleToolsCall_UnknownTool(t *testing.T) {
 	t.Parallel()
 
@@ -1679,9 +1680,13 @@ func TestHandleToolsCall_UnknownTool(t *testing.T) {
 	}
 
 	resp := server.handleToolsCall(ctx, req)
-	require.NotNil(t, resp.Error)
-	assert.Equal(t, -32000, resp.Error.Code)
-	assert.Contains(t, resp.Error.Data, "unknown tool")
+	assert.Nil(t, resp.Error, "tool errors must not use top-level Error (MCP spec)")
+	require.NotNil(t, resp.Result)
+	result, ok := resp.Result.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, result["isError"])
+	content := result["content"].([]map[string]any)
+	assert.Contains(t, content[0]["text"], "unknown tool")
 }
 
 // TestCallTool_ToolNameRecognition tests that valid tool names are recognized.
@@ -1982,6 +1987,7 @@ func TestTimelineParamsStruct_Validation(t *testing.T) {
 }
 
 // TestHandleToolsCall_EmptyParams tests tools/call with empty params.
+// After Fix #5: tool errors use Result with isError, not top-level Error.
 func TestHandleToolsCall_EmptyParams(t *testing.T) {
 	t.Parallel()
 
@@ -1997,8 +2003,12 @@ func TestHandleToolsCall_EmptyParams(t *testing.T) {
 
 	resp := server.handleToolsCall(ctx, req)
 
-	// Should error due to missing name
-	require.NotNil(t, resp.Error)
+	// Empty name goes through callTool default branch -> isError
+	assert.Nil(t, resp.Error, "tool errors must use isError in Result")
+	require.NotNil(t, resp.Result)
+	result, ok := resp.Result.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, result["isError"])
 }
 
 // TestSendResponse_WithError tests sendResponse with an error response.
@@ -2062,6 +2072,7 @@ func TestToolCallParamsWithComplexArgs(t *testing.T) {
 }
 
 // TestHandleToolsCall_UnknownToolNameError tests tools/call with unknown tool returns error.
+// After Fix #5: tool errors use Result with isError, not top-level Error.
 func TestHandleToolsCall_UnknownToolNameError(t *testing.T) {
 	t.Parallel()
 
@@ -2077,12 +2088,13 @@ func TestHandleToolsCall_UnknownToolNameError(t *testing.T) {
 
 	resp := server.handleToolsCall(ctx, req)
 
-	// Should get an error response
 	assert.Equal(t, "2.0", resp.JSONRPC)
 	assert.Equal(t, 1, resp.ID)
-	require.NotNil(t, resp.Error)
-	// Error is "Tool error" with message containing "unknown tool"
-	assert.True(t, resp.Error.Code != 0)
+	assert.Nil(t, resp.Error, "tool errors must use isError in Result, not top-level Error")
+	require.NotNil(t, resp.Result)
+	result, ok := resp.Result.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, result["isError"])
 }
 
 // =============================================================================
@@ -3171,4 +3183,238 @@ func TestRun_GracefulDrainOnCancel(t *testing.T) {
 	for _, resp := range collectedResponses {
 		assert.Equal(t, "2.0", resp["jsonrpc"], "any completed response must be valid JSON-RPC 2.0")
 	}
+}
+
+// =============================================================================
+// REGRESSION TESTS — Fix #1-#5
+// =============================================================================
+
+// blockingWriter is an io.Writer that blocks forever on Write.
+type blockingWriter struct {
+	blocked chan struct{} // closed when Write is entered
+}
+
+func (bw *blockingWriter) Write(p []byte) (int, error) {
+	if bw.blocked != nil {
+		close(bw.blocked)
+	}
+	select {} // block forever
+}
+
+// TestRun_SemaphoreDoesNotBlockMainLoop (Fix #1 regression) fills all semaphore
+// slots with blocked requests, then sends a notification. The main loop must
+// stay responsive and not hang on semaphore acquisition.
+func TestRun_SemaphoreDoesNotBlockMainLoop(t *testing.T) {
+	t.Parallel()
+
+	const maxConcurrent = 10
+
+	// Mock worker that blocks until test context is cancelled
+	handlerCtx, handlerCancel := context.WithCancel(context.Background())
+	defer handlerCancel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-handlerCtx.Done() // block until test cleanup
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer func() {
+		handlerCancel()          // unblock all handlers first
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+
+	stdinR, stdinW := io.Pipe()
+	var stdout bytes.Buffer
+
+	server := &Server{
+		client:    ts.Client(),
+		workerURL: ts.URL,
+		project:   "test",
+		version:   "1.0.0",
+		stdin:     stdinR,
+		stdout:    &stdout,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- server.Run(ctx)
+	}()
+
+	// Send maxConcurrent+2 requests to fill all semaphore slots
+	for i := 0; i < maxConcurrent+2; i++ {
+		req := Request{JSONRPC: "2.0", ID: i + 1, Method: "tools/call",
+			Params: json.RawMessage(`{"name":"get_memory_stats","arguments":{}}`)}
+		data, _ := json.Marshal(req)
+		_, err := io.WriteString(stdinW, string(data)+"\n")
+		require.NoError(t, err)
+	}
+
+	// Give goroutines time to start and fill semaphore
+	time.Sleep(100 * time.Millisecond)
+
+	// Now send a notification — this must not hang the main loop
+	notifSent := make(chan struct{})
+	go func() {
+		notif := `{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n"
+		_, _ = io.WriteString(stdinW, notif)
+		close(notifSent)
+	}()
+
+	select {
+	case <-notifSent:
+		// Main loop accepted the notification write (stdin is a pipe, so
+		// the write completing means the reader consumed it)
+	case <-time.After(3 * time.Second):
+		t.Fatal("main loop blocked — semaphore acquisition is blocking the main goroutine")
+	}
+
+	// Clean up: cancel server context, close stdin
+	cancel()
+	_ = stdinW.Close()
+
+	// Wait for Run to finish
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		// Acceptable — some goroutines may still be draining
+	}
+}
+
+// TestSendResponse_WriteTimeout (Fix #2 regression) verifies that sendResponse
+// returns an error within a bounded time when the writer blocks forever.
+func TestSendResponse_WriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	bw := &blockingWriter{blocked: make(chan struct{})}
+	server := &Server{stdout: bw}
+
+	resp := &Response{
+		JSONRPC: "2.0",
+		ID:      1,
+		Result:  "ok",
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- server.sendResponse(resp)
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "sendResponse must return error on write timeout")
+		assert.Contains(t, err.Error(), "write timeout")
+	case <-time.After(15 * time.Second):
+		t.Fatal("sendResponse hung forever — write timeout not working")
+	}
+}
+
+// TestSendResponse_MarshalError (Fix #3 regression) verifies that when
+// json.Marshal fails, sendResponse sends a fallback error response and
+// returns an error (instead of silently returning nil).
+func TestSendResponse_MarshalError(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	server := &Server{stdout: &buf}
+
+	// Channels are not JSON-serializable — this will cause json.Marshal to fail
+	resp := &Response{
+		JSONRPC: "2.0",
+		ID:      42,
+		Result:  make(chan int), // unserializable
+	}
+
+	err := server.sendResponse(resp)
+
+	// (a) Must return an error
+	require.Error(t, err, "sendResponse must return error when marshal fails")
+	assert.Contains(t, err.Error(), "marshal error")
+
+	// (b) Must have written a fallback JSON-RPC error to stdout
+	output := buf.String()
+	require.NotEmpty(t, output, "fallback response must be written to stdout")
+
+	var fallback map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(output)), &fallback),
+		"fallback must be valid JSON")
+	assert.Equal(t, "2.0", fallback["jsonrpc"])
+	assert.Equal(t, float64(42), fallback["id"], "fallback must preserve original request ID")
+
+	errObj, ok := fallback["error"].(map[string]any)
+	require.True(t, ok, "fallback must contain error object")
+	assert.Equal(t, float64(-32603), errObj["code"])
+	assert.Equal(t, "internal marshal error", errObj["message"])
+}
+
+// TestHandleRequest_UnknownNotification (Fix #4 regression) verifies that
+// unknown notification methods (ID == nil) get no response, while unknown
+// methods with an ID still get a -32601 error.
+func TestHandleRequest_UnknownNotification(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(nil, "", "", "1.0.0")
+	ctx := context.Background()
+
+	// Case 1: Unknown notification (no ID) — must return nil
+	notifReq := &Request{
+		JSONRPC: "2.0",
+		ID:      nil,
+		Method:  "notifications/roots/list_changed",
+	}
+	resp := server.handleRequest(ctx, notifReq)
+	assert.Nil(t, resp, "unknown notification must not produce a response")
+
+	// Case 2: Unknown method WITH an ID — must return error response
+	methodReq := &Request{
+		JSONRPC: "2.0",
+		ID:      99,
+		Method:  "some/unknown/method",
+	}
+	resp = server.handleRequest(ctx, methodReq)
+	require.NotNil(t, resp, "unknown method with ID must produce an error response")
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, -32601, resp.Error.Code)
+	assert.Equal(t, "Method not found", resp.Error.Message)
+	assert.Equal(t, 99, resp.ID)
+}
+
+// TestHandleToolsCall_ErrorUsesIsError (Fix #5 regression) verifies that when
+// callTool returns an error, the response uses Result with isError:true instead
+// of top-level Error field (per MCP spec).
+func TestHandleToolsCall_ErrorUsesIsError(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(nil, "", "", "1.0.0")
+	ctx := context.Background()
+
+	req := &Request{
+		JSONRPC: "2.0",
+		ID:      7,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"nonexistent_tool","arguments":{}}`),
+	}
+
+	resp := server.handleToolsCall(ctx, req)
+
+	// (a) Response must NOT have top-level Error
+	assert.Nil(t, resp.Error, "tool errors must not use top-level JSON-RPC Error")
+
+	// (b) Response must have Result with isError: true
+	require.NotNil(t, resp.Result, "tool error response must have Result")
+	result, ok := resp.Result.(map[string]any)
+	require.True(t, ok, "Result must be a map")
+	assert.Equal(t, true, result["isError"], "Result must contain isError: true")
+
+	// (c) Result.content[0].text must contain the error message
+	content, ok := result["content"].([]map[string]any)
+	require.True(t, ok, "Result.content must be []map[string]any")
+	require.Len(t, content, 1)
+	assert.Equal(t, "text", content[0]["type"])
+	errText, ok := content[0]["text"].(string)
+	require.True(t, ok)
+	assert.Contains(t, errText, "unknown tool: nonexistent_tool")
 }

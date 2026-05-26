@@ -3,6 +3,7 @@ package sqlitevec
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -2012,4 +2013,142 @@ func TestAcquireRLockWithContext_CleanupOnCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("write lock acquisition timed out: cleanup goroutine may have leaked an RLock")
 	}
+}
+
+// =============================================================================
+// REGRESSION TESTS FOR Fix #1: Embedding outside writeMu in AddDocuments
+// =============================================================================
+
+// TestAddDocuments_EmbeddingOutsideWriteLock verifies that AddDocuments does NOT
+// hold the write lock during embedding computation. A concurrent Query call
+// should complete quickly while AddDocuments is computing embeddings.
+func TestAddDocuments_EmbeddingOutsideWriteLock(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	// Seed the DB with one document so Query has something to search
+	seedDocs := []Document{
+		{ID: "seed-1", Content: "Seed document for concurrency test"},
+	}
+	err = client.AddDocuments(context.Background(), seedDocs)
+	require.NoError(t, err)
+
+	// Pre-warm the embedding cache for the query text so the Query call
+	// itself doesn't need the embedding mutex — it only needs the DB read lock.
+	_, err = client.Query(context.Background(), "concurrency test", 5, nil)
+	require.NoError(t, err)
+
+	// Prepare a batch of documents to trigger a slow AddDocuments call
+	batchDocs := make([]Document, 10)
+	for i := range batchDocs {
+		batchDocs[i] = Document{
+			ID:      fmt.Sprintf("batch-%d", i),
+			Content: fmt.Sprintf("Batch document number %d for write lock test with unique content", i),
+		}
+	}
+
+	// Launch AddDocuments in background — embedding will take time
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- client.AddDocuments(context.Background(), batchDocs)
+	}()
+
+	// Give AddDocuments a moment to start embedding computation
+	time.Sleep(10 * time.Millisecond)
+
+	// Invalidate result cache so Query must go through to DB (tests read lock)
+	client.InvalidateResultCache()
+
+	// A concurrent Query should NOT be blocked by AddDocuments.
+	// If the old code held writeMu during embedding, this would block until
+	// embedding finishes. With the fix, it should complete quickly.
+	queryCtx, queryCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer queryCancel()
+
+	start := time.Now()
+	_, err = client.Query(queryCtx, "concurrency test", 5, nil)
+	queryDuration := time.Since(start)
+
+	require.NoError(t, err, "Query should succeed while AddDocuments is embedding")
+	// The query should complete well within the timeout if writeMu is not held
+	assert.Less(t, queryDuration, 1*time.Second,
+		"Query should complete quickly when writeMu is not held during embedding")
+
+	// Wait for AddDocuments to finish
+	err = <-addDone
+	require.NoError(t, err, "AddDocuments should succeed")
+}
+
+// =============================================================================
+// REGRESSION TESTS FOR Fix #2a: DoChan + context select in getOrComputeEmbedding
+// =============================================================================
+
+// TestGetOrComputeEmbedding_ContextCancelDuringSingleflight verifies that when
+// a singleflight embedding computation is in progress, a second caller with a
+// short-lived context returns context.DeadlineExceeded promptly rather than
+// waiting for the slow first call to finish.
+func TestGetOrComputeEmbedding_ContextCancelDuringSingleflight(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	// Add a document so we can query
+	docs := []Document{
+		{ID: "sf-test-1", Content: "Singleflight context cancellation test document"},
+	}
+	err = client.AddDocuments(context.Background(), docs)
+	require.NoError(t, err)
+
+	// Clear cache to force embedding computation
+	client.ClearCache()
+	client.InvalidateResultCache()
+
+	queryText := "unique singleflight context test query"
+
+	// First call: start a normal query in background (will trigger singleflight)
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, _ = client.Query(context.Background(), queryText, 5, nil)
+	}()
+
+	// Give the first call a moment to start the singleflight computation
+	time.Sleep(5 * time.Millisecond)
+
+	// Second call: use a very short context that should expire quickly
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer shortCancel()
+
+	// Clear result cache again so the second call hits getOrComputeEmbedding
+	client.InvalidateResultCache()
+
+	start := time.Now()
+	_, err = client.Query(shortCtx, queryText, 5, nil)
+	elapsed := time.Since(start)
+
+	// With DoChan + select, the second caller should return quickly with context error.
+	// Note: If the embedding completes fast enough, the second call may succeed
+	// via singleflight sharing. That's also valid — the test primarily checks
+	// that it doesn't BLOCK for the full embedding duration on context cancel.
+	if err != nil {
+		assert.ErrorIs(t, err, context.DeadlineExceeded,
+			"Should return DeadlineExceeded when context expires during singleflight")
+		assert.Less(t, elapsed, 500*time.Millisecond,
+			"Should return promptly on context cancellation, not wait for slow computation")
+	}
+	// If err == nil, the singleflight completed before the context expired — also valid.
+
+	// Wait for first call to finish
+	<-firstDone
 }

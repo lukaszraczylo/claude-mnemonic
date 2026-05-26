@@ -59,7 +59,7 @@ func main() {
 	}()
 
 	// Start file watchers for config changes
-	startWatchers()
+	startWatchers(cancel)
 
 	telemetry.Send("claude-mnemonic", Version)
 
@@ -68,18 +68,21 @@ func main() {
 	log.Info().Str("project", *project).Str("version", Version).Str("worker", workerURL).Msg("Starting MCP server")
 
 	if err := server.Run(ctx); err != nil {
+		if err == context.Canceled {
+			log.Info().Msg("MCP server shut down (config change or signal)")
+			return
+		}
 		log.Fatal().Err(err).Msg("MCP server error")
 	}
 }
 
 // startWatchers initializes file watchers for config.
-func startWatchers() {
-	// Watch config file for changes (triggers process exit for restart)
+func startWatchers(cancel context.CancelFunc) {
+	// Watch config file for changes (triggers graceful shutdown via context cancellation)
 	configPath := config.SettingsPath()
 	configWatcher, err := watcher.New(configPath, func() {
-		log.Warn().Str("path", configPath).Msg("Config file changed, exiting for restart...")
-		time.Sleep(100 * time.Millisecond) // Give logs time to flush
-		os.Exit(0)
+		log.Warn().Str("path", configPath).Msg("Config file changed, shutting down gracefully...")
+		cancel() // Triggers ctx.Done() in server.Run(), which drains in-flight requests
 	})
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to create config watcher")

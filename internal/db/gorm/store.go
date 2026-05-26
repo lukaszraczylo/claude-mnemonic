@@ -99,8 +99,9 @@ func NewStore(cfg Config) (*Store, error) {
 		"PRAGMA synchronous=NORMAL",
 		"PRAGMA cache_size=-64000",   // 64MB cache (negative = KB)
 		"PRAGMA temp_store=MEMORY",   // Store temp tables in memory
-		"PRAGMA mmap_size=268435456", // 256MB memory-mapped I/O
-		"PRAGMA page_size=4096",      // 4KB pages (optimal for most systems)
+		"PRAGMA mmap_size=268435456",    // 256MB memory-mapped I/O
+		"PRAGMA page_size=4096",         // 4KB pages (optimal for most systems)
+		"PRAGMA wal_autocheckpoint=1000", // Explicit default; checkpoint every 1000 WAL frames
 	}
 	for _, pragma := range pragmas {
 		if _, err := sqlDB.Exec(pragma); err != nil {
@@ -190,6 +191,11 @@ func (s *Store) Optimize(ctx context.Context) error {
 	// PRAGMA optimize runs optimization based on query statistics
 	if _, err := s.sqlDB.ExecContext(ctx, "PRAGMA optimize"); err != nil {
 		log.Warn().Err(err).Msg("PRAGMA optimize failed (non-fatal)")
+	}
+
+	// Passive WAL checkpoint — doesn't block readers/writers
+	if _, err := s.sqlDB.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
+		log.Warn().Err(err).Msg("WAL checkpoint failed (non-fatal)")
 	}
 
 	log.Info().Dur("duration", time.Since(start)).Msg("Database optimization complete")

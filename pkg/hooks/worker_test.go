@@ -2,6 +2,7 @@
 package hooks
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -518,7 +519,8 @@ func TestProjectIDWithName_Uniqueness(t *testing.T) {
 func TestHookConstants(t *testing.T) {
 	assert.Equal(t, 37777, DefaultWorkerPort)
 	assert.Equal(t, 2*time.Second, HealthCheckTimeout)
-	assert.Equal(t, 30*time.Second, StartupTimeout)
+	assert.Equal(t, 10*time.Second, StartupTimeout)
+	assert.Equal(t, 15*time.Second, EnsureWorkerDeadline)
 }
 
 // TestExitCodes tests exit code constants.
@@ -1200,5 +1202,104 @@ func TestHealthCheckTimeout(t *testing.T) {
 // TestStartupTimeout tests the startup timeout is reasonable.
 func TestStartupTimeout(t *testing.T) {
 	assert.Greater(t, StartupTimeout, 5*time.Second)
-	assert.LessOrEqual(t, StartupTimeout, time.Minute)
+	assert.LessOrEqual(t, StartupTimeout, 15*time.Second)
+}
+
+// TestEnsureWorkerDeadline tests the deadline is within hook budget.
+func TestEnsureWorkerDeadline(t *testing.T) {
+	assert.Greater(t, EnsureWorkerDeadline, StartupTimeout, "deadline must exceed startup timeout")
+	assert.LessOrEqual(t, EnsureWorkerDeadline, 20*time.Second, "deadline must fit in hook timeout budget")
+}
+
+// --- Regression tests for Fixes 1, 3, 4 ---
+
+// TestEnsureWorkerRunning_RespectsDeadline verifies that EnsureWorkerRunning returns
+// within a bounded time even in worst case (no worker, startup fails).
+func TestEnsureWorkerRunning_RespectsDeadline(t *testing.T) {
+	// Reset circuit breaker so the function actually tries to start.
+	circuitBreakerMu.Lock()
+	lastStartupFailure = time.Time{}
+	circuitBreakerMu.Unlock()
+
+	// Use a port that nothing listens on.
+	t.Setenv("CLAUDE_MNEMONIC_WORKER_PORT", "19999")
+	// Point HOME to a temp dir so findWorkerBinary finds nothing.
+	t.Setenv("HOME", t.TempDir())
+	// Clear plugin root to avoid that path too.
+	t.Setenv("CLAUDE_PLUGIN_ROOT", "")
+
+	start := time.Now()
+	_, err := EnsureWorkerRunning()
+	elapsed := time.Since(start)
+
+	// Must error (no binary found).
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "worker binary not found")
+	// Must complete well within EnsureWorkerDeadline.
+	assert.Less(t, elapsed, EnsureWorkerDeadline,
+		"EnsureWorkerRunning took %v, exceeding deadline %v", elapsed, EnsureWorkerDeadline)
+}
+
+// TestEnsureWorkerRunningCtx_CancelledContext verifies immediate return on cancelled context.
+func TestEnsureWorkerRunningCtx_CancelledContext(t *testing.T) {
+	// Reset circuit breaker.
+	circuitBreakerMu.Lock()
+	lastStartupFailure = time.Time{}
+	circuitBreakerMu.Unlock()
+
+	t.Setenv("CLAUDE_MNEMONIC_WORKER_PORT", "19998")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	start := time.Now()
+	_, err := ensureWorkerRunningCtx(ctx)
+	elapsed := time.Since(start)
+
+	assert.Error(t, err)
+	assert.Less(t, elapsed, 1*time.Second, "cancelled context should return immediately")
+}
+
+// TestSleepCtx_Normal verifies sleepCtx completes normally.
+func TestSleepCtx_Normal(t *testing.T) {
+	ctx := context.Background()
+	start := time.Now()
+	err := sleepCtx(ctx, 50*time.Millisecond)
+	elapsed := time.Since(start)
+
+	assert.NoError(t, err)
+	assert.GreaterOrEqual(t, elapsed, 50*time.Millisecond)
+}
+
+// TestSleepCtx_Cancelled verifies sleepCtx returns early on cancel.
+func TestSleepCtx_Cancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	err := sleepCtx(ctx, 5*time.Second)
+	elapsed := time.Since(start)
+
+	assert.Error(t, err)
+	assert.Less(t, elapsed, 500*time.Millisecond)
+}
+
+// TestHookClients_DisableKeepAlives asserts shared clients disable keep-alives
+// to prevent TIME_WAIT connection leaks in short-lived hook processes.
+func TestHookClients_DisableKeepAlives(t *testing.T) {
+	hTransport, ok := hookClient.Transport.(*http.Transport)
+	require.True(t, ok, "hookClient.Transport should be *http.Transport")
+	assert.True(t, hTransport.DisableKeepAlives, "hookClient must disable keep-alives")
+	assert.Equal(t, 1, hTransport.MaxIdleConns)
+
+	hcTransport, ok := healthClient.Transport.(*http.Transport)
+	require.True(t, ok, "healthClient.Transport should be *http.Transport")
+	assert.True(t, hcTransport.DisableKeepAlives, "healthClient must disable keep-alives")
+	assert.Equal(t, 1, hcTransport.MaxIdleConns)
+}
+
+// TestHookClient_Timeout verifies hookClient timeout is set.
+func TestHookClient_Timeout(t *testing.T) {
+	assert.Equal(t, 10*time.Second, hookClient.Timeout)
+	assert.Equal(t, HealthCheckTimeout, healthClient.Timeout)
 }

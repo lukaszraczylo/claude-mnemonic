@@ -171,11 +171,22 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 
 			// Dispatch request to its own goroutine.
+			// Semaphore is acquired inside the goroutine so the main
+			// loop never blocks on a full semaphore (Fix #1).
 			wg.Add(1)
-			sem <- struct{}{} // acquire semaphore slot
 			go func(r Request) {
 				defer wg.Done()
-				defer func() { <-sem }() // release semaphore slot
+				// Acquire semaphore inside goroutine, not blocking main loop
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					// Server shutting down — send error so caller isn't left waiting
+					if r.ID != nil {
+						_ = s.sendError(r.ID, -32000, "Server shutting down", nil)
+					}
+					return
+				}
 
 				resp := s.handleRequest(ctx, &r)
 				if resp != nil {
@@ -203,6 +214,10 @@ func (s *Server) handleRequest(ctx context.Context, req *Request) *Response {
 	case "notifications/initialized", "notifications/cancelled":
 		return nil // Notifications don't get responses
 	default:
+		if req.ID == nil {
+			// Notifications must not receive responses per JSON-RPC 2.0
+			return nil
+		}
 		return &Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -775,13 +790,15 @@ func (s *Server) handleToolsCall(ctx context.Context, req *Request) *Response {
 
 	result, err := s.callTool(ctx, params.Name, params.Arguments)
 	if err != nil {
+		// MCP spec: tool failures use Result with isError, not top-level Error
 		return &Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Error: &Error{
-				Code:    -32000,
-				Message: "Tool error",
-				Data:    err.Error(),
+			Result: map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": "Error: " + err.Error()},
+				},
+				"isError": true,
 			},
 		}
 	}
@@ -1902,16 +1919,38 @@ func (s *Server) sendResponse(resp *Response) error {
 	data, err := json.Marshal(resp)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to marshal response")
+		// Send a fallback error so the caller isn't left waiting (Fix #3)
+		fallback, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      resp.ID,
+			"error":   map[string]any{"code": -32603, "message": "internal marshal error"},
+		})
+		s.writeMu.Lock()
+		_, _ = fmt.Fprintln(s.stdout, string(fallback))
+		s.writeMu.Unlock()
+		return fmt.Errorf("marshal error: %w", err)
+	}
+
+	// Bound the write to prevent pipe deadlock (Fix #2)
+	done := make(chan error, 1)
+	go func() {
+		s.writeMu.Lock()
+		_, werr := fmt.Fprintln(s.stdout, string(data))
+		s.writeMu.Unlock()
+		done <- werr
+	}()
+
+	select {
+	case werr := <-done:
+		if werr != nil {
+			log.Error().Err(werr).Msg("Failed to write response to stdout")
+			return werr
+		}
 		return nil
+	case <-time.After(10 * time.Second):
+		log.Error().Msg("Stdout write timed out — pipe likely full")
+		return fmt.Errorf("write timeout: stdout pipe full")
 	}
-	s.writeMu.Lock()
-	_, err = fmt.Fprintln(s.stdout, string(data))
-	s.writeMu.Unlock()
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to write response to stdout")
-		return err
-	}
-	return nil
 }
 
 // sendError sends a JSON-RPC error response. Returns an error if writing fails.

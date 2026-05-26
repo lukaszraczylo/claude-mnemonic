@@ -145,19 +145,23 @@ func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
 		return nil
 	}
 
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-
-	// Generate embeddings for all documents
+	// Prepare texts for embedding
 	texts := make([]string, len(docs))
 	for i, doc := range docs {
 		texts[i] = doc.Content
 	}
 
-	embeddings, err := c.embedSvc.EmbedBatch(texts)
+	// Compute embeddings OUTSIDE the write lock for better concurrency.
+	// Embedding is ONNX inference (slow, mutex-protected internally) — holding
+	// writeMu during inference blocks all concurrent writes and reads.
+	embeddings, err := c.embedSvc.EmbedBatchWithContext(ctx, texts)
 	if err != nil {
 		return fmt.Errorf("generate embeddings: %w", err)
 	}
+
+	// Acquire write lock for DB operations only
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 
 	// Insert into vectors table with model version tracking
 	const insertQuery = `
@@ -906,8 +910,10 @@ func (c *Client) getOrComputeEmbedding(ctx context.Context, query string) ([]flo
 	}
 	c.queryCacheMu.RUnlock()
 
-	// Cache miss - use singleflight to deduplicate concurrent embedding requests
-	result, err, _ := c.embeddingGroup.Do(query, func() (any, error) {
+	// Cache miss - use singleflight DoChan to deduplicate concurrent embedding requests.
+	// DoChan + select allows per-caller context cancellation: if a caller's context
+	// expires it can bail out without waiting for the shared computation to finish.
+	ch := c.embeddingGroup.DoChan(query, func() (any, error) {
 		// Double-check cache inside singleflight (another goroutine may have just cached it)
 		c.queryCacheMu.RLock()
 		if entry, ok := c.queryCache[query]; ok {
@@ -921,8 +927,10 @@ func (c *Client) getOrComputeEmbedding(ctx context.Context, query string) ([]flo
 		// Record cache miss
 		c.stats.embeddingMisses.Add(1)
 
-		// Compute embedding with context-aware lock acquisition
-		emb, err := c.embedSvc.EmbedWithContext(ctx, query)
+		// Compute embedding — use non-context Embed here because the singleflight
+		// result is shared across callers with different contexts. Per-caller
+		// cancellation is handled by the select below.
+		emb, err := c.embedSvc.Embed(query)
 		if err != nil {
 			return nil, err
 		}
@@ -969,10 +977,15 @@ func (c *Client) getOrComputeEmbedding(ctx context.Context, query string) ([]flo
 		return emb, nil
 	})
 
-	if err != nil {
-		return nil, err
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.([]float32), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return result.([]float32), nil
 }
 
 // ClearCache clears the embedding cache.

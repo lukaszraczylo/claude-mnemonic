@@ -4,6 +4,7 @@
 package gorm
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -149,4 +150,92 @@ func TestMigrationIdempotency(t *testing.T) {
 	}
 
 	t.Logf("✅ Migrations are idempotent")
+}
+
+func TestWALAutocheckpoint(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "gorm_wal_checkpoint_*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := NewStore(Config{
+		Path:     dbPath,
+		MaxConns: 2,
+		LogLevel: logger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Verify wal_autocheckpoint is set to 1000
+	var checkpoint int
+	err = store.GetRawDB().QueryRow("PRAGMA wal_autocheckpoint").Scan(&checkpoint)
+	if err != nil {
+		t.Fatalf("query wal_autocheckpoint: %v", err)
+	}
+	if checkpoint != 1000 {
+		t.Errorf("expected wal_autocheckpoint=1000, got %d", checkpoint)
+	}
+}
+
+func TestOptimize_RunsWALCheckpoint(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "gorm_optimize_*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := NewStore(Config{
+		Path:     dbPath,
+		MaxConns: 2,
+		LogLevel: logger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert some data to generate WAL frames
+	_, err = store.GetRawDB().Exec("INSERT INTO observations (sdk_session_id, title, scope, project, type, created_at, created_at_epoch) VALUES ('test-sess', 'test data', 'project', '/tmp/test', 'decision', '2026-01-01T00:00:00Z', 1735689600)")
+	if err != nil {
+		t.Fatalf("insert test data: %v", err)
+	}
+
+	// Optimize should succeed (includes PASSIVE WAL checkpoint)
+	err = store.Optimize(context.Background())
+	if err != nil {
+		t.Fatalf("Optimize failed: %v", err)
+	}
+}
+
+func TestOptimize_RespectsContextCancellation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "gorm_optimize_cancel_*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := NewStore(Config{
+		Path:     dbPath,
+		MaxConns: 2,
+		LogLevel: logger.Silent,
+	})
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Already-cancelled context should cause Optimize to fail
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = store.Optimize(ctx)
+	if err == nil {
+		t.Error("expected error with cancelled context, got nil")
+	}
 }
