@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
@@ -1900,4 +1902,114 @@ func TestExtractObservationIDs_GlobalScope(t *testing.T) {
 	ids := ExtractObservationIDs(results, "test-project")
 	assert.Len(t, ids, 1)
 	assert.Equal(t, int64(123), ids[0])
+}
+
+// =============================================================================
+// REGRESSION TESTS FOR acquireRLockWithContext (Fix #45)
+// =============================================================================
+
+// TestAcquireRLockWithContext_Cancel verifies that when a write lock is held
+// and the context times out, acquireRLockWithContext returns context.DeadlineExceeded
+// promptly and the cleanup goroutine eventually releases the lock.
+func TestAcquireRLockWithContext_Cancel(t *testing.T) {
+	var mu sync.RWMutex
+
+	// Hold write lock so any RLock() call blocks.
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		mu.Lock()
+		close(locked)
+		<-release
+		mu.Unlock()
+	}()
+	<-locked // write lock is held
+
+	// Context with a tight deadline — must expire before we release the write lock.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := acquireRLockWithContext(ctx, &mu)
+	elapsed := time.Since(start)
+
+	assert.ErrorIs(t, err, context.DeadlineExceeded, "should return DeadlineExceeded")
+	assert.Less(t, elapsed, 200*time.Millisecond, "should return within ~100ms of deadline")
+
+	// Release the write lock so the cleanup goroutine can finish.
+	close(release)
+
+	// After the write lock is released the cleanup goroutine acquires+releases
+	// the RLock. Wait long enough for it to drain.
+	time.Sleep(100 * time.Millisecond)
+
+	// Now an uncontended RLock should succeed immediately.
+	ctx2 := context.Background()
+	err2 := acquireRLockWithContext(ctx2, &mu)
+	assert.NoError(t, err2, "should succeed when uncontended after cleanup")
+	if err2 == nil {
+		mu.RUnlock()
+	}
+}
+
+// TestAcquireRLockWithContext_Success verifies that an uncontended mutex is
+// acquired without error and can be properly unlocked.
+func TestAcquireRLockWithContext_Success(t *testing.T) {
+	var mu sync.RWMutex
+
+	err := acquireRLockWithContext(context.Background(), &mu)
+	assert.NoError(t, err, "should succeed on uncontended mutex")
+	if err == nil {
+		// Panics if not held — validates that the lock was actually taken.
+		mu.RUnlock()
+	}
+}
+
+// TestAcquireRLockWithContext_CleanupOnCancel verifies that when
+// acquireRLockWithContext returns an error due to context cancellation, the
+// cleanup goroutine eventually releases the RLock so the mutex can be write-
+// locked again without deadlock.
+func TestAcquireRLockWithContext_CleanupOnCancel(t *testing.T) {
+	var mu sync.RWMutex
+
+	// Hold write lock to force RLock to block.
+	release := make(chan struct{})
+	locked := make(chan struct{})
+	go func() {
+		mu.Lock()
+		close(locked)
+		<-release
+		mu.Unlock()
+	}()
+	<-locked
+
+	// Context cancels after 10ms — way before we release the write lock.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	err := acquireRLockWithContext(ctx, &mu)
+	assert.Error(t, err, "should fail due to cancelled context")
+
+	// Release the write lock; the cleanup goroutine inside acquireRLockWithContext
+	// will now acquire the RLock and immediately release it.
+	close(release)
+
+	// Give the cleanup goroutine time to run.
+	time.Sleep(50 * time.Millisecond)
+
+	// Acquire a write lock — would deadlock if cleanup goroutine left an RLock
+	// dangling. Use a done channel and select to avoid hanging the test.
+	done := make(chan struct{})
+	go func() {
+		mu.Lock()
+		defer mu.Unlock()
+		close(done) //nolint:SA2001 // intentional: proves no deadlock from leaked RLock
+	}()
+
+	select {
+	case <-done:
+		// Success — write lock acquired without deadlock.
+	case <-time.After(2 * time.Second):
+		t.Fatal("write lock acquisition timed out: cleanup goroutine may have leaked an RLock")
+	}
 }

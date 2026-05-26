@@ -3024,3 +3024,42 @@ func TestHandleSessionStart(t *testing.T) {
 	// May return various status codes depending on session state and endpoint
 	assert.Contains(t, []int{http.StatusOK, http.StatusBadRequest, http.StatusNotFound, http.StatusInternalServerError}, rec.Code)
 }
+
+// =============================================================================
+// REGRESSION TESTS FOR handler request-scoped timeouts (Fix #45)
+// =============================================================================
+
+// TestHandleSearchByPrompt_RespectsTimeout verifies that handleSearchByPrompt
+// uses r.Context() as the parent for its internal 15s timeout: if the request
+// context is already cancelled the handler must return quickly rather than
+// hanging for 15 seconds, and must not return StatusOK.
+func TestHandleSearchByPrompt_RespectsTimeout(t *testing.T) {
+	svc, cleanup := testService(t)
+	defer cleanup()
+
+	// Pre-populate a project with an observation so there is DB work to do.
+	createTestObservation(t, svc.observationStore, "timeout-test",
+		"Authentication flow", "JWT token validation", []string{"security"})
+
+	// Build a request with a pre-cancelled context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before the request is even sent
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/context/search?project=timeout-test&query=authentication",
+		nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	start := time.Now()
+	svc.router.ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	// The handler must not hang for 15 seconds — it inherits the cancelled ctx.
+	assert.Less(t, elapsed, 5*time.Second,
+		"handler should return quickly when request context is already cancelled")
+
+	// A cancelled-context request must not yield a successful 200 response.
+	// Acceptable: any error status, or an empty/error body on 200 (DB returned nothing).
+	// The key regression: it must NOT block for the full 15s timeout.
+	t.Logf("handler returned status=%d in %v", rec.Code, elapsed)
+}

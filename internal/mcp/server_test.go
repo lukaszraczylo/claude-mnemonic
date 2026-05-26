@@ -2,11 +2,17 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2797,4 +2803,372 @@ func TestHandleMergeObservations_WorkerUnavailable(t *testing.T) {
 	// Should fail when worker is unavailable (nil client)
 	_, err := server.handleMergeProxy(ctx, json.RawMessage(`{"source_id": 1, "target_id": 2}`))
 	require.Error(t, err)
+}
+
+// =============================================================================
+// REGRESSION TESTS — Fix #45: Concurrent request dispatching
+// =============================================================================
+
+// collectResponses reads newline-delimited JSON responses from r until it has
+// collected n responses or the context is done. Returns collected responses.
+func collectResponses(t *testing.T, r io.Reader, n int) []map[string]any {
+	t.Helper()
+	results := make([]map[string]any, 0, n)
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		var resp map[string]any
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			t.Logf("collectResponses: bad JSON line: %s", line)
+			continue
+		}
+		results = append(results, resp)
+		if len(results) >= n {
+			break
+		}
+	}
+	return results
+}
+
+// writeRequests writes newline-delimited JSON requests to w and closes it when done.
+func writeRequests(t *testing.T, w io.WriteCloser, reqs []string) {
+	t.Helper()
+	for _, r := range reqs {
+		_, err := io.WriteString(w, r+"\n")
+		require.NoError(t, err)
+	}
+	_ = w.Close()
+}
+
+// TestRun_ConcurrentRequests verifies multiple requests are processed concurrently
+// and not serially. If they ran serially, 5 × 100ms = 500ms. Concurrent should be
+// well under 400ms on any reasonable machine.
+func TestRun_ConcurrentRequests(t *testing.T) {
+	t.Parallel()
+
+	const delay = 100 * time.Millisecond
+	const numRequests = 5
+
+	// Mock worker: every request sleeps delay then returns "{}"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer ts.Close()
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+
+	server := &Server{
+		client:    ts.Client(),
+		workerURL: ts.URL,
+		project:   "test",
+		version:   "1.0.0",
+		stdin:     stdinR,
+		stdout:    stdoutW,
+	}
+
+	// Build requests — use get_memory_stats which goes to GET /api/stats
+	reqs := make([]string, numRequests)
+	for i := range reqs {
+		req := Request{JSONRPC: "2.0", ID: i + 1, Method: "tools/call",
+			Params: json.RawMessage(`{"name":"get_memory_stats","arguments":{}}`)}
+		data, err := json.Marshal(req)
+		require.NoError(t, err)
+		reqs[i] = string(data)
+	}
+
+	// Collect responses in background
+	var responses []map[string]any
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		responses = collectResponses(t, stdoutR, numRequests)
+		_ = stdoutR.Close()
+	})
+
+	start := time.Now()
+
+	// Write all requests then close stdin (triggers Run to drain and return)
+	go writeRequests(t, stdinW, reqs)
+
+	err := server.Run(context.Background())
+	require.NoError(t, err)
+	_ = stdoutW.Close()
+
+	elapsed := time.Since(start)
+	wg.Wait()
+
+	// All responses received
+	assert.Len(t, responses, numRequests, "expected %d responses", numRequests)
+
+	// Concurrent execution: should be much less than numRequests × delay
+	serialTime := time.Duration(numRequests) * delay
+	assert.Less(t, elapsed, serialTime*4/5,
+		"elapsed %v not significantly less than serial %v — requests may be sequential", elapsed, serialTime)
+
+	// Each response has correct jsonrpc field
+	for _, resp := range responses {
+		assert.Equal(t, "2.0", resp["jsonrpc"])
+	}
+}
+
+// TestRun_SlowRequestDoesNotBlockOthers is the core regression for #45.
+// A slow search request must not block a fast stats request from being answered first.
+func TestRun_SlowRequestDoesNotBlockOthers(t *testing.T) {
+	t.Parallel()
+
+	const slowDelay = 300 * time.Millisecond
+
+	// responseOrder records which request IDs responded, in arrival order
+	var mu sync.Mutex
+	var responseOrder []any
+
+	// Mock worker: /api/context/search is slow, everything else is fast
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/context/search") {
+			time.Sleep(slowDelay)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer ts.Close()
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+
+	// Intercept stdout to record response order before passing through
+	pr, pw := io.Pipe()
+	go func() {
+		scanner := bufio.NewScanner(pr)
+		for scanner.Scan() {
+			line := scanner.Text()
+			var resp map[string]any
+			if err := json.Unmarshal([]byte(line), &resp); err == nil {
+				mu.Lock()
+				responseOrder = append(responseOrder, resp["id"])
+				mu.Unlock()
+			}
+			_, _ = io.WriteString(stdoutW, line+"\n")
+		}
+		_ = stdoutW.Close()
+	}()
+
+	server := &Server{
+		client:    ts.Client(),
+		workerURL: ts.URL,
+		project:   "test",
+		version:   "1.0.0",
+		stdin:     stdinR,
+		stdout:    pw,
+	}
+
+	// Request 1: slow search (id=1)
+	slowReq := Request{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"search","arguments":{"query":"anything"}}`)}
+	slowData, err := json.Marshal(slowReq)
+	require.NoError(t, err)
+
+	// Request 2: fast stats (id=2)
+	fastReq := Request{JSONRPC: "2.0", ID: 2, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"get_memory_stats","arguments":{}}`)}
+	fastData, err := json.Marshal(fastReq)
+	require.NoError(t, err)
+
+	// Collect 2 responses
+	var responses []map[string]any
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		responses = collectResponses(t, stdoutR, 2)
+		_ = stdoutR.Close()
+	})
+
+	// Write slow then fast, then close
+	go func() {
+		_, _ = io.WriteString(stdinW, string(slowData)+"\n")
+		// Small pause to ensure slow request goroutine is dispatched first
+		time.Sleep(10 * time.Millisecond)
+		_, _ = io.WriteString(stdinW, string(fastData)+"\n")
+		_ = stdinW.Close()
+	}()
+
+	runErr := server.Run(context.Background())
+	require.NoError(t, runErr)
+
+	wg.Wait()
+
+	require.Len(t, responses, 2, "expected 2 responses")
+
+	mu.Lock()
+	order := responseOrder
+	mu.Unlock()
+
+	require.Len(t, order, 2, "expected 2 recorded response IDs")
+
+	// The fast request (id=2) must arrive before the slow one (id=1)
+	assert.Equal(t, float64(2), order[0],
+		"fast request (id=2) should respond before slow request (id=1); got order %v", order)
+	assert.Equal(t, float64(1), order[1],
+		"slow request (id=1) should respond second; got order %v", order)
+}
+
+// TestRun_SemaphoreLimitsConcurrency verifies the semaphore cap (10) does not deadlock
+// when more than 10 requests are sent and all eventually complete.
+func TestRun_SemaphoreLimitsConcurrency(t *testing.T) {
+	t.Parallel()
+
+	const blockDelay = 200 * time.Millisecond
+	const numRequests = 15 // exceeds semaphore cap of 10
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(blockDelay)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer ts.Close()
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+
+	server := &Server{
+		client:    ts.Client(),
+		workerURL: ts.URL,
+		project:   "test",
+		version:   "1.0.0",
+		stdin:     stdinR,
+		stdout:    stdoutW,
+	}
+
+	reqs := make([]string, numRequests)
+	for i := range reqs {
+		req := Request{JSONRPC: "2.0", ID: i + 1, Method: "tools/call",
+			Params: json.RawMessage(`{"name":"get_memory_stats","arguments":{}}`)}
+		data, err := json.Marshal(req)
+		require.NoError(t, err)
+		reqs[i] = string(data)
+	}
+
+	var responses []map[string]any
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		responses = collectResponses(t, stdoutR, numRequests)
+		_ = stdoutR.Close()
+	})
+
+	start := time.Now()
+	go writeRequests(t, stdinW, reqs)
+
+	err := server.Run(context.Background())
+	require.NoError(t, err)
+	_ = stdoutW.Close()
+
+	elapsed := time.Since(start)
+	wg.Wait()
+
+	// All 15 responses received — no deadlock
+	assert.Len(t, responses, numRequests, "all %d requests must complete", numRequests)
+
+	// With semaphore=10 and 15 requests at 200ms each, we need at least 2 batches.
+	// Should complete in ~2×blockDelay not 15×blockDelay.
+	// Upper bound: 3×blockDelay gives comfortable headroom for scheduling.
+	upperBound := 3 * blockDelay * 2 // generous: 3 batches + 2× overhead factor
+	assert.Less(t, elapsed, upperBound,
+		"elapsed %v suggests sequential processing (15×%v = %v)", elapsed, blockDelay, time.Duration(numRequests)*blockDelay)
+}
+
+// TestRun_GracefulDrainOnCancel verifies that cancelling the context causes Run to
+// drain in-flight requests (wg.Wait) before returning ctx.Canceled.
+func TestRun_GracefulDrainOnCancel(t *testing.T) {
+	t.Parallel()
+
+	const reqDelay = 200 * time.Millisecond
+	const numRequests = 3
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Use a fixed sleep; the request-level context will be cancelled but the
+		// HTTP handler runs to completion independently (server-side).
+		time.Sleep(reqDelay)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer ts.Close()
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+
+	server := &Server{
+		client:    ts.Client(),
+		workerURL: ts.URL,
+		project:   "test",
+		version:   "1.0.0",
+		stdin:     stdinR,
+		stdout:    stdoutW,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Build requests
+	reqs := make([]string, numRequests)
+	for i := range reqs {
+		req := Request{JSONRPC: "2.0", ID: i + 1, Method: "tools/call",
+			Params: json.RawMessage(`{"name":"get_memory_stats","arguments":{}}`)}
+		data, err := json.Marshal(req)
+		require.NoError(t, err)
+		reqs[i] = string(data)
+	}
+
+	// Write all requests before cancelling so they're all dispatched as goroutines
+	go func() {
+		for _, r := range reqs {
+			_, _ = io.WriteString(stdinW, r+"\n")
+		}
+		// Cancel after requests are dispatched but while they're still in-flight
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		// Leave stdin open — Run should return from the ctx.Done branch
+	}()
+
+	// Drain responses in background; we don't know exactly how many will complete
+	// because goroutines may get context cancelled on their HTTP calls too.
+	var responseMu sync.Mutex
+	var collectedResponses []map[string]any
+	var collectWg sync.WaitGroup
+	collectWg.Go(func() {
+		scanner := bufio.NewScanner(stdoutR)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+			var resp map[string]any
+			if err := json.Unmarshal([]byte(line), &resp); err == nil {
+				responseMu.Lock()
+				collectedResponses = append(collectedResponses, resp)
+				responseMu.Unlock()
+			}
+		}
+	})
+
+	runErr := server.Run(ctx)
+	_ = stdoutW.Close()
+	_ = stdinW.Close()
+
+	collectWg.Wait()
+
+	// Core assertion: Run returned the context cancellation error
+	assert.ErrorIs(t, runErr, context.Canceled,
+		"Run must return context.Canceled when context is cancelled")
+
+	// Run returned only after wg.Wait() drained goroutines.
+	// The goroutines may have returned errors (ctx cancelled HTTP calls) but
+	// the key invariant is Run itself did not panic and returned cleanly.
+	// Any responses that did complete should be valid JSON-RPC.
+	responseMu.Lock()
+	defer responseMu.Unlock()
+	for _, resp := range collectedResponses {
+		assert.Equal(t, "2.0", resp["jsonrpc"], "any completed response must be valid JSON-RPC 2.0")
+	}
 }
