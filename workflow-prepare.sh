@@ -62,13 +62,10 @@ DOWNLOAD_EXIT=$?
 set -e
 
 if [ $DOWNLOAD_EXIT -eq 0 ]; then
-    # Export model directory so tests can find models without network access
-    if [ -n "$GITHUB_ENV" ]; then
-        echo "CLAUDE_MNEMONIC_MODEL_DIR=$GITHUB_WORKSPACE/testdata/models" >> "$GITHUB_ENV"
-    fi
-else
-    echo "Warning: Model download failed — tests will try to download models at runtime"
-fi
+	# Export model directory so tests can find models without network access
+	if [ -n "$GITHUB_ENV" ]; then
+		echo "CLAUDE_MNEMONIC_MODEL_DIR=$GITHUB_WORKSPACE/testdata/models" >>"$GITHUB_ENV"
+	fi
 else
 	echo "Warning: Model download failed — tests will try to download models at runtime"
 fi
