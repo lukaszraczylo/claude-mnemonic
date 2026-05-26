@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/lukaszraczylo/claude-mnemonic/internal/models"
 	"github.com/sugarme/tokenizer"
 	"github.com/sugarme/tokenizer/pretrained"
 	ort "github.com/yalue/onnxruntime_go"
@@ -29,6 +30,13 @@ const (
 	BGEModelName = "bge-small-en-v1.5"
 	// DefaultModelVersion is the default model to use
 	DefaultModelVersion = BGEModelVersion
+
+	// BGEAssetName is the local filename for the BGE model.
+	BGEAssetName = "bge-small-en-v1.5-model.onnx"
+	// BGEAssetURL is the Hugging Face URL for the BGE ONNX model.
+	BGEAssetURL = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx"
+	// BGEModelSHA256 is the expected SHA-256 of the BGE model file.
+	BGEModelSHA256 = "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35"
 )
 
 // MaxSequenceLength is the maximum token sequence length for the model.
@@ -60,6 +68,7 @@ var _ EmbeddingModel = (*bgeModel)(nil)
 var _ ONNXConfigurer = (*bgeModel)(nil)
 
 // newBGEModel creates a new BGE embedding model using bundled ONNX runtime and model.
+// The ONNX model is downloaded at runtime from GitHub Releases and cached to disk.
 func newBGEModel() (EmbeddingModel, error) {
 	// Extract ONNX runtime library to temp directory
 	libDir, err := extractONNXLibrary()
@@ -84,9 +93,15 @@ func newBGEModel() (EmbeddingModel, error) {
 		return nil, fmt.Errorf("load tokenizer: %w", err)
 	}
 
-	// Create ONNX session using model-specific configuration
+	// Download model on first use (cached to ~/.claude-mnemonic/models/)
+	modelPath, err := models.EnsureModel(BGEAssetName, BGEAssetURL, BGEModelSHA256)
+	if err != nil {
+		return nil, fmt.Errorf("ensure embedding model: %w", err)
+	}
+
+	// Create ONNX session from file path using model-specific configuration
 	config := bgeONNXConfig
-	session, err := ort.NewDynamicAdvancedSessionWithONNXData(modelData, config.InputNames, config.OutputNames, nil)
+	session, err := ort.NewDynamicAdvancedSession(modelPath, config.InputNames, config.OutputNames, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create ONNX session: %w", err)
 	}

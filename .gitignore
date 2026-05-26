@@ -81,6 +81,12 @@ logs/
 *.db-wal
 *.db-shm
 
+# Model files (downloaded at runtime from GitHub Releases)
+# Test model data (downloaded from Hugging Face)
+testdata/models/
+internal/embedding/assets/model.onnx
+internal/reranking/assets/model.onnx
+
 # goreleaser
 dist/
 docs/dist

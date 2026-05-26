@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/lukaszraczylo/claude-mnemonic/internal/models"
 	"github.com/rs/zerolog/log"
 	"github.com/sugarme/tokenizer"
 	"github.com/sugarme/tokenizer/pretrained"
@@ -26,6 +27,13 @@ const (
 	DefaultCandidateLimit = 100
 	// DefaultResultLimit is the default number of results to return after reranking
 	DefaultResultLimit = 10
+
+	// CrossEncoderAssetName is the local filename for the cross-encoder model.
+	CrossEncoderAssetName = "ms-marco-MiniLM-L6-v2-model.onnx"
+	// CrossEncoderAssetURL is the Hugging Face URL for the cross-encoder ONNX model.
+	CrossEncoderAssetURL = "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/onnx/model.onnx"
+	// CrossEncoderModelSHA256 is the expected SHA-256 of the cross-encoder model file.
+	CrossEncoderModelSHA256 = "5d3e70fd0c9ff14b9b5169a51e957b7a9c74897afd0a35ce4bd318150c1d4d4a"
 )
 
 // Candidate represents a search result candidate for reranking.
@@ -91,12 +99,18 @@ func NewService(cfg Config) (*Service, error) {
 		Stride:    0,
 	})
 
+	// Download model on first use (cached to ~/.claude-mnemonic/models/)
+	modelPath, err := models.EnsureModel(CrossEncoderAssetName, CrossEncoderAssetURL, CrossEncoderModelSHA256)
+	if err != nil {
+		return nil, fmt.Errorf("ensure cross-encoder model: %w", err)
+	}
+
 	// Cross-encoder outputs a single logit for relevance scoring
 	inputNames := []string{"input_ids", "attention_mask", "token_type_ids"}
 	outputNames := []string{"logits"}
 
-	session, err := ort.NewDynamicAdvancedSessionWithONNXData(
-		crossEncoderModelData,
+	session, err := ort.NewDynamicAdvancedSession(
+		modelPath,
 		inputNames,
 		outputNames,
 		nil,

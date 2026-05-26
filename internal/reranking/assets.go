@@ -5,10 +5,8 @@ import (
 	_ "embed"
 )
 
-// Cross-encoder model and tokenizer files - embedded for all platforms
+// Tokenizer file - embedded for all platforms (small, not in LFS).
+// The ONNX model is downloaded at runtime to ~/.claude-mnemonic/models/.
 //
-//go:embed assets/model.onnx
-var crossEncoderModelData []byte
-
 //go:embed assets/tokenizer.json
 var crossEncoderTokenizerData []byte

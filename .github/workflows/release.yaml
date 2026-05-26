@@ -25,7 +25,7 @@ jobs:
             node-cache-dependency-path: "ui/package-lock.json"
             node-output-path: "ui/dist"
             node-embed-path: "internal/worker/static"
-            lfs: true
+            lfs: false
         secrets: inherit
 
     commit-marketplace:

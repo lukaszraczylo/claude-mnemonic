@@ -23,6 +23,10 @@ all: build
 setup-libs:
 	@./scripts/download-onnx-libs.sh all
 
+# Download ONNX models from Hugging Face (for local dev, skips if present)
+setup-models:
+	@./scripts/download-models.sh
+
 # Update version in committed plugin metadata
 update-version:
 	@if [ -f .claude-plugin/plugin.json ]; then \
@@ -182,12 +186,14 @@ uninstall: stop-worker
 	@echo "Uninstallation complete!"
 
 # Run tests (with FTS5 support)
-test: setup-libs
-	go test $(BUILD_TAGS) -v -race ./...
+# CLAUDE_MNEMONIC_MODEL_DIR points to a common model directory for tests.
+# Run setup-models first to download models from Hugging Face.
+test: setup-libs setup-models
+	CLAUDE_MNEMONIC_MODEL_DIR=$$(pwd)/testdata/models go test $(BUILD_TAGS) -v -race ./...
 
 # Run tests with coverage (with FTS5 support)
-test-coverage: setup-libs
-	go test $(BUILD_TAGS) -v -race -coverprofile=coverage.out ./...
+test-coverage: setup-libs setup-models
+	CLAUDE_MNEMONIC_MODEL_DIR=$$(pwd)/testdata/models go test $(BUILD_TAGS) -v -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@go tool cover -func=coverage.out | tail -1
 
