@@ -1,9 +1,9 @@
 <template>
-  <div class="glass rounded-xl p-4 sm:p-6 relative max-w-4xl mx-auto glow-amber">
-    <button @click="copyCode" class="absolute top-3 sm:top-4 right-3 sm:right-4 bg-slate-800/50 border border-slate-700/50 text-slate-500 hover:text-white hover:border-slate-600 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs transition-all">
-      {{ copied ? 'Copied!' : 'Copy' }}
+  <div class="rounded-lg border border-neutral-800 bg-neutral-900/30 p-4 relative overflow-hidden">
+    <button @click="copyCode" class="absolute top-3 right-3 text-neutral-600 hover:text-neutral-300 text-xs transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600">
+      {{ copied ? 'Copied' : 'Copy' }}
     </button>
-    <pre class="text-xs sm:text-sm whitespace-pre-wrap break-all font-mono pr-16 sm:pr-20"><slot></slot></pre>
+    <pre class="text-sm whitespace-pre-wrap break-all font-mono text-neutral-300 pr-20 leading-relaxed"><code>{{ code }}</code></pre>
   </div>
 </template>
 
@@ -11,10 +11,7 @@
 import { ref } from 'vue'
 
 const props = defineProps({
-  code: {
-    type: String,
-    default: ''
-  }
+  code: { type: String, default: '' },
 })
 
 const copied = ref(false)

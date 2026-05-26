@@ -1,44 +1,35 @@
 <template>
-  <section class="min-h-screen flex items-center relative pt-24 sm:pt-28 pb-16 sm:pb-20">
-    <!-- Background Effects -->
-    <div class="absolute inset-0 overflow-hidden">
-      <div class="absolute top-[-50%] left-1/2 -translate-x-1/2 w-[150%] h-full bg-[radial-gradient(ellipse_at_center,rgba(245,158,11,0.12)_0%,transparent_60%)] opacity-60"></div>
-    </div>
+  <section class="pt-24 pb-8 sm:pt-32 sm:pb-12 px-4 sm:px-6">
+    <div class="max-w-5xl mx-auto">
+      <p class="text-amber-500 text-sm font-medium mb-4 tracking-wide">Persistent memory for Claude Code</p>
 
-    <div class="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 text-center">
-      <div class="inline-flex items-center gap-2 glass px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm text-slate-400 mb-6 sm:mb-8 opacity-0 animate-fade-in-up">
-        <span class="w-2 h-2 bg-amber-500 rounded-full animate-pulse-slow"></span>
-        {{ badge }}
-      </div>
-
-      <h1 class="text-3xl sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl font-bold text-white mb-4 sm:mb-6 leading-tight opacity-0 animate-fade-in-up animation-delay-100">
-        {{ titleBefore }}<br class="hidden sm:block">
-        <span class="sm:hidden"> </span>
-        <span class="text-gradient">{{ titleHighlight }}</span>
+      <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-[1.1] mb-6 max-w-3xl">
+        Stop re-explaining your codebase every session.
       </h1>
 
-      <p class="text-base sm:text-lg md:text-xl text-slate-400 max-w-2xl mx-auto mb-8 sm:mb-10 opacity-0 animate-fade-in-up animation-delay-200 px-2">
-        {{ subtitle }}
+      <p class="text-neutral-400 text-lg sm:text-xl max-w-2xl mb-10 leading-relaxed">
+        Claude Code forgets everything when your session ends. Mnemonic captures what you've already explained — bug fixes, architecture decisions, patterns — and brings it back when relevant.
       </p>
 
-      <div class="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center mb-12 sm:mb-16 opacity-0 animate-fade-in-up animation-delay-300 px-4 sm:px-0">
-        <a :href="primaryCta.href" class="inline-flex items-center justify-center gap-2 bg-gradient-to-br from-amber-500 to-amber-400 text-slate-950 px-6 sm:px-8 py-3 sm:py-3.5 rounded-lg font-semibold hover:scale-105 hover:shadow-lg hover:shadow-amber-500/30 transition-all">
-          <i :class="primaryCta.icon"></i>
-          {{ primaryCta.label }}
+      <div class="flex flex-col sm:flex-row gap-3 mb-12">
+        <a href="#install" class="inline-flex items-center justify-center gap-2 bg-white text-neutral-900 px-6 py-3 rounded-lg font-semibold text-sm hover:bg-neutral-200 transition-colors">
+          Install now
         </a>
-        <a :href="secondaryCta.href" target="_blank" class="inline-flex items-center justify-center gap-2 glass text-white px-6 sm:px-8 py-3 sm:py-3.5 rounded-lg font-medium hover:border-amber-500/30 hover:bg-amber-500/10 transition-all">
-          <i :class="secondaryCta.icon"></i>
-          {{ secondaryCta.label }}
+        <a href="https://github.com/lukaszraczylo/claude-mnemonic" target="_blank" class="inline-flex items-center justify-center gap-2 border border-neutral-700 text-neutral-400 px-6 py-3 rounded-lg font-medium text-sm hover:border-neutral-500 hover:text-white transition-colors">
+          <i class="fab fa-github"></i> View source
         </a>
       </div>
 
-      <!-- Install Command -->
-      <div class="opacity-0 animate-fade-in-up animation-delay-400 px-2 sm:px-0">
-        <div class="glass rounded-xl px-4 sm:px-6 py-4 sm:py-5 flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4 max-w-4xl mx-auto glow-amber">
-          <code class="text-amber-400 text-xs sm:text-sm md:text-base flex-1 text-center sm:text-left break-all font-mono">{{ installCommand }}</code>
-          <button @click="copyCommand" class="text-slate-500 hover:text-white transition-colors p-2 flex-shrink-0 rounded-lg hover:bg-slate-800/50">
-            <i :class="copied ? 'fas fa-check text-amber-500' : 'fas fa-copy'"></i>
-            <span class="ml-2 text-sm sm:hidden">{{ copied ? 'Copied!' : 'Copy' }}</span>
+      <div class="max-w-2xl">
+        <div class="flex items-stretch bg-neutral-900 border border-neutral-800 rounded-lg overflow-hidden">
+          <div class="flex items-center px-3 gap-1.5 border-r border-neutral-800">
+            <span class="w-3 h-3 rounded-full bg-neutral-700"></span>
+            <span class="w-3 h-3 rounded-full bg-neutral-700"></span>
+            <span class="w-3 h-3 rounded-full bg-neutral-700"></span>
+          </div>
+          <code class="flex-1 text-neutral-300 text-xs sm:text-sm px-4 py-3 font-mono overflow-x-auto">{{ installCommand }}</code>
+          <button @click="copyCommand" class="px-4 text-neutral-600 hover:text-neutral-300 transition-colors border-l border-neutral-800 text-sm" title="Copy">
+            <i :class="copied ? 'fas fa-check text-emerald-500' : 'fas fa-copy'"></i>
           </button>
         </div>
       </div>
@@ -49,41 +40,11 @@
 <script setup>
 import { ref } from 'vue'
 
-defineProps({
-  badge: {
-    type: String,
-    default: 'Persistent Memory for Claude Code'
-  },
-  titleBefore: {
-    type: String,
-    default: 'Claude forgets.'
-  },
-  titleHighlight: {
-    type: String,
-    default: 'Make it remember.'
-  },
-  subtitle: {
-    type: String,
-    default: 'Capture learnings, decisions, and patterns from your coding sessions. Bring that knowledge back in every future conversation.'
-  },
-  primaryCta: {
-    type: Object,
-    default: () => ({ label: 'Install Now', href: '#installation', icon: 'fas fa-download' })
-  },
-  secondaryCta: {
-    type: Object,
-    default: () => ({ label: 'View Source', href: 'https://github.com/lukaszraczylo/claude-mnemonic', icon: 'fab fa-github' })
-  },
-  installCommand: {
-    type: String,
-    default: 'curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/scripts/install.sh | bash'
-  }
-})
-
+const installCommand = 'curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/scripts/install.sh | bash'
 const copied = ref(false)
 
 function copyCommand() {
-  navigator.clipboard.writeText('curl -sSL https://raw.githubusercontent.com/lukaszraczylo/claude-mnemonic/main/scripts/install.sh | bash')
+  navigator.clipboard.writeText(installCommand)
   copied.value = true
   setTimeout(() => copied.value = false, 2000)
 }
