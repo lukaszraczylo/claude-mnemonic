@@ -334,7 +334,7 @@ func ensureWorkerRunningCtx(ctx context.Context) (int, error) {
 	// Start worker -- detach from hook's process group so Claude Code
 	// killing the hook doesn't take the worker down with it.
 	cmd := exec.Command(workerPath) // #nosec G204 -- workerPath is from internal findWorkerBinary
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setSysProcAttr(cmd)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
