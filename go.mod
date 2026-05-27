@@ -8,7 +8,7 @@ require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.3.0
-	github.com/go-gormigrate/gormigrate/v2 v2.1.5
+	github.com/go-gormigrate/gormigrate/v2 v2.1.6
 	github.com/goccy/go-json v0.10.6
 	github.com/lukaszraczylo/oss-telemetry v0.2.1
 	github.com/mattn/go-sqlite3 v1.14.44
