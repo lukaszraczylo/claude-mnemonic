@@ -39,44 +39,46 @@ var CriticalConcepts = []string{
 // Config holds the application configuration.
 // Field order optimized for memory alignment (fieldalignment).
 type Config struct {
-	ContextFullField          string   `json:"context_full_field"`
-	DBPath                    string   `json:"db_path"`
-	Model                     string   `json:"model"`
-	ClaudeCodePath            string   `json:"claude_code_path"`
-	EmbeddingModel            string   `json:"embedding_model"`
-	VectorStorageStrategy     string   `json:"vector_storage_strategy"`
-	ContextObsConcepts        []string `json:"context_obs_concepts"`
-	ContextObsTypes           []string `json:"context_obs_types"`
-	ContextFullCount          int      `json:"context_full_count"`
-	GraphBranchFactor         int      `json:"graph_branch_factor"`
-	GraphEdgeWeight           float64  `json:"graph_edge_weight"`
-	ContextRelevanceThreshold float64  `json:"context_relevance_threshold"`
-	RerankingCandidates       int      `json:"reranking_candidates"`
-	WorkerPort                int      `json:"worker_port"`
-	DeduplicationThreshold    float64  `json:"deduplication_threshold"`
-	RerankingMinImprovement   float64  `json:"reranking_min_improvement"`
-	ContextObservations       int      `json:"context_observations"`
-	ContextMaxPromptResults   int      `json:"context_max_prompt_results"`
-	ContextSessionCount       int      `json:"context_session_count"`
-	MaxConns                  int      `json:"max_conns"`
-	RerankingAlpha            float64  `json:"reranking_alpha"`
-	GraphMaxHops              int      `json:"graph_max_hops"`
-	RerankingResults          int      `json:"reranking_results"`
-	GraphRebuildIntervalMin   int      `json:"graph_rebuild_interval_min"`
-	HubThreshold              int      `json:"hub_threshold"`
-	ObservationRetentionDays  int      `json:"observation_retention_days"`
-	MaintenanceIntervalHours  int      `json:"maintenance_interval_hours"`
-	ContextMaxTokensStartup   int      `json:"context_max_tokens_startup"`
-	ContextMaxTokensPrompt    int      `json:"context_max_tokens_prompt"`
-	ContextShowWorkTokens     bool     `json:"context_show_work_tokens"`
-	ContextShowReadTokens     bool     `json:"context_show_read_tokens"`
-	RerankingPureMode         bool     `json:"reranking_pure_mode"`
-	GraphEnabled              bool     `json:"graph_enabled"`
-	DeduplicationEnabled      bool     `json:"deduplication_enabled"`
-	MaintenanceEnabled        bool     `json:"maintenance_enabled"`
-	RerankingEnabled          bool     `json:"reranking_enabled"`
-	ContextShowLastSummary    bool     `json:"context_show_last_summary"`
-	CleanupStaleObservations  bool     `json:"cleanup_stale_observations"`
+	ContextFullField             string   `json:"context_full_field"`
+	DBPath                       string   `json:"db_path"`
+	Model                        string   `json:"model"`
+	ClaudeCodePath               string   `json:"claude_code_path"`
+	EmbeddingModel               string   `json:"embedding_model"`
+	VectorStorageStrategy        string   `json:"vector_storage_strategy"`
+	ContextObsConcepts           []string `json:"context_obs_concepts"`
+	ContextObsTypes              []string `json:"context_obs_types"`
+	ContextFullCount             int      `json:"context_full_count"`
+	GraphBranchFactor            int      `json:"graph_branch_factor"`
+	GraphEdgeWeight              float64  `json:"graph_edge_weight"`
+	ContextRelevanceThreshold    float64  `json:"context_relevance_threshold"`
+	RerankingCandidates          int      `json:"reranking_candidates"`
+	WorkerPort                   int      `json:"worker_port"`
+	DeduplicationThreshold       float64  `json:"deduplication_threshold"`
+	RerankingMinImprovement      float64  `json:"reranking_min_improvement"`
+	ContextObservations          int      `json:"context_observations"`
+	ContextMaxPromptResults      int      `json:"context_max_prompt_results"`
+	ContextSessionCount          int      `json:"context_session_count"`
+	MaxConns                     int      `json:"max_conns"`
+	RerankingAlpha               float64  `json:"reranking_alpha"`
+	GraphMaxHops                 int      `json:"graph_max_hops"`
+	RerankingResults             int      `json:"reranking_results"`
+	GraphRebuildIntervalMin      int      `json:"graph_rebuild_interval_min"`
+	HubThreshold                 int      `json:"hub_threshold"`
+	ObservationRetentionDays     int      `json:"observation_retention_days"`
+	MaintenanceIntervalHours     int      `json:"maintenance_interval_hours"`
+	WALCheckpointIntervalSeconds int      `json:"wal_checkpoint_interval_seconds"`
+	WALCheckpointThresholdBytes  int64    `json:"wal_checkpoint_threshold_bytes"`
+	ContextMaxTokensStartup      int      `json:"context_max_tokens_startup"`
+	ContextMaxTokensPrompt       int      `json:"context_max_tokens_prompt"`
+	ContextShowWorkTokens        bool     `json:"context_show_work_tokens"`
+	ContextShowReadTokens        bool     `json:"context_show_read_tokens"`
+	RerankingPureMode            bool     `json:"reranking_pure_mode"`
+	GraphEnabled                 bool     `json:"graph_enabled"`
+	DeduplicationEnabled         bool     `json:"deduplication_enabled"`
+	MaintenanceEnabled           bool     `json:"maintenance_enabled"`
+	RerankingEnabled             bool     `json:"reranking_enabled"`
+	ContextShowLastSummary       bool     `json:"context_show_last_summary"`
+	CleanupStaleObservations     bool     `json:"cleanup_stale_observations"`
 }
 
 var (
@@ -181,6 +183,10 @@ func Default() *Config {
 		MaintenanceIntervalHours:  6,     // Run every 6 hours
 		ObservationRetentionDays:  0,     // 0 = no age-based deletion (keep all)
 		CleanupStaleObservations:  false, // Don't auto-cleanup stale observations
+		// WAL checkpoint loop tunables (issue #49). Defaults mirror the worker constants:
+		// check the WAL every 60s and TRUNCATE-checkpoint once it reaches 4 MiB.
+		WALCheckpointIntervalSeconds: 60,
+		WALCheckpointThresholdBytes:  4 << 20, // 4 MiB
 	}
 }
 
@@ -283,6 +289,13 @@ func Load() (*Config, error) {
 	}
 	if v, ok := settings["CLAUDE_MNEMONIC_CONTEXT_MAX_TOKENS_PROMPT"].(float64); ok && v > 0 {
 		cfg.ContextMaxTokensPrompt = int(v)
+	}
+	// WAL checkpoint loop tunables (issue #49)
+	if v, ok := settings["CLAUDE_MNEMONIC_WAL_CHECKPOINT_INTERVAL_SECONDS"].(float64); ok && v > 0 {
+		cfg.WALCheckpointIntervalSeconds = int(v)
+	}
+	if v, ok := settings["CLAUDE_MNEMONIC_WAL_CHECKPOINT_THRESHOLD_BYTES"].(float64); ok && v > 0 {
+		cfg.WALCheckpointThresholdBytes = int64(v)
 	}
 	// Deduplication settings
 	if v, ok := settings["CLAUDE_MNEMONIC_DEDUP_ENABLED"].(bool); ok {

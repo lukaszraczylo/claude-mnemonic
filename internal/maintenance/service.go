@@ -83,8 +83,20 @@ func (s *Service) Start(ctx context.Context) {
 		Bool("cleanup_stale", s.config.CleanupStaleObservations).
 		Msg("Starting maintenance scheduler")
 
-	// Initial run after 5 minutes (allow system to stabilize)
-	time.Sleep(5 * time.Minute)
+	// Initial run after 5 minutes (allow system to stabilize).
+	// Use a cancellable timer so shutdown (ctx cancel / Stop) is not blocked for up to 5m.
+	initialDelay := time.NewTimer(5 * time.Minute)
+	select {
+	case <-ctx.Done():
+		initialDelay.Stop()
+		s.log.Info().Msg("Maintenance shutting down before initial run (context cancellation)")
+		return
+	case <-s.stopCh:
+		initialDelay.Stop()
+		s.log.Info().Msg("Maintenance shutting down before initial run (stop signal)")
+		return
+	case <-initialDelay.C:
+	}
 	s.runMaintenance(ctx)
 
 	ticker := time.NewTicker(interval)
@@ -288,7 +300,13 @@ func (s *Service) Stats() map[string]any {
 	}
 }
 
-// RunNow triggers an immediate maintenance run.
+// RunNow triggers an immediate maintenance run in the background.
 func (s *Service) RunNow(ctx context.Context) {
 	go s.runMaintenance(ctx)
+}
+
+// RunNowSync triggers an immediate maintenance run and blocks until it completes.
+// Use this when the caller needs to report a synchronous result (e.g. an HTTP handler).
+func (s *Service) RunNowSync(ctx context.Context) {
+	s.runMaintenance(ctx)
 }

@@ -314,6 +314,49 @@ func (s *Service) handleTriggerRecalculation(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, map[string]string{"status": "recalculation triggered"})
 }
 
+// handleRunMaintenance triggers an immediate, synchronous database maintenance run
+// (Optimize/TRUNCATE checkpoint + prompt cleanup + any enabled retention/stale cleanup)
+// and also kicks off an importance-score recalculation in the background so the behavior
+// of the previous trigger_maintenance tool is preserved (issue #49).
+func (s *Service) handleRunMaintenance(w http.ResponseWriter, r *http.Request) {
+	// initMu.RLock held by requireReady middleware
+	maintSvc := s.maintenanceSvc
+	recalculator := s.recalculator
+
+	if maintSvc == nil {
+		http.Error(w, "maintenance service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Run maintenance synchronously with an independent, bounded context so the caller
+	// receives a real completion status. Use context.Background so an HTTP client timeout
+	// does not abort an in-progress DB maintenance pass.
+	mctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	maintSvc.RunNowSync(mctx)
+
+	// Preserve prior trigger_maintenance behavior: also recalculate importance scores.
+	recalcTriggered := false
+	if recalculator != nil {
+		recalcTriggered = true
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := recalculator.RecalculateNow(ctx); err != nil {
+				log.Error().Err(err).Msg("Background recalculation during maintenance failed")
+			}
+		}()
+	}
+
+	writeJSON(w, map[string]any{
+		"status":            "maintenance completed",
+		"recalc_triggered":  recalcTriggered,
+		"maintenance_stats": maintSvc.Stats(),
+	})
+}
+
 // parseIntParam parses an integer query parameter with a default value.
 func parseIntParam(r *http.Request, name string, defaultVal int) int {
 	if val := r.URL.Query().Get(name); val != "" {

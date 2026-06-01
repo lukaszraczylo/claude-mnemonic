@@ -564,9 +564,76 @@ func POSTWithContext(ctx context.Context, port int, path string, body interface{
 	return nil
 }
 
+// POSTWithContextResult sends a POST request using the provided context and
+// decodes the JSON response body, mirroring POST but honoring ctx for
+// cancellation/deadline. Used on the prompt critical path so a wedged worker
+// aborts at the hook deadline instead of blocking for the full client timeout.
+// A non-JSON body is returned as (nil, nil), matching POST's behavior.
+func POSTWithContextResult(ctx context.Context, port int, path string, body interface{}) (map[string]interface{}, error) {
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("http://127.0.0.1:%d%s", port, path),
+		bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := hookClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("request failed: %s", resp.Status)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		// Not all endpoints return JSON
+		return nil, nil
+	}
+
+	return result, nil
+}
+
 // GET sends a GET request to the worker.
 func GET(port int, path string) (map[string]interface{}, error) {
 	resp, err := hookClient.Get(fmt.Sprintf("http://127.0.0.1:%d%s", port, path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("request failed: %s", resp.Status)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// GETWithContext sends a GET request using the provided context and decodes the
+// JSON response body, mirroring GET but honoring ctx for cancellation/deadline.
+// Used on the prompt critical path so a wedged worker aborts at the hook
+// deadline instead of blocking for the full client timeout.
+func GETWithContext(ctx context.Context, port int, path string) (map[string]interface{}, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d%s", port, path), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := hookClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

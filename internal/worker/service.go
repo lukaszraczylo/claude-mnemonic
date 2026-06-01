@@ -16,6 +16,7 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/internal/config"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/embedding"
+	"github.com/lukaszraczylo/claude-mnemonic/internal/maintenance"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/pattern"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/reranking"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/scoring"
@@ -43,6 +44,14 @@ const (
 
 	// QueueProcessInterval is how often the background queue processor runs.
 	QueueProcessInterval = 2 * time.Second
+
+	// WALCheckpointInterval is how often the worker checks whether the SQLite WAL needs a
+	// TRUNCATE checkpoint to reclaim disk and prevent unbounded growth (issue #49).
+	WALCheckpointInterval = 60 * time.Second
+
+	// WALCheckpointThreshold is the WAL file size at or above which the periodic check
+	// performs a TRUNCATE checkpoint. Keeps the steady-state WAL bounded to a few MB.
+	WALCheckpointThreshold = 4 << 20 // 4 MiB
 
 	// reinitializationDrainDelay is the delay after marking the service as not ready
 	// to allow in-flight requests to complete before reinitializing.
@@ -121,6 +130,7 @@ type Service struct {
 	patternStore       *gorm.PatternStore
 	relationStore      *gorm.RelationStore
 	patternDetector    *pattern.Detector
+	maintenanceSvc     *maintenance.Service
 	sessionManager     *session.Manager
 	sseBroadcaster     *sse.Broadcaster
 	processor          *sdk.Processor
@@ -569,6 +579,34 @@ func (s *Service) initializeAsync() {
 		s.wg.Add(1)
 		go s.processQueue()
 	}
+
+	// Start periodic WAL checkpoint loop to bound SQLite WAL file growth (issue #49).
+	s.wg.Add(1)
+	go s.walCheckpointLoop()
+
+	// Start the scheduled maintenance service (issue #49: was dead code, never instantiated).
+	// vectorCleanupFn mirrors the observation store's cleanup hook so age/stale deletions done
+	// directly via GORM still remove their vectors from sqlite-vec.
+	var vectorCleanupFn func(ctx context.Context, deletedIDs []int64)
+	if vectorSync != nil {
+		vectorCleanupFn = func(ctx context.Context, deletedIDs []int64) {
+			if err := retryWithBackoff(ctx, VectorSyncMaxRetries, VectorSyncInitialBackoff, func() error {
+				return vectorSync.DeleteObservations(ctx, deletedIDs)
+			}); err != nil {
+				log.Warn().Err(err).Ints64("ids", deletedIDs).Msg("Failed to delete observations from sqlite-vec during maintenance")
+			}
+		}
+	}
+	maintSvc := maintenance.NewService(store, observationStore, summaryStore, promptStore, vectorCleanupFn, s.config, log.Logger)
+	s.initMu.Lock()
+	s.maintenanceSvc = maintSvc
+	s.initMu.Unlock()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		maintSvc.Start(s.ctx)
+	}()
+	log.Info().Msg("Maintenance scheduler started")
 
 	// Start file watchers for auto-recreation on deletion
 	s.startWatchers()
@@ -1290,6 +1328,9 @@ func (s *Service) setupRoutes() {
 		r.Put("/api/scoring/concepts/{concept}", s.handleUpdateConceptWeight)
 		r.Post("/api/scoring/recalculate", s.handleTriggerRecalculation)
 
+		// Maintenance: run an immediate synchronous DB maintenance pass (issue #49)
+		r.Post("/api/maintenance/run", s.handleRunMaintenance)
+
 		// Context injection
 		r.Get("/api/context/count", s.handleContextCount)
 		r.Get("/api/context/inject", s.handleContextInject)
@@ -1621,6 +1662,52 @@ func (s *Service) processQueue() {
 	}
 }
 
+// walCheckpointLoop periodically checkpoints the SQLite WAL so it cannot grow unbounded
+// during long-lived sessions. SQLite's internal auto-checkpoint is PASSIVE and never
+// shrinks the -wal file; under sustained writes with overlapping readers it can leave the
+// WAL growing without limit (issue #49). This loop performs a TRUNCATE checkpoint whenever
+// the WAL has grown to WALCheckpointThreshold, and does nothing while it is small.
+func (s *Service) walCheckpointLoop() {
+	defer s.wg.Done()
+
+	// Tunable via config; fall back to the package constants when unset/<=0 (issue #49).
+	interval := WALCheckpointInterval
+	if s.config != nil && s.config.WALCheckpointIntervalSeconds > 0 {
+		interval = time.Duration(s.config.WALCheckpointIntervalSeconds) * time.Second
+	}
+	threshold := int64(WALCheckpointThreshold)
+	if s.config != nil && s.config.WALCheckpointThresholdBytes > 0 {
+		threshold = s.config.WALCheckpointThresholdBytes
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			s.initMu.RLock()
+			store := s.store
+			s.initMu.RUnlock()
+			if store == nil {
+				continue
+			}
+
+			ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
+			done, err := store.CheckpointIfLarge(ctx, threshold)
+			cancel()
+			switch {
+			case err != nil:
+				log.Warn().Err(err).Msg("Periodic WAL checkpoint failed (non-fatal)")
+			case done:
+				log.Debug().Msg("Periodic WAL checkpoint (TRUNCATE) completed")
+			}
+		}
+	}
+}
+
 // processAllSessions processes pending messages for all active sessions.
 // Messages are processed in parallel using goroutines, with concurrency
 // limited by a channel-based semaphore.
@@ -1747,6 +1834,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	if s.patternDetector != nil {
 		s.patternDetector.Stop()
+	}
+	if s.maintenanceSvc != nil {
+		s.maintenanceSvc.Stop()
 	}
 
 	// Phase 4: Shutdown sessions (flush pending work)

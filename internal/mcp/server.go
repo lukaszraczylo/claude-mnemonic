@@ -534,7 +534,7 @@ func (s *Server) handleToolsList(req *Request) *Response {
 		},
 		{
 			Name:        "trigger_maintenance",
-			Description: "Trigger an immediate maintenance run (cleanup old observations, optimize database).",
+			Description: "Trigger an immediate database maintenance run: optimize/checkpoint the database, clean up old prompts, apply any configured observation retention/stale cleanup, and recalculate importance scores.",
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -917,7 +917,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			"project": s.project,
 		})
 	case "trigger_maintenance":
-		return s.proxyPostRaw(ctx, "/api/scoring/recalculate", nil)
+		return s.proxyPostRaw(ctx, "/api/maintenance/run", nil)
 	case "analyze_observation_importance":
 		return s.handleAnalyzeImportanceProxy(ctx, args)
 	case "analyze_search_patterns":

@@ -5,17 +5,79 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"slices"
 	"sync"
 	"time"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
-	_ "github.com/mattn/go-sqlite3" // Import SQLite driver with FTS5 support
+	sqlite3 "github.com/mattn/go-sqlite3" // SQLite driver with FTS5 support
 	"github.com/rs/zerolog/log"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+// driverName is the name of the custom mattn/go-sqlite3 driver registered with a
+// ConnectHook that applies ALL connection pragmas (correctness + best-effort) to EVERY
+// pooled connection at open time. The stock "sqlite3" driver has no hook, so pragmas set
+// via a single post-open Exec only reach one arbitrary pooled connection (issue #49, F6).
+const driverName = "sqlite3_mnemonic"
+
+// registerDriverOnce guards driver registration so it runs exactly once per process.
+// database/sql panics with "sql: Register called twice" on a duplicate name, and NewStore
+// may be called multiple times (e.g. after a config-change reinitialization).
+var registerDriverOnce sync.Once
+
+// correctnessPragmas MUST succeed on every connection: getting any of them wrong changes
+// transactional/locking semantics, not just performance. A failure here aborts the open.
+var correctnessPragmas = []string{
+	"PRAGMA foreign_keys=ON",
+	"PRAGMA journal_mode=WAL",
+	"PRAGMA synchronous=NORMAL",
+	"PRAGMA busy_timeout=5000",
+	"PRAGMA cache_size=-64000",
+}
+
+// bestEffortPragmas are per-connection or database-wide optimizations. A failure is logged
+// and tolerated: the connection is still correct, just less tuned. (page_size only takes
+// effect on an empty database / next VACUUM, but applying it per-connection is harmless.)
+var bestEffortPragmas = []string{
+	"PRAGMA temp_store=MEMORY",          // Store temp tables in memory
+	"PRAGMA mmap_size=268435456",        // 256MB memory-mapped I/O
+	"PRAGMA page_size=4096",             // 4KB pages (optimal for most systems)
+	"PRAGMA wal_autocheckpoint=1000",    // Auto-checkpoint (PASSIVE) every 1000 WAL frames
+	"PRAGMA journal_size_limit=8388608", // Backstop: cap -wal at 8MiB (issue #49)
+}
+
+// connectHook applies all pragmas to a freshly opened connection. mattn/go-sqlite3 calls
+// it at the very end of Open, after DSN params and extensions, so it is authoritative.
+func connectHook(c *sqlite3.SQLiteConn) error {
+	for _, pragma := range correctnessPragmas {
+		if _, err := c.Exec(pragma, nil); err != nil {
+			return fmt.Errorf("apply correctness pragma %q: %w", pragma, err)
+		}
+	}
+	for _, pragma := range bestEffortPragmas {
+		if _, err := c.Exec(pragma, nil); err != nil {
+			log.Warn().Str("pragma", pragma).Err(err).Msg("Failed to set pragma (non-fatal)")
+		}
+	}
+	return nil
+}
+
+// registerDriver registers the custom driver once. sqlite_vec.Auto() registers the vec
+// extension globally via sqlite3_auto_extension, which applies to connections from any
+// sqlite3-based driver, so the new driver still gets vec + FTS5.
+func registerDriver() {
+	registerDriverOnce.Do(func() {
+		sql.Register(driverName, &sqlite3.SQLiteDriver{
+			ConnectHook: func(c *sqlite3.SQLiteConn) error {
+				return connectHook(c)
+			},
+		})
+	})
+}
 
 // Store represents the GORM database connection with sqlite-vec support.
 type Store struct {
@@ -24,6 +86,7 @@ type Store struct {
 	sqlDB           *sql.DB
 	metrics         *PoolMetrics
 	cachedHealth    *HealthInfo
+	path            string
 	healthCacheTTL  time.Duration
 	healthCacheMu   sync.RWMutex
 }
@@ -36,22 +99,32 @@ type Config struct {
 }
 
 // NewStore creates a new Store with WAL mode enabled and sqlite-vec registered.
-// CRITICAL: WAL mode and foreign keys are enabled via pragmas for concurrent reads.
+// CRITICAL: all connection pragmas (WAL, foreign_keys, busy_timeout, etc.) are applied to
+// EVERY pooled connection via a driver ConnectHook (see registerDriver), so the pool is
+// uniformly configured and connections may be recycled safely (issue #49, F6).
 func NewStore(cfg Config) (*Store, error) {
-	// 1. Register sqlite-vec extension (must be done before opening database)
+	// 1. Register sqlite-vec extension (must be done before opening database).
+	// sqlite_vec.Auto() uses sqlite3_auto_extension, which is global to all sqlite3-based
+	// drivers, so connections from our custom driver also get the vec virtual table.
 	sqlite_vec.Auto()
 
-	// 2. Build connection string (foreign keys enabled in DSN)
-	// Use sqlite3 driver (mattn/go-sqlite3) which has FTS5 support
+	// 2. Register the custom driver whose ConnectHook applies ALL pragmas to EVERY pooled
+	// connection (issue #49, F6). Without this, pragmas set via a single post-open
+	// sqlDB.Exec reach only one arbitrary pooled connection. The hook is authoritative.
+	registerDriver()
+
+	// 3. Build a minimal DSN. _foreign_keys is kept as belt-and-suspenders (the hook sets
+	// it too); all other pragmas are applied per-connection by the ConnectHook, so they no
+	// longer need to live in the DSN.
 	dsn := cfg.Path + "?_foreign_keys=ON"
 
-	// 3. Open raw database connection with mattn/go-sqlite3 (has FTS5 support)
-	sqlDB, err := sql.Open("sqlite3", dsn)
+	// 4. Open raw database connection with the custom driver (FTS5 + per-connection pragmas).
+	sqlDB, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// 4. Wrap with GORM using existing connection
+	// 5. Wrap with GORM using existing connection
 	db, err := gorm.Open(sqlite.Dialector{
 		Conn: sqlDB,
 	}, &gorm.Config{
@@ -66,16 +139,25 @@ func NewStore(cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("open gorm: %w", err)
 	}
 
-	// 5. Configure connection pool (same settings as current implementation)
+	// 6. Configure connection pool.
 	maxConns := cfg.MaxConns
 	if maxConns <= 0 {
 		maxConns = 4
 	}
 	sqlDB.SetMaxOpenConns(maxConns)
 	sqlDB.SetMaxIdleConns(maxConns)
-	sqlDB.SetConnMaxLifetime(0) // Never expire (SQLite connections are cheap)
+	// Finite recycling (issue #49): previously SetConnMaxLifetime(0) meant connections
+	// NEVER recycled, so a long-lived read connection could pin an old WAL read-mark for the
+	// whole process lifetime and block TRUNCATE checkpoints from reclaiming the -wal file.
+	// Recycling is safe now because the ConnectHook reapplies every correctness pragma on
+	// each new connection — a recycled connection comes back fully configured, not with
+	// defaults. 1h lifetime bounds read-mark staleness without churning the pool; 30m idle
+	// time reclaims connections that sit unused (e.g. between sessions) so the pool shrinks
+	// back to one warm connection during quiet periods, dropping their WAL read-marks.
+	sqlDB.SetConnMaxLifetime(1 * time.Hour)
+	sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 
-	// 6. Verify connection
+	// 7. Verify connection
 	if err := sqlDB.Ping(); err != nil {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
@@ -83,35 +165,16 @@ func NewStore(cfg Config) (*Store, error) {
 	store := &Store{
 		DB:             db,
 		sqlDB:          sqlDB,
+		path:           cfg.Path,
 		metrics:        NewPoolMetrics(100), // Track last 100 latency samples
 		healthCacheTTL: 5 * time.Second,     // Cache health checks for 5 seconds
 	}
 
-	// 7. Run migrations FIRST (before PRAGMA commands)
+	// 8. Run migrations. All pragmas (correctness + best-effort) are applied per-connection
+	// by the ConnectHook at open time, so there is no post-open pragma loop here anymore:
+	// such a loop only ever reached one arbitrary pooled connection (issue #49, F6).
 	if err := runMigrations(db, sqlDB); err != nil {
 		return nil, fmt.Errorf("run migrations: %w", err)
-	}
-
-	// 8. CRITICAL: Set WAL mode and other performance pragmas
-	// Use raw sqlDB to avoid GORM transaction issues
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA cache_size=-64000",   // 64MB cache (negative = KB)
-		"PRAGMA temp_store=MEMORY",   // Store temp tables in memory
-		"PRAGMA mmap_size=268435456",    // 256MB memory-mapped I/O
-		"PRAGMA page_size=4096",         // 4KB pages (optimal for most systems)
-		"PRAGMA wal_autocheckpoint=1000", // Explicit default; checkpoint every 1000 WAL frames
-	}
-	for _, pragma := range pragmas {
-		if _, err := sqlDB.Exec(pragma); err != nil {
-			log.Warn().Str("pragma", pragma).Err(err).Msg("Failed to set pragma (non-fatal)")
-		}
-	}
-	// Set busy timeout to 5 seconds to handle concurrent writes
-	// This allows SQLite to retry when database is locked instead of failing immediately
-	if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		return nil, fmt.Errorf("set busy timeout: %w", err)
 	}
 
 	// 9. Warm the connection pool
@@ -148,9 +211,53 @@ func (s *Store) WarmPool(numConns int) {
 	log.Debug().Int("connections", numConns).Msg("Connection pool warmed")
 }
 
-// Close closes the database connection.
+// Close checkpoints the WAL (TRUNCATE) before closing the connection. Checkpointing on
+// shutdown prevents the WAL file from persisting in a large, dirty state across restarts
+// and config-change reinitializations, which otherwise leaves a multi-megabyte -wal file
+// on disk (issue #49). The checkpoint is best-effort: a failure is logged, not fatal.
 func (s *Store) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.Checkpoint(ctx); err != nil {
+		log.Warn().Err(err).Msg("WAL checkpoint on close failed (non-fatal)")
+	}
 	return s.sqlDB.Close()
+}
+
+// Checkpoint runs a TRUNCATE WAL checkpoint: it flushes WAL frames into the main
+// database file and shrinks the -wal file back to zero. Unlike a PASSIVE checkpoint
+// (which never truncates the file and is all SQLite's auto-checkpoint ever performs), a
+// TRUNCATE checkpoint reclaims disk and is the mechanism that bounds WAL growth.
+// It waits up to the connection busy_timeout for the write lock and returns an error
+// rather than blocking indefinitely.
+func (s *Store) Checkpoint(ctx context.Context) error {
+	if _, err := s.sqlDB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return fmt.Errorf("wal checkpoint (truncate): %w", err)
+	}
+	return nil
+}
+
+// WALSize returns the size in bytes of the SQLite WAL sidecar file (<db>-wal), or 0 if
+// it does not exist or cannot be stat'd. Used to decide when a checkpoint is worthwhile.
+func (s *Store) WALSize() int64 {
+	if s.path == "" {
+		return 0
+	}
+	info, err := os.Stat(s.path + "-wal")
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
+// CheckpointIfLarge performs a TRUNCATE checkpoint only when the WAL file has grown to or
+// beyond threshold bytes. Returns true if a checkpoint was performed. This keeps the
+// periodic checkpoint cheap: it does no work while the WAL is small.
+func (s *Store) CheckpointIfLarge(ctx context.Context, threshold int64) (bool, error) {
+	if s.WALSize() < threshold {
+		return false, nil
+	}
+	return true, s.Checkpoint(ctx)
 }
 
 // Ping verifies the database connection is alive.
@@ -193,8 +300,9 @@ func (s *Store) Optimize(ctx context.Context) error {
 		log.Warn().Err(err).Msg("PRAGMA optimize failed (non-fatal)")
 	}
 
-	// Passive WAL checkpoint — doesn't block readers/writers
-	if _, err := s.sqlDB.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
+	// TRUNCATE WAL checkpoint — reclaims the -wal file during low-activity optimization.
+	// (PASSIVE never shrinks the file, so it cannot bound WAL growth — see issue #49.)
+	if err := s.Checkpoint(ctx); err != nil {
 		log.Warn().Err(err).Msg("WAL checkpoint failed (non-fatal)")
 	}
 
@@ -518,7 +626,6 @@ func (s *Store) ExecWithTimeout(ctx context.Context, timeout time.Duration, quer
 	}
 	return nil
 }
-
 
 // TransactionWithTimeout wraps a transaction function with timeout handling.
 // The transaction is automatically rolled back if the context times out.

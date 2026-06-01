@@ -91,18 +91,21 @@ func handleUserPrompt(ctx *hooks.HookContext, input *Input) (string, error) {
 		observationCount int
 	)
 
-	// Start search in background
+	// Start search in background. Pass the deadline context so a wedged worker
+	// aborts the request at the deadline instead of blocking for the full
+	// hookClient timeout (10s). Errors are ignored -- fail open with no memory.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		searchResult, _ = hooks.GET(ctx.Port, searchURL)
+		searchResult, _ = hooks.GETWithContext(deadline, ctx.Port, searchURL)
 	}()
 
-	// Start session init in parallel (with observationCount=0; approximate is fine)
+	// Start session init in parallel (with observationCount=0; approximate is fine).
+	// Deadline context guards this call too.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		initResult, initErr = hooks.POST(ctx.Port, "/api/sessions/init", map[string]interface{}{
+		initResult, initErr = hooks.POSTWithContextResult(deadline, ctx.Port, "/api/sessions/init", map[string]interface{}{
 			"claudeSessionId":     ctx.SessionID,
 			"project":             ctx.Project,
 			"prompt":              input.Prompt,
@@ -113,7 +116,8 @@ func handleUserPrompt(ctx *hooks.HookContext, input *Input) (string, error) {
 	// Wait for both to complete
 	wg.Wait()
 
-	// Check deadline after network calls
+	// Check deadline after network calls -- if exceeded, fail open (proceed with
+	// no injected memory) rather than blocking or erroring the user's prompt.
 	if deadline.Err() != nil {
 		return "", nil
 	}
@@ -173,9 +177,11 @@ func handleUserPrompt(ctx *hooks.HookContext, input *Input) (string, error) {
 		contextToInject = contextBuilder
 	}
 
-	// Check session init result
+	// Check session init result. A session-init failure must never block the
+	// prompt: degrade gracefully and still inject any memory we found.
 	if initErr != nil {
-		return "", initErr
+		fmt.Fprintf(os.Stderr, "[user-prompt] Session init failed: %v\n", initErr)
+		return contextToInject, nil
 	}
 	if initResult == nil {
 		return contextToInject, nil // Non-JSON response from worker, skip session init
@@ -201,13 +207,15 @@ func handleUserPrompt(ctx *hooks.HookContext, input *Input) (string, error) {
 
 	fmt.Fprintf(os.Stderr, "[user-prompt] Session %d, prompt #%d\n", sessionID, promptNumber)
 
-	// Start SDK agent (depends on session init result, so kept sequential)
-	_, err := hooks.POST(ctx.Port, fmt.Sprintf("/sessions/%d/init", sessionID), map[string]interface{}{
+	// Start SDK agent (depends on session init result, so kept sequential).
+	// Deadline-guarded so a wedged worker cannot stall past the hook budget.
+	// Failure here must not block the prompt: degrade gracefully, still inject memory.
+	if _, err := hooks.POSTWithContextResult(deadline, ctx.Port, fmt.Sprintf("/sessions/%d/init", sessionID), map[string]interface{}{
 		"userPrompt":   input.Prompt,
 		"promptNumber": promptNumber,
-	})
-	if err != nil {
-		return "", err
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "[user-prompt] SDK agent init failed: %v\n", err)
+		return contextToInject, nil
 	}
 
 	// Return context if we found relevant observations

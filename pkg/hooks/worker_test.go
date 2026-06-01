@@ -952,6 +952,203 @@ func TestGET_Timeout(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestGETWithContext tests GETWithContext with a mock server.
+func TestGETWithContext(t *testing.T) {
+	tests := []struct {
+		serverHandler  func(w http.ResponseWriter, r *http.Request)
+		expectedResult map[string]interface{}
+		name           string
+		expectError    bool
+	}{
+		{
+			name: "successful GET with JSON response",
+			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": "test"})
+			},
+			expectError:    false,
+			expectedResult: map[string]interface{}{"data": "test"},
+		},
+		{
+			name: "GET with 404 error",
+			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			},
+			expectError: true,
+		},
+		{
+			name: "GET with invalid JSON",
+			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("not valid json"))
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(tt.serverHandler))
+			defer server.Close()
+
+			var port int
+			_, err := fmt.Sscanf(server.URL, "http://127.0.0.1:%d", &port)
+			require.NoError(t, err)
+
+			result, err := GETWithContext(context.Background(), port, "/test")
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if tt.expectedResult != nil {
+					assert.Equal(t, tt.expectedResult["data"], result["data"])
+				}
+			}
+		})
+	}
+}
+
+// TestGETWithContext_Timeout verifies the context deadline aborts a slow server
+// well before the hookClient timeout, so a wedged worker cannot stall the prompt.
+func TestGETWithContext_Timeout(t *testing.T) {
+	// Server that blocks longer than the context deadline.
+	blockUntil := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-blockUntil // never closed during the test -> server hangs
+	}))
+	defer server.Close()
+	defer close(blockUntil)
+
+	var port int
+	_, err := fmt.Sscanf(server.URL, "http://127.0.0.1:%d", &port)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = GETWithContext(ctx, port, "/test")
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	// Should abort near the 100ms deadline, far below hookClient's 10s timeout.
+	assert.Less(t, elapsed, 2*time.Second, "context deadline must abort the request quickly")
+}
+
+// TestGETWithContext_CancelledContext verifies an already-cancelled context
+// returns immediately without making a real request.
+func TestGETWithContext_CancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	start := time.Now()
+	_, err := GETWithContext(ctx, 99994, "/test")
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.Less(t, elapsed, 1*time.Second, "cancelled context should return immediately")
+}
+
+// TestPOSTWithContextResult tests POSTWithContextResult with a mock server.
+func TestPOSTWithContextResult(t *testing.T) {
+	tests := []struct {
+		body           interface{}
+		serverHandler  func(w http.ResponseWriter, r *http.Request)
+		expectedResult map[string]interface{}
+		name           string
+		expectError    bool
+	}{
+		{
+			name: "successful POST with JSON response",
+			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+			},
+			body:           map[string]string{"key": "value"},
+			expectError:    false,
+			expectedResult: map[string]interface{}{"status": "ok"},
+		},
+		{
+			name: "POST with 400 error",
+			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+			},
+			body:        map[string]string{"key": "value"},
+			expectError: true,
+		},
+		{
+			name: "POST with non-JSON response returns nil",
+			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("not json"))
+			},
+			body:           map[string]string{"key": "value"},
+			expectError:    false,
+			expectedResult: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(tt.serverHandler))
+			defer server.Close()
+
+			var port int
+			_, err := fmt.Sscanf(server.URL, "http://127.0.0.1:%d", &port)
+			require.NoError(t, err)
+
+			result, err := POSTWithContextResult(context.Background(), port, "/test", tt.body)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if tt.expectedResult != nil {
+					assert.Equal(t, tt.expectedResult["status"], result["status"])
+				} else {
+					assert.Nil(t, result)
+				}
+			}
+		})
+	}
+}
+
+// TestPOSTWithContextResult_MarshalError tests POSTWithContextResult with an unmarshalable body.
+func TestPOSTWithContextResult_MarshalError(t *testing.T) {
+	badValue := make(chan int)
+	_, err := POSTWithContextResult(context.Background(), 99999, "/test", badValue)
+	require.Error(t, err)
+}
+
+// TestPOSTWithContextResult_Timeout verifies the context deadline aborts a slow
+// server before the hookClient timeout.
+func TestPOSTWithContextResult_Timeout(t *testing.T) {
+	blockUntil := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-blockUntil
+	}))
+	defer server.Close()
+	defer close(blockUntil)
+
+	var port int
+	_, err := fmt.Sscanf(server.URL, "http://127.0.0.1:%d", &port)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = POSTWithContextResult(ctx, port, "/test", map[string]string{"k": "v"})
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.Less(t, elapsed, 2*time.Second, "context deadline must abort the request quickly")
+}
+
 // TestIsWorkerRunning_Timeout tests IsWorkerRunning with timeout.
 func TestIsWorkerRunning_Timeout(t *testing.T) {
 	// Non-existent port should quickly return false
