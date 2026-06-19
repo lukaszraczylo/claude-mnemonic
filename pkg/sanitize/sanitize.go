@@ -5,6 +5,7 @@ package sanitize
 import (
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // systemXMLTags lists Claude Code internal XML tags that should be stripped
@@ -30,16 +31,17 @@ var systemXMLTags = []string{
 	"antml_function_calls",
 }
 
-// systemXMLRegexps are compiled regexps for each tag, built once at init.
-var systemXMLRegexps []*regexp.Regexp
-
-func init() {
-	systemXMLRegexps = make([]*regexp.Regexp, len(systemXMLTags))
+// systemXMLRegexps lazily compiles a regexp for each tag exactly once on first
+// use. The result is immutable after compilation, so sync.OnceValue safely
+// shares it across callers without re-compiling at package init.
+var systemXMLRegexps = sync.OnceValue(func() []*regexp.Regexp {
+	res := make([]*regexp.Regexp, len(systemXMLTags))
 	for i, tag := range systemXMLTags {
 		// Match opening tag (with optional attributes), content (including newlines), and closing tag
-		systemXMLRegexps[i] = regexp.MustCompile(`(?s)<` + regexp.QuoteMeta(tag) + `[^>]*>.*?</` + regexp.QuoteMeta(tag) + `>`)
+		res[i] = regexp.MustCompile(`(?s)<` + regexp.QuoteMeta(tag) + `[^>]*>.*?</` + regexp.QuoteMeta(tag) + `>`)
 	}
-}
+	return res
+})
 
 // StripSystemXML removes known Claude Code internal XML blocks from text.
 // This prevents system artifacts like <task-notification>, <system-reminder>,
@@ -50,7 +52,7 @@ func StripSystemXML(s string) string {
 		return s
 	}
 
-	for _, re := range systemXMLRegexps {
+	for _, re := range systemXMLRegexps() {
 		s = re.ReplaceAllString(s, "")
 	}
 
