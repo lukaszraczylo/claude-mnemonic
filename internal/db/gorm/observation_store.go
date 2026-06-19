@@ -618,7 +618,7 @@ func (s *ObservationStore) SearchObservationsFTS(ctx context.Context, query, pro
 		// FTS failed, try LIKE fallback
 		return s.searchObservationsLike(ctx, keywords, project, limit)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	observations, err := scanObservationRows(rows)
 	if err != nil {
