@@ -156,7 +156,6 @@ type Service struct {
 	updater            *update.Updater
 	rateLimiter        *PerClientRateLimiter
 	expensiveOpLimiter *ExpensiveOperationLimiter
-	contextCache       sync.Map
 	version            string
 	recentQueriesBuf   [maxRecentQueries]RecentSearchQuery
 	wg                 sync.WaitGroup
@@ -195,13 +194,6 @@ type RebuildStatus struct {
 type staleVerifyRequest struct {
 	cwd           string
 	observationID int64
-}
-
-// contextCacheEntry caches clustering results for context injection.
-type contextCacheEntry struct {
-	timestamp    time.Time
-	observations []*models.Observation
-	obsCount     int
 }
 
 // RecentSearchQuery tracks a search query for analytics.
@@ -1240,6 +1232,19 @@ func (s *Service) setupMiddleware() {
 		s.router.Use(PerClientRateLimitMiddleware(s.rateLimiter))
 	}
 
+	// Token authentication: opt-in and default-preserving.
+	// When CLAUDE_MNEMONIC_AUTH_TOKEN is set, every request (except exempt
+	// health/ready paths) must present that token via X-Auth-Token or
+	// "Authorization: Bearer". When the env var is unset (the default), no
+	// token is configured, auth stays disabled, and the server starts as
+	// before. The worker binds loopback only, so this is defense-in-depth for
+	// shared/multi-user hosts rather than a hard requirement.
+	if authToken := os.Getenv("CLAUDE_MNEMONIC_AUTH_TOKEN"); authToken != "" {
+		ta := NewTokenAuthWithToken(authToken)
+		s.router.Use(ta.Middleware)
+		log.Info().Msg("Token authentication enabled (CLAUDE_MNEMONIC_AUTH_TOKEN set)")
+	}
+
 	// Note: Timeout middleware is applied per-route, not globally,
 	// to avoid killing SSE connections which need to stay open indefinitely
 }
@@ -1588,7 +1593,8 @@ func (s *Service) Start() error {
 	port := config.GetWorkerPort()
 
 	s.server = &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
+		// Bind loopback only so the worker is never exposed on external interfaces.
+		Addr:              fmt.Sprintf("127.0.0.1:%d", port),
 		Handler:           s.router,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

@@ -4,6 +4,7 @@ package worker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -121,6 +122,22 @@ func NewTokenAuth(enabled bool) (*TokenAuth, error) {
 	return ta, nil
 }
 
+// NewTokenAuthWithToken creates a TokenAuth using an explicitly supplied token.
+// It is used to enforce a caller-provided token (e.g. from an environment
+// variable) so the value is known to clients, unlike the random token produced
+// by NewTokenAuth. Authentication is enabled only when token is non-empty.
+func NewTokenAuthWithToken(token string) *TokenAuth {
+	return &TokenAuth{
+		enabled: token != "",
+		token:   token,
+		ExemptPaths: map[string]bool{
+			"/health":     true,
+			"/api/health": true,
+			"/api/ready":  true,
+		},
+	}
+}
+
 // Token returns the authentication token.
 // Returns empty string if authentication is disabled.
 func (ta *TokenAuth) Token() string {
@@ -161,7 +178,8 @@ func (ta *TokenAuth) Middleware(next http.Handler) http.Handler {
 			}
 		}
 
-		if providedToken != token {
+		// Constant-time comparison to avoid leaking the token via timing.
+		if subtle.ConstantTimeCompare([]byte(providedToken), []byte(token)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
