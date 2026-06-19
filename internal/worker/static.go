@@ -5,33 +5,28 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
-
-	"github.com/rs/zerolog/log"
+	"sync"
 )
 
 //go:embed static/*
 var staticFS embed.FS
 
-// staticSubFS is the static subdirectory filesystem
-var staticSubFS fs.FS
-
-// staticInitErr stores any error from static filesystem initialization
-var staticInitErr error
-
-func init() {
-	staticSubFS, staticInitErr = fs.Sub(staticFS, "static")
-	if staticInitErr != nil {
-		log.Warn().Err(staticInitErr).Msg("Static filesystem initialization failed - dashboard will be unavailable")
-	}
-}
+// staticFiles lazily resolves the embedded "static" subdirectory exactly once.
+// Using sync.OnceValues avoids an init() and package-level mutable state while
+// preserving the previous behavior: the dashboard is served when resolution
+// succeeds and reports a clear error otherwise.
+var staticFiles = sync.OnceValues(func() (fs.FS, error) {
+	return fs.Sub(staticFS, "static")
+})
 
 // serveIndex serves the index.html file for the root path
 func serveIndex(w http.ResponseWriter, r *http.Request) {
-	if staticInitErr != nil {
+	sub, err := staticFiles()
+	if err != nil {
 		http.Error(w, "Dashboard unavailable: static files not initialized", http.StatusServiceUnavailable)
 		return
 	}
-	content, err := fs.ReadFile(staticSubFS, "index.html")
+	content, err := fs.ReadFile(sub, "index.html")
 	if err != nil {
 		http.Error(w, "Dashboard not found", http.StatusNotFound)
 		return
@@ -46,14 +41,15 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 
 // serveAssets serves static assets from the embedded filesystem
 func serveAssets(w http.ResponseWriter, r *http.Request) {
-	if staticInitErr != nil {
+	sub, err := staticFiles()
+	if err != nil {
 		http.Error(w, "Assets unavailable: static files not initialized", http.StatusServiceUnavailable)
 		return
 	}
 	// Strip the /assets/ prefix and serve the file
 	path := strings.TrimPrefix(r.URL.Path, "/")
 
-	content, err := fs.ReadFile(staticSubFS, path)
+	content, err := fs.ReadFile(sub, path)
 	if err != nil {
 		http.Error(w, "Asset not found", http.StatusNotFound)
 		return
