@@ -8,6 +8,11 @@ import (
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 )
 
+// retrievalLogFactor scales the diminishing-returns retrieval boost:
+// log2(retrieval_count + 1) is multiplied by this factor before applying
+// the configured retrieval weight.
+const retrievalLogFactor = 0.1
+
 // Calculator computes importance scores for observations.
 type Calculator struct {
 	config *models.ScoringConfig
@@ -72,7 +77,7 @@ func (c *Calculator) CalculateComponents(obs *models.Observation, now time.Time)
 	retrievalContrib := 0.0
 	if obs.RetrievalCount > 0 {
 		// log2(count + 1) gives diminishing returns: 1→1, 3→2, 7→3, 15→4, etc.
-		retrievalBoost := math.Log2(float64(obs.RetrievalCount)+1) * 0.1
+		retrievalBoost := math.Log2(float64(obs.RetrievalCount)+1) * retrievalLogFactor
 		retrievalContrib = retrievalBoost * c.config.RetrievalWeight
 	}
 

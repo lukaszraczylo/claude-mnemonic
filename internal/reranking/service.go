@@ -34,6 +34,10 @@ const (
 	CrossEncoderAssetURL = "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/onnx/model.onnx"
 	// CrossEncoderModelSHA256 is the expected SHA-256 of the cross-encoder model file.
 	CrossEncoderModelSHA256 = "5d3e70fd0c9ff14b9b5169a51e957b7a9c74897afd0a35ce4bd318150c1d4d4a"
+
+	// DefaultAlpha is the default score-combining weight, favoring the
+	// cross-encoder: combined = alpha*rerank + (1-alpha)*original.
+	DefaultAlpha = 0.7
 )
 
 // Candidate represents a search result candidate for reranking.
@@ -79,7 +83,7 @@ type Config struct {
 // DefaultConfig returns sensible defaults for reranking.
 func DefaultConfig() Config {
 	return Config{
-		Alpha: 0.7, // Favor cross-encoder by default
+		Alpha: DefaultAlpha, // Favor cross-encoder by default
 	}
 }
 
@@ -121,7 +125,7 @@ func NewService(cfg Config) (*Service, error) {
 
 	alpha := cfg.Alpha
 	if alpha <= 0 || alpha > 1 {
-		alpha = 0.7
+		alpha = DefaultAlpha
 	}
 
 	return &Service{
