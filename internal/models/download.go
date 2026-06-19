@@ -85,23 +85,23 @@ func EnsureModel(assetName, url, expectedSHA256 string) (string, error) {
 				return modelPath, nil
 			}
 			log.Warn().Str("model", assetName).Msg("Cached model corrupted, re-downloading")
-			os.Remove(modelPath)
+			_ = os.Remove(modelPath) // best-effort cleanup
 		}
 	} else if len(currentVersion) > 0 {
 		log.Info().Str("old", string(currentVersion)).Str("new", ModelVersion).Msg("Model version updated, clearing cache")
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir) // best-effort cleanup
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return "", fmt.Errorf("create model cache dir: %w", err)
 		}
 	}
 
 	if err := downloadWithRetries(url, modelPath); err != nil {
-		os.Remove(modelPath)
+		_ = os.Remove(modelPath) // best-effort cleanup
 		return "", fmt.Errorf("download %s: %w", assetName, err)
 	}
 
 	if valid, err := verifyChecksum(modelPath, expectedSHA256); err != nil || !valid {
-		os.Remove(modelPath)
+		_ = os.Remove(modelPath) // best-effort cleanup
 		return "", fmt.Errorf("downloaded model %s failed checksum verification — the file at %s may have changed", assetName, url)
 	}
 
@@ -137,7 +137,7 @@ func downloadFile(url, dest string) error {
 	if err != nil {
 		return fmt.Errorf("HTTP GET: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // best-effort cleanup
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -148,7 +148,7 @@ func downloadFile(url, dest string) error {
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
-	cleanup := func() { f.Close(); os.Remove(tmp) }
+	cleanup := func() { _ = f.Close(); _ = os.Remove(tmp) } // best-effort cleanup
 
 	name := filepath.Base(dest)
 	reader := &progressReader{
@@ -166,10 +166,10 @@ func downloadFile(url, dest string) error {
 		cleanup()
 		return fmt.Errorf("sync file: %w", err)
 	}
-	f.Close()
+	_ = f.Close() // best-effort cleanup; data already flushed via Sync above
 
 	if err := os.Rename(tmp, dest); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp) // best-effort cleanup
 		return fmt.Errorf("commit file: %w", err)
 	}
 
@@ -221,7 +221,7 @@ func verifyChecksum(path, expectedHex string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // best-effort cleanup
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
@@ -249,7 +249,7 @@ func CleanStale() error {
 			tmpPath := filepath.Join(dir, e.Name())
 			if info, err := e.Info(); err == nil {
 				if time.Since(info.ModTime()) > time.Hour {
-					os.Remove(tmpPath)
+					_ = os.Remove(tmpPath) // best-effort cleanup
 					log.Debug().Str("file", tmpPath).Msg("Cleaned stale temp file")
 				}
 			}
