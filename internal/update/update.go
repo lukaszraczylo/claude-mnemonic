@@ -254,12 +254,16 @@ func (u *Updater) ApplyUpdate(ctx context.Context, info *UpdateInfo) error {
 	u.setStatus("verifying", 0.2, "Verifying signature...")
 
 	if info.ChecksumsURL != "" && info.BundleURL != "" {
+		// Fail-closed: a signature bundle is published for this release, so a
+		// verification failure (including cosign being unavailable) MUST abort
+		// the update before any binary is replaced. Silently proceeding would
+		// allow an unverified binary to overwrite the running one.
 		if err := u.verifySigstoreBundle(ctx, checksumsPath, bundlePath); err != nil {
-			// Log warning but continue - signature verification is optional if cosign isn't installed
-			log.Warn().Err(err).Msg("Signature verification failed or skipped")
-		} else {
-			log.Info().Msg("Sigstore signature verification passed")
+			u.setError(err)
+			return fmt.Errorf("release signature verification failed; aborting update for safety, please update manually with: %s: %w",
+				GetManualUpdateCommand("v"+info.LatestVersion), err)
 		}
+		log.Info().Msg("Sigstore signature verification passed")
 	}
 
 	// Step 3: Download the archive
