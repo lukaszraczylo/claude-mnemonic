@@ -562,17 +562,6 @@ func (m *bgeModel) Close() error {
 	return nil
 }
 
-// Register the BGE model with the default registry at init time
-func init() {
-	RegisterModel(ModelMetadata{
-		Name:        BGEModelName,
-		Version:     BGEModelVersion,
-		Dimensions:  EmbeddingDim,
-		Description: "High-quality semantic search model",
-		Default:     true,
-	}, newBGEModel)
-}
-
 // Service provides thread-safe text embedding generation with model abstraction.
 type Service struct {
 	model EmbeddingModel

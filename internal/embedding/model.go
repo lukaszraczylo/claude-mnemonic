@@ -138,7 +138,25 @@ func (r *ModelRegistry) List() []ModelMetadata {
 }
 
 // DefaultRegistry is the global model registry with all available models.
-var DefaultRegistry = NewModelRegistry()
+// It is constructed eagerly at package load via newDefaultRegistry, which
+// registers the built-in BGE model — replacing the previous init()-based
+// mutate-after-init pattern while preserving identical behaviour.
+var DefaultRegistry = newDefaultRegistry()
+
+// newDefaultRegistry builds a model registry pre-populated with the built-in
+// models (currently BGE). Registering at construction time keeps DefaultRegistry
+// ready-to-use without a separate init() mutating it after package load.
+func newDefaultRegistry() *ModelRegistry {
+	r := NewModelRegistry()
+	r.Register(ModelMetadata{
+		Name:        BGEModelName,
+		Version:     BGEModelVersion,
+		Dimensions:  EmbeddingDim,
+		Description: "High-quality semantic search model",
+		Default:     true,
+	}, newBGEModel)
+	return r
+}
 
 // RegisterModel adds a model to the default registry.
 func RegisterModel(meta ModelMetadata, factory ModelFactory) {
