@@ -182,9 +182,9 @@ func TestGetManualUpdateCommand(t *testing.T) {
 		wantNotContains []string
 	}{
 		{
-			name:         "empty_version_returns_latest",
-			version:      "",
-			wantContains: []string{"curl -sSL", InstallScriptURL, "| bash"},
+			name:            "empty_version_returns_latest",
+			version:         "",
+			wantContains:    []string{"curl -sSL", InstallScriptURL, "| bash"},
 			wantNotContains: []string{"bash -s --"},
 		},
 		{
@@ -312,9 +312,9 @@ func makeTarGzFile(t *testing.T, dir, content string) (path string, checksum str
 
 	body := []byte(content)
 	hdr := &tar.Header{
-		Name:    "worker",
-		Mode:    0755,
-		Size:    int64(len(body)),
+		Name:     "worker",
+		Mode:     0755,
+		Size:     int64(len(body)),
 		Typeflag: tar.TypeReg,
 	}
 	require.NoError(t, tw.WriteHeader(hdr))
@@ -455,9 +455,9 @@ func makeTarGzArchive(t *testing.T, files map[string]string) []byte {
 	for name, content := range files {
 		body := []byte(content)
 		hdr := &tar.Header{
-			Name:    name,
-			Mode:    0755,
-			Size:    int64(len(body)),
+			Name:     name,
+			Mode:     0755,
+			Size:     int64(len(body)),
 			Typeflag: tar.TypeReg,
 		}
 		require.NoError(t, tw.WriteHeader(hdr))

@@ -363,24 +363,24 @@ func TestRunNow_RetentionDays_DeletesExpiredObservations(t *testing.T) {
 
 	// Insert an observation and back-date it to 2 days ago.
 	obs := &gormdb.Observation{
-		SDKSessionID:   "old-session",
-		Project:        "proj",
-		Type:           models.ObsTypeDiscovery,
-		CreatedAt:      "2000-01-01T00:00:00Z",
-		CreatedAtEpoch: time.Now().AddDate(0, 0, -2).Unix(),
-		Scope:          models.ScopeProject,
+		SDKSessionID:    "old-session",
+		Project:         "proj",
+		Type:            models.ObsTypeDiscovery,
+		CreatedAt:       "2000-01-01T00:00:00Z",
+		CreatedAtEpoch:  time.Now().AddDate(0, 0, -2).Unix(),
+		Scope:           models.ScopeProject,
 		ImportanceScore: 1.0,
 	}
 	require.NoError(t, store.GetDB().WithContext(ctx).Create(obs).Error)
 
 	// Insert a recent observation (should survive).
 	recentObs := &gormdb.Observation{
-		SDKSessionID:   "new-session",
-		Project:        "proj",
-		Type:           models.ObsTypeDiscovery,
-		CreatedAt:      time.Now().Format(time.RFC3339),
-		CreatedAtEpoch: time.Now().Unix(),
-		Scope:          models.ScopeProject,
+		SDKSessionID:    "new-session",
+		Project:         "proj",
+		Type:            models.ObsTypeDiscovery,
+		CreatedAt:       time.Now().Format(time.RFC3339),
+		CreatedAtEpoch:  time.Now().Unix(),
+		Scope:           models.ScopeProject,
 		ImportanceScore: 1.0,
 	}
 	require.NoError(t, store.GetDB().WithContext(ctx).Create(recentObs).Error)
@@ -434,12 +434,12 @@ func TestRunNow_RetentionDays_VectorCleanupCalled(t *testing.T) {
 
 	// Insert an expired observation directly.
 	obs := &gormdb.Observation{
-		SDKSessionID:   "session-x",
-		Project:        "proj",
-		Type:           models.ObsTypeDiscovery,
-		CreatedAt:      "2000-01-01T00:00:00Z",
-		CreatedAtEpoch: time.Now().AddDate(0, 0, -2).Unix(),
-		Scope:          models.ScopeProject,
+		SDKSessionID:    "session-x",
+		Project:         "proj",
+		Type:            models.ObsTypeDiscovery,
+		CreatedAt:       "2000-01-01T00:00:00Z",
+		CreatedAtEpoch:  time.Now().AddDate(0, 0, -2).Unix(),
+		Scope:           models.ScopeProject,
 		ImportanceScore: 1.0,
 	}
 	require.NoError(t, store.GetDB().WithContext(ctx).Create(obs).Error)
@@ -670,12 +670,12 @@ func TestRunNow_RetentionDays_BatchDeletion_MoreThan100Rows(t *testing.T) {
 	// Insert 150 expired observations (forces 2 batches of 100).
 	for i := 0; i < 150; i++ {
 		obs := &gormdb.Observation{
-			SDKSessionID:   "session-old",
-			Project:        "proj",
-			Type:           models.ObsTypeDiscovery,
-			CreatedAt:      "2000-01-01T00:00:00Z",
-			CreatedAtEpoch: time.Now().AddDate(0, 0, -2).Unix(),
-			Scope:          models.ScopeProject,
+			SDKSessionID:    "session-old",
+			Project:         "proj",
+			Type:            models.ObsTypeDiscovery,
+			CreatedAt:       "2000-01-01T00:00:00Z",
+			CreatedAtEpoch:  time.Now().AddDate(0, 0, -2).Unix(),
+			Scope:           models.ScopeProject,
 			ImportanceScore: 1.0,
 		}
 		require.NoError(t, store.GetDB().WithContext(ctx).Create(obs).Error)
@@ -706,14 +706,14 @@ func TestRunNow_CleanupStale_BatchDeletion_MoreThan100Rows(t *testing.T) {
 	// Insert 120 superseded observations.
 	for i := 0; i < 120; i++ {
 		obs := &gormdb.Observation{
-			SDKSessionID:   "session-stale",
-			Project:        "proj",
-			Type:           models.ObsTypeDiscovery,
-			CreatedAt:      time.Now().Format(time.RFC3339),
-			CreatedAtEpoch: time.Now().Unix(),
-			Scope:          models.ScopeProject,
+			SDKSessionID:    "session-stale",
+			Project:         "proj",
+			Type:            models.ObsTypeDiscovery,
+			CreatedAt:       time.Now().Format(time.RFC3339),
+			CreatedAtEpoch:  time.Now().Unix(),
+			Scope:           models.ScopeProject,
 			ImportanceScore: 1.0,
-			IsSuperseded:   1,
+			IsSuperseded:    1,
 		}
 		require.NoError(t, store.GetDB().WithContext(ctx).Create(obs).Error)
 	}

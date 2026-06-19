@@ -258,7 +258,6 @@ func (s *Service) handleObservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
 	// Find session
 	sess, err := s.sessionStore.FindAnySDKSession(r.Context(), req.ClaudeSessionID)
 	if err != nil {

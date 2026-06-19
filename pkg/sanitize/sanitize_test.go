@@ -23,8 +23,8 @@ func TestStripSystemXML(t *testing.T) {
 			expected: "",
 		},
 		{
-			name:  "task-notification block",
-			input: "Before\n<task-notification>\n<task-id>abc123</task-id>\n<status>completed</status>\n<summary>Agent completed</summary>\n<result>Some result text</result>\n</task-notification>\nAfter",
+			name:     "task-notification block",
+			input:    "Before\n<task-notification>\n<task-id>abc123</task-id>\n<status>completed</status>\n<summary>Agent completed</summary>\n<result>Some result text</result>\n</task-notification>\nAfter",
 			expected: "Before\n\nAfter",
 		},
 		{
@@ -78,8 +78,8 @@ func TestStripSystemXML(t *testing.T) {
 			expected: "Before\n\nAfter",
 		},
 		{
-			name:  "real-world task notification",
-			input: "Here is the analysis:\n<task-notification>\n<task-id>a077fd04aed547ce1</task-id>\n<tool-use-id>toolu_01Kw2GwsArQQR1F9aV3VfzhP</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Analyze agency-agents repo structure\" completed</summary>\n<result>Now I have all the information I need. Let me compile a comprehensive report.\n\n## Agency-Agents Directory Exploration Report\n\n### 1. Agent File Count and Organization\n\n**Total Agent Files (excluding strategy docs):** 61 agents across 9 categories</result>\n</task-notification>\nThe repo has 61 agents.",
+			name:     "real-world task notification",
+			input:    "Here is the analysis:\n<task-notification>\n<task-id>a077fd04aed547ce1</task-id>\n<tool-use-id>toolu_01Kw2GwsArQQR1F9aV3VfzhP</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Analyze agency-agents repo structure\" completed</summary>\n<result>Now I have all the information I need. Let me compile a comprehensive report.\n\n## Agency-Agents Directory Exploration Report\n\n### 1. Agent File Count and Organization\n\n**Total Agent Files (excluding strategy docs):** 61 agents across 9 categories</result>\n</task-notification>\nThe repo has 61 agents.",
 			expected: "Here is the analysis:\n\nThe repo has 61 agents.",
 		},
 	}

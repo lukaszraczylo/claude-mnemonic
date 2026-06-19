@@ -331,8 +331,8 @@ func holdMutex(m *bgeModel) (ready <-chan struct{}, release func()) {
 	done := make(chan struct{})
 	go func() {
 		m.mu.Lock()
-		close(ch)   // signal: lock acquired
-		<-done      // wait for release signal
+		close(ch) // signal: lock acquired
+		<-done    // wait for release signal
 		m.mu.Unlock()
 	}()
 	return ch, func() { close(done) }
