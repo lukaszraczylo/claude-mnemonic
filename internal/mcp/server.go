@@ -290,475 +290,65 @@ func (s *Server) handleToolsList(req *Request) *Response {
 			},
 		},
 		{
-			Name:        "decisions",
-			Description: "Semantic shortcut for finding architectural, design, and implementation decisions.",
+			Name:        "observation",
+			Description: "Manage individual observations. Set 'action' to choose the operation: get, edit, delete, supersede, boost, merge, related, similar, quality, relationships, scoring, tag, by_tag, batch_tag.",
 			InputSchema: map[string]any{
 				"type":     "object",
-				"required": []string{"query"},
+				"required": []string{"action"},
 				"properties": map[string]any{
-					"query":     map[string]any{"type": "string", "description": "Natural language query for finding decisions"},
-					"dateStart": map[string]any{"type": []string{"string", "number"}},
-					"dateEnd":   map[string]any{"type": []string{"string", "number"}},
-					"limit":     map[string]any{"type": "number", "default": 20, "minimum": 1, "maximum": 100},
-					"format":    map[string]any{"type": "string", "enum": []string{"index", "full"}, "default": "index"},
+					"action":         map[string]any{"type": "string", "enum": []string{"get", "edit", "delete", "supersede", "boost", "merge", "related", "similar", "quality", "relationships", "scoring", "tag", "by_tag", "batch_tag"}, "description": "Operation to perform"},
+					"id":             map[string]any{"type": "number", "description": "Observation ID (get, edit, quality, relationships, scoring, related)"},
+					"ids":            map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "description": "Observation IDs (delete, supersede, boost)"},
+					"title":          map[string]any{"type": "string", "description": "edit: new title"},
+					"subtitle":       map[string]any{"type": "string", "description": "edit: new subtitle"},
+					"narrative":      map[string]any{"type": "string", "description": "edit: new narrative"},
+					"facts":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "edit: new facts"},
+					"concepts":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "edit: new concept tags"},
+					"files_read":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "edit: new files read"},
+					"files_modified": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "edit: new files modified"},
+					"scope":          map[string]any{"type": "string", "enum": []string{"project", "global"}, "description": "edit: new scope"},
+					"query":          map[string]any{"type": "string", "description": "similar: text to find similar observations for"},
+					"project":        map[string]any{"type": "string", "description": "Filter by project (similar, by_tag, batch_tag)"},
+					"min_confidence": map[string]any{"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "related: minimum confidence (default 0.5)"},
+					"min_similarity": map[string]any{"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "similar: minimum similarity (default 0.7)"},
+					"limit":          map[string]any{"type": "number", "description": "Max results (related, similar, by_tag, batch_tag)"},
+					"delete_vectors": map[string]any{"type": "boolean", "description": "delete: also delete vectors (default true)"},
+					"boost":          map[string]any{"type": "number", "minimum": -1.0, "maximum": 1.0, "description": "boost: amount; merge: target boost"},
+					"source_id":      map[string]any{"type": "number", "description": "merge: source observation ID (superseded)"},
+					"target_id":      map[string]any{"type": "number", "description": "merge: target observation ID (kept)"},
+					"max_depth":      map[string]any{"type": "number", "minimum": 1, "maximum": 5, "description": "relationships: traversal hops (default 2)"},
+					"tag":            map[string]any{"type": "string", "description": "by_tag: tag/concept to search for"},
+					"tags":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "tag/batch_tag: tags to apply"},
+					"mode":           map[string]any{"type": "string", "enum": []string{"add", "remove", "set"}, "description": "tag: add/remove/set (default add)"},
+					"pattern":        map[string]any{"type": "string", "description": "batch_tag: search pattern to match"},
+					"dry_run":        map[string]any{"type": "boolean", "description": "batch_tag: preview only (default true)"},
+					"max_matches":    map[string]any{"type": "number", "description": "batch_tag: max observations to tag"},
 				},
 			},
 		},
 		{
-			Name:        "changes",
-			Description: "Semantic shortcut for finding code changes, refactorings, and modifications.",
+			Name:        "memory_admin",
+			Description: "Memory system administration and analytics. Set 'action': stats, health, maintenance_stats, run_maintenance, importance, search_patterns, explain_ranking, temporal_trends, data_quality, export, suggest_consolidations, patterns.",
 			InputSchema: map[string]any{
 				"type":     "object",
-				"required": []string{"query"},
+				"required": []string{"action"},
 				"properties": map[string]any{
-					"query":     map[string]any{"type": "string", "description": "Natural language query for finding changes"},
-					"dateStart": map[string]any{"type": []string{"string", "number"}},
-					"dateEnd":   map[string]any{"type": []string{"string", "number"}},
-					"limit":     map[string]any{"type": "number", "default": 20, "minimum": 1, "maximum": 100},
-					"format":    map[string]any{"type": "string", "enum": []string{"index", "full"}, "default": "index"},
-				},
-			},
-		},
-		{
-			Name:        "how_it_works",
-			Description: "Semantic shortcut for understanding system architecture, design patterns, and implementation details.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"query"},
-				"properties": map[string]any{
-					"query":     map[string]any{"type": "string", "description": "Natural language query for understanding how something works"},
-					"dateStart": map[string]any{"type": []string{"string", "number"}},
-					"dateEnd":   map[string]any{"type": []string{"string", "number"}},
-					"limit":     map[string]any{"type": "number", "default": 20, "minimum": 1, "maximum": 100},
-					"format":    map[string]any{"type": "string", "enum": []string{"index", "full"}, "default": "index"},
-				},
-			},
-		},
-		{
-			Name:        "find_by_concept",
-			Description: "Find observations tagged with specific concepts.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"concepts"},
-				"properties": map[string]any{
-					"concepts":  map[string]any{"type": "string", "description": "Concept tag(s) to filter by"},
-					"type":      map[string]any{"type": "string"},
-					"files":     map[string]any{"type": "string"},
-					"project":   map[string]any{"type": "string"},
-					"dateStart": map[string]any{"type": []string{"string", "number"}},
-					"dateEnd":   map[string]any{"type": []string{"string", "number"}},
-					"orderBy":   map[string]any{"type": "string", "enum": []string{"date_desc", "date_asc"}, "default": "date_desc"},
-					"limit":     map[string]any{"type": "number", "default": 20},
-					"offset":    map[string]any{"type": "number", "default": 0},
-					"format":    map[string]any{"type": "string", "enum": []string{"index", "full"}, "default": "index"},
-				},
-			},
-		},
-		{
-			Name:        "find_by_file",
-			Description: "Find observations related to specific file paths.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"files"},
-				"properties": map[string]any{
-					"files":     map[string]any{"type": "string", "description": "File path(s) to filter by"},
-					"type":      map[string]any{"type": "string"},
-					"concepts":  map[string]any{"type": "string"},
-					"project":   map[string]any{"type": "string"},
-					"dateStart": map[string]any{"type": []string{"string", "number"}},
-					"dateEnd":   map[string]any{"type": []string{"string", "number"}},
-					"orderBy":   map[string]any{"type": "string", "enum": []string{"date_desc", "date_asc"}, "default": "date_desc"},
-					"limit":     map[string]any{"type": "number", "default": 20},
-					"offset":    map[string]any{"type": "number", "default": 0},
-					"format":    map[string]any{"type": "string", "enum": []string{"index", "full"}, "default": "index"},
-				},
-			},
-		},
-		{
-			Name:        "find_by_type",
-			Description: "Find observations of specific types.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"type"},
-				"properties": map[string]any{
-					"type":      map[string]any{"type": "string", "description": "Observation type(s) to filter by"},
-					"concepts":  map[string]any{"type": "string"},
-					"files":     map[string]any{"type": "string"},
-					"project":   map[string]any{"type": "string"},
-					"dateStart": map[string]any{"type": []string{"string", "number"}},
-					"dateEnd":   map[string]any{"type": []string{"string", "number"}},
-					"orderBy":   map[string]any{"type": "string", "enum": []string{"date_desc", "date_asc"}, "default": "date_desc"},
-					"limit":     map[string]any{"type": "number", "default": 20},
-					"offset":    map[string]any{"type": "number", "default": 0},
-					"format":    map[string]any{"type": "string", "enum": []string{"index", "full"}, "default": "index"},
-				},
-			},
-		},
-		{
-			Name:        "get_recent_context",
-			Description: "Get recent session context for timeline display.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"project":   map[string]any{"type": "string"},
-					"type":      map[string]any{"type": "string"},
-					"concepts":  map[string]any{"type": "string"},
-					"files":     map[string]any{"type": "string"},
-					"dateStart": map[string]any{"type": []string{"string", "number"}},
-					"dateEnd":   map[string]any{"type": []string{"string", "number"}},
-					"limit":     map[string]any{"type": "number", "default": 30, "minimum": 1, "maximum": 100},
-					"format":    map[string]any{"type": "string", "enum": []string{"index", "full"}, "default": "index"},
-				},
-			},
-		},
-		{
-			Name:        "get_context_timeline",
-			Description: "Get timeline of observations around a specific observation ID.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"anchor_id"},
-				"properties": map[string]any{
-					"anchor_id": map[string]any{"type": "number", "description": "Observation ID to use as anchor point"},
-					"before":    map[string]any{"type": "number", "default": 10, "minimum": 0, "maximum": 100},
-					"after":     map[string]any{"type": "number", "default": 10, "minimum": 0, "maximum": 100},
-					"project":   map[string]any{"type": "string"},
-					"type":      map[string]any{"type": "string"},
-					"concepts":  map[string]any{"type": "string"},
-					"files":     map[string]any{"type": "string"},
-					"format":    map[string]any{"type": "string", "enum": []string{"index", "full"}, "default": "index"},
-				},
-			},
-		},
-		{
-			Name:        "get_timeline_by_query",
-			Description: "Combined search + timeline tool. First searches for observations matching the query, then returns timeline around the best match.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"query"},
-				"properties": map[string]any{
-					"query":     map[string]any{"type": "string", "description": "Natural language query to find anchor observation"},
-					"before":    map[string]any{"type": "number", "default": 10, "minimum": 0, "maximum": 100},
-					"after":     map[string]any{"type": "number", "default": 10, "minimum": 0, "maximum": 100},
-					"project":   map[string]any{"type": "string"},
-					"type":      map[string]any{"type": "string"},
-					"concepts":  map[string]any{"type": "string"},
-					"files":     map[string]any{"type": "string"},
-					"dateStart": map[string]any{"type": []string{"string", "number"}},
-					"dateEnd":   map[string]any{"type": []string{"string", "number"}},
-					"format":    map[string]any{"type": "string", "enum": []string{"index", "full"}, "default": "index"},
-				},
-			},
-		},
-		{
-			Name:        "find_related_observations",
-			Description: "Find observations related to a given observation ID filtered by confidence threshold. Returns related observations sorted by confidence score. Useful for discovering relevant context.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id"},
-				"properties": map[string]any{
-					"id":             map[string]any{"type": "number", "description": "Observation ID"},
-					"min_confidence": map[string]any{"type": "number", "default": 0.5, "minimum": 0.0, "maximum": 1.0, "description": "Minimum confidence threshold"},
-					"limit":          map[string]any{"type": "number", "default": 20, "minimum": 1, "maximum": 100},
-				},
-			},
-		},
-		{
-			Name:        "find_similar_observations",
-			Description: "Find observations semantically similar to a query or observation. Uses vector similarity search to find related content. Useful for detecting duplicates before creating new observations.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"query"},
-				"properties": map[string]any{
-					"query":          map[string]any{"type": "string", "description": "Text to find similar observations for"},
-					"project":        map[string]any{"type": "string", "description": "Filter by project name"},
-					"min_similarity": map[string]any{"type": "number", "default": 0.7, "minimum": 0.0, "maximum": 1.0, "description": "Minimum similarity threshold (0-1)"},
-					"limit":          map[string]any{"type": "number", "default": 10, "minimum": 1, "maximum": 50},
-				},
-			},
-		},
-		{
-			Name:        "get_patterns",
-			Description: "Get detected patterns from observations. Patterns represent recurring themes, workflows, or practices discovered across observations.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"type":    map[string]any{"type": "string", "enum": []string{"workflow", "preference", "best_practice", "anti_pattern", "tooling"}, "description": "Filter by pattern type"},
-					"project": map[string]any{"type": "string", "description": "Filter by project"},
-					"query":   map[string]any{"type": "string", "description": "Search patterns by name/description"},
-					"limit":   map[string]any{"type": "number", "default": 20, "minimum": 1, "maximum": 100},
-				},
-			},
-		},
-		{
-			Name:        "get_memory_stats",
-			Description: "Get statistics about the memory system including observation counts, vector stats, pattern counts, and search metrics.",
-			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			},
-		},
-		{
-			Name:        "bulk_delete_observations",
-			Description: "Delete multiple observations by their IDs. Returns count of successfully deleted observations.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"ids"},
-				"properties": map[string]any{
-					"ids":            map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "description": "Array of observation IDs to delete"},
-					"delete_vectors": map[string]any{"type": "boolean", "default": true, "description": "Also delete associated vectors"},
-				},
-			},
-		},
-		{
-			Name:        "bulk_mark_superseded",
-			Description: "Mark multiple observations as superseded (stale). Useful for cleanup without permanent deletion.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"ids"},
-				"properties": map[string]any{
-					"ids": map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "description": "Array of observation IDs to mark as superseded"},
-				},
-			},
-		},
-		{
-			Name:        "bulk_boost_observations",
-			Description: "Boost or reduce the importance score of multiple observations. Positive values increase importance, negative decrease.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"ids", "boost"},
-				"properties": map[string]any{
-					"ids":   map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "description": "Array of observation IDs to boost"},
-					"boost": map[string]any{"type": "number", "minimum": -1.0, "maximum": 1.0, "description": "Boost amount (-1.0 to 1.0)"},
-				},
-			},
-		},
-		{
-			Name:        "trigger_maintenance",
-			Description: "Trigger an immediate database maintenance run: optimize/checkpoint the database, clean up old prompts, apply any configured observation retention/stale cleanup, and recalculate importance scores.",
-			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			},
-		},
-		{
-			Name:        "get_maintenance_stats",
-			Description: "Get statistics about the maintenance system including last run time, cleanup counts, and configuration.",
-			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			},
-		},
-		{
-			Name:        "merge_observations",
-			Description: "Merge two observations into one. The target observation is kept and boosted, the source is marked as superseded. Useful for deduplication without data loss.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"source_id", "target_id"},
-				"properties": map[string]any{
-					"source_id": map[string]any{"type": "number", "description": "ID of the observation to merge FROM (will be superseded)"},
-					"target_id": map[string]any{"type": "number", "description": "ID of the observation to merge INTO (will be kept and boosted)"},
-					"boost":     map[string]any{"type": "number", "default": 0.1, "minimum": 0, "maximum": 0.5, "description": "Score boost for the target observation (default 0.1)"},
-				},
-			},
-		},
-		{
-			Name:        "get_observation",
-			Description: "Get a single observation by its ID. Returns full observation details including all metadata.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id"},
-				"properties": map[string]any{
-					"id": map[string]any{"type": "number", "description": "Observation ID to retrieve"},
-				},
-			},
-		},
-		{
-			Name:        "edit_observation",
-			Description: "Edit an existing observation. Only provided fields will be updated, others remain unchanged. Useful for correcting errors, adding details, or updating scope.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id"},
-				"properties": map[string]any{
-					"id":             map[string]any{"type": "number", "description": "Observation ID to edit"},
-					"title":          map[string]any{"type": "string", "description": "New title (optional)"},
-					"subtitle":       map[string]any{"type": "string", "description": "New subtitle (optional)"},
-					"narrative":      map[string]any{"type": "string", "description": "New narrative text (optional)"},
-					"facts":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "New facts array (optional)"},
-					"concepts":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "New concept tags (optional)"},
-					"files_read":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "New files read list (optional)"},
-					"files_modified": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "New files modified list (optional)"},
-					"scope":          map[string]any{"type": "string", "enum": []string{"project", "global"}, "description": "New scope (optional)"},
-				},
-			},
-		},
-		{
-			Name:        "get_observation_quality",
-			Description: "Get quality metrics for an observation. Returns completeness score, usage stats, and improvement suggestions.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id"},
-				"properties": map[string]any{
-					"id": map[string]any{"type": "number", "description": "Observation ID to analyze"},
-				},
-			},
-		},
-		{
-			Name:        "suggest_consolidations",
-			Description: "Find observations that could be merged or consolidated. Returns groups of similar observations with merge recommendations.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"project":        map[string]any{"type": "string", "description": "Filter by project"},
-					"min_similarity": map[string]any{"type": "number", "default": 0.8, "minimum": 0.5, "maximum": 1.0, "description": "Minimum similarity threshold for grouping"},
-					"limit":          map[string]any{"type": "number", "default": 10, "minimum": 1, "maximum": 50, "description": "Maximum groups to return"},
-				},
-			},
-		},
-		{
-			Name:        "tag_observation",
-			Description: "Add or remove concept tags from an observation. Tags help with organization and filtering. Use mode 'add' to add new tags, 'remove' to remove specific tags, or 'set' to replace all tags.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id", "tags"},
-				"properties": map[string]any{
-					"id":   map[string]any{"type": "number", "description": "Observation ID to tag"},
-					"tags": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags to add, remove, or set"},
-					"mode": map[string]any{"type": "string", "enum": []string{"add", "remove", "set"}, "default": "add", "description": "Operation mode: 'add' appends tags, 'remove' removes specific tags, 'set' replaces all tags"},
-				},
-			},
-		},
-		{
-			Name:        "get_observations_by_tag",
-			Description: "Find all observations that have a specific concept tag. Useful for browsing by category.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"tag"},
-				"properties": map[string]any{
-					"tag":     map[string]any{"type": "string", "description": "Tag/concept to search for"},
-					"project": map[string]any{"type": "string", "description": "Filter by project (optional)"},
-					"limit":   map[string]any{"type": "number", "default": 50, "minimum": 1, "maximum": 200, "description": "Maximum observations to return"},
-				},
-			},
-		},
-		{
-			Name:        "get_temporal_trends",
-			Description: "Analyze observation creation patterns over time. Returns daily counts, peak activity times, and trend insights. Useful for understanding work patterns.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"project":  map[string]any{"type": "string", "description": "Filter by project (optional)"},
-					"days":     map[string]any{"type": "number", "default": 30, "minimum": 1, "maximum": 365, "description": "Number of days to analyze"},
-					"group_by": map[string]any{"type": "string", "enum": []string{"day", "week", "hour_of_day"}, "default": "day", "description": "How to group the data"},
-				},
-			},
-		},
-		{
-			Name:        "get_data_quality_report",
-			Description: "Get a comprehensive quality assessment of observations. Shows completeness distribution, common issues, and improvement suggestions.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"project": map[string]any{"type": "string", "description": "Filter by project (optional)"},
-					"limit":   map[string]any{"type": "number", "default": 100, "minimum": 10, "maximum": 500, "description": "Number of observations to analyze"},
-				},
-			},
-		},
-		{
-			Name:        "batch_tag_by_pattern",
-			Description: "Apply tags to observations matching a pattern. Useful for retroactive organization and categorization.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"pattern", "tags"},
-				"properties": map[string]any{
-					"pattern":     map[string]any{"type": "string", "description": "Search pattern to match (searches title, narrative, facts)"},
-					"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags to add to matching observations"},
-					"project":     map[string]any{"type": "string", "description": "Filter by project (optional)"},
-					"dry_run":     map[string]any{"type": "boolean", "default": true, "description": "If true, only preview matches without applying tags"},
-					"max_matches": map[string]any{"type": "number", "default": 100, "minimum": 1, "maximum": 500, "description": "Maximum observations to tag"},
-				},
-			},
-		},
-		{
-			Name:        "explain_search_ranking",
-			Description: "Debug search results by showing score breakdown for top matches. Explains why each observation ranked where it did.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"query"},
-				"properties": map[string]any{
-					"query":   map[string]any{"type": "string", "description": "Search query to analyze"},
-					"project": map[string]any{"type": "string", "description": "Project context for search"},
-					"top_n":   map[string]any{"type": "number", "default": 5, "minimum": 1, "maximum": 20, "description": "Number of top results to explain"},
-				},
-			},
-		},
-		{
-			Name:        "export_observations",
-			Description: "Export observations in various formats for backup or analysis.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"format":     map[string]any{"type": "string", "enum": []string{"json", "jsonl", "markdown"}, "default": "json", "description": "Export format"},
-					"project":    map[string]any{"type": "string", "description": "Filter by project (optional)"},
-					"limit":      map[string]any{"type": "number", "default": 100, "minimum": 1, "maximum": 1000, "description": "Maximum observations to export"},
-					"date_start": map[string]any{"type": "number", "description": "Filter by creation date (epoch milliseconds)"},
-					"date_end":   map[string]any{"type": "number", "description": "Filter by creation date (epoch milliseconds)"},
-					"obs_type":   map[string]any{"type": "string", "description": "Filter by observation type"},
-				},
-			},
-		},
-		{
-			Name:        "check_system_health",
-			Description: "Comprehensive system health check. Returns status of all subsystems (database, vectors, cache, search) with actionable diagnostics.",
-			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			},
-		},
-		{
-			Name:        "analyze_search_patterns",
-			Description: "Analyze search query patterns to identify common searches, missed queries, and optimization opportunities.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"days":  map[string]any{"type": "number", "default": 7, "minimum": 1, "maximum": 30, "description": "Number of days to analyze"},
-					"top_n": map[string]any{"type": "number", "default": 10, "minimum": 1, "maximum": 50, "description": "Number of top patterns to return"},
-				},
-			},
-		},
-		{
-			Name:        "get_observation_relationships",
-			Description: "Get relationship graph for an observation. Shows how observations relate to each other (depends_on, extends, conflicts_with, supersedes). Useful for understanding dependencies and context.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id"},
-				"properties": map[string]any{
-					"id":        map[string]any{"type": "number", "description": "Observation ID to analyze relationships for"},
-					"max_depth": map[string]any{"type": "number", "default": 2, "minimum": 1, "maximum": 5, "description": "How many hops to traverse (1=direct, 2=neighbors of neighbors)"},
-				},
-			},
-		},
-		{
-			Name:        "get_observation_scoring_breakdown",
-			Description: "Get detailed scoring breakdown for an observation. Shows how importance scores are calculated including type weight, recency decay, feedback contribution, concept boost, and retrieval frequency. Useful for understanding why observations are ranked the way they are.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id"},
-				"properties": map[string]any{
-					"id": map[string]any{"type": "number", "description": "Observation ID to get scoring breakdown for"},
-				},
-			},
-		},
-		{
-			Name:        "analyze_observation_importance",
-			Description: "Analyze observation importance patterns in a project. Returns statistics on feedback distribution, top-scoring observations, most-retrieved observations, and concept weights. Useful for understanding what makes observations valuable.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"project":                 map[string]any{"type": "string", "description": "Project to analyze (optional, analyzes all if omitted)"},
-					"include_top_scored":      map[string]any{"type": "boolean", "default": true, "description": "Include top-scoring observations"},
-					"include_most_retrieved":  map[string]any{"type": "boolean", "default": true, "description": "Include most-retrieved observations"},
-					"include_concept_weights": map[string]any{"type": "boolean", "default": true, "description": "Include concept weight analysis"},
-					"limit":                   map[string]any{"type": "number", "default": 10, "minimum": 1, "maximum": 50, "description": "Number of top observations to include"},
+					"action":                  map[string]any{"type": "string", "enum": []string{"stats", "health", "maintenance_stats", "run_maintenance", "importance", "search_patterns", "explain_ranking", "temporal_trends", "data_quality", "export", "suggest_consolidations", "patterns"}, "description": "Operation to perform"},
+					"project":                 map[string]any{"type": "string", "description": "Filter by project (importance, temporal_trends, data_quality, export, suggest_consolidations, patterns, explain_ranking)"},
+					"query":                   map[string]any{"type": "string", "description": "explain_ranking: query to analyze; patterns: search by name/description"},
+					"top_n":                   map[string]any{"type": "number", "description": "Top results (explain_ranking, search_patterns)"},
+					"days":                    map[string]any{"type": "number", "description": "Days to analyze (search_patterns, temporal_trends)"},
+					"group_by":                map[string]any{"type": "string", "enum": []string{"day", "week", "hour_of_day"}, "description": "temporal_trends: grouping (default day)"},
+					"limit":                   map[string]any{"type": "number", "description": "Max results (importance, data_quality, export, suggest_consolidations, patterns)"},
+					"min_similarity":          map[string]any{"type": "number", "minimum": 0.5, "maximum": 1.0, "description": "suggest_consolidations: grouping threshold (default 0.8)"},
+					"format":                  map[string]any{"type": "string", "enum": []string{"json", "jsonl", "markdown"}, "description": "export: output format (default json)"},
+					"date_start":              map[string]any{"type": "number", "description": "export: filter start (epoch ms)"},
+					"date_end":                map[string]any{"type": "number", "description": "export: filter end (epoch ms)"},
+					"obs_type":                map[string]any{"type": "string", "description": "export: filter by observation type"},
+					"type":                    map[string]any{"type": "string", "enum": []string{"workflow", "preference", "best_practice", "anti_pattern", "tooling"}, "description": "patterns: filter by pattern type"},
+					"include_top_scored":      map[string]any{"type": "boolean", "description": "importance: include top-scoring (default true)"},
+					"include_most_retrieved":  map[string]any{"type": "boolean", "description": "importance: include most-retrieved (default true)"},
+					"include_concept_weights": map[string]any{"type": "boolean", "description": "importance: include concept weights (default true)"},
 				},
 			},
 		},
@@ -833,6 +423,55 @@ type searchArgs struct {
 	Offset    int    `json:"offset"`
 }
 
+// observationActions maps the 'observation' tool's action values to the internal tool name that implements them.
+var observationActions = map[string]string{
+	"get":           "get_observation",
+	"edit":          "edit_observation",
+	"delete":        "bulk_delete_observations",
+	"supersede":     "bulk_mark_superseded",
+	"boost":         "bulk_boost_observations",
+	"merge":         "merge_observations",
+	"related":       "find_related_observations",
+	"similar":       "find_similar_observations",
+	"quality":       "get_observation_quality",
+	"relationships": "get_observation_relationships",
+	"scoring":       "get_observation_scoring_breakdown",
+	"tag":           "tag_observation",
+	"by_tag":        "get_observations_by_tag",
+	"batch_tag":     "batch_tag_by_pattern",
+}
+
+// adminActions maps the 'memory_admin' tool's action values to the internal tool name that implements them.
+var adminActions = map[string]string{
+	"stats":                  "get_memory_stats",
+	"health":                 "check_system_health",
+	"maintenance_stats":      "get_maintenance_stats",
+	"run_maintenance":        "trigger_maintenance",
+	"importance":             "analyze_observation_importance",
+	"search_patterns":        "analyze_search_patterns",
+	"explain_ranking":        "explain_search_ranking",
+	"temporal_trends":        "get_temporal_trends",
+	"data_quality":           "get_data_quality_report",
+	"export":                 "export_observations",
+	"suggest_consolidations": "suggest_consolidations",
+	"patterns":               "get_patterns",
+}
+
+// dispatchAction routes a multiplexed tool call to its underlying implementation by reading the "action" field.
+func (s *Server) dispatchAction(ctx context.Context, tool string, actions map[string]string, args json.RawMessage) (string, error) {
+	var a struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", fmt.Errorf("%s: invalid arguments: %w", tool, err)
+	}
+	target, ok := actions[a.Action]
+	if !ok {
+		return "", fmt.Errorf("%s: unknown action %q", tool, a.Action)
+	}
+	return s.callTool(ctx, target, args)
+}
+
 // callTool dispatches to the appropriate tool handler by proxying to the worker HTTP API.
 func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	// Parse common search params used by many tools
@@ -849,6 +488,10 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	// --- Search-based tools: proxy to GET /api/context/search ---
 	case "search":
 		return s.handleSearchProxy(ctx, sa)
+	case "observation":
+		return s.dispatchAction(ctx, "observation", observationActions, args)
+	case "memory_admin":
+		return s.dispatchAction(ctx, "memory_admin", adminActions, args)
 	case "decisions":
 		sa.ObsType = "decision"
 		return s.handleSearchProxy(ctx, sa)

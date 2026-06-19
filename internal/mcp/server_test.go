@@ -434,12 +434,7 @@ func TestHandleToolsList(t *testing.T) {
 		toolNames[tool.Name] = true
 	}
 
-	expectedTools := []string{
-		"search", "timeline", "decisions", "changes",
-		"how_it_works", "find_by_concept", "find_by_file",
-		"find_by_type", "get_recent_context", "get_context_timeline",
-		"get_timeline_by_query",
-	}
+	expectedTools := []string{"search", "timeline", "observation", "memory_admin"}
 
 	for _, name := range expectedTools {
 		assert.True(t, toolNames[name], "expected tool %s to be present", name)
@@ -1707,43 +1702,10 @@ func TestCallTool_ToolNameRecognition(t *testing.T) {
 
 	// Verify all expected tools are registered
 	expectedTools := map[string]bool{
-		"search":                            true,
-		"timeline":                          true,
-		"decisions":                         true,
-		"changes":                           true,
-		"how_it_works":                      true,
-		"find_by_concept":                   true,
-		"find_by_file":                      true,
-		"find_by_type":                      true,
-		"get_recent_context":                true,
-		"get_context_timeline":              true,
-		"get_timeline_by_query":             true,
-		"find_related_observations":         true,
-		"find_similar_observations":         true,
-		"get_patterns":                      true,
-		"get_memory_stats":                  true,
-		"bulk_delete_observations":          true,
-		"bulk_mark_superseded":              true,
-		"bulk_boost_observations":           true,
-		"trigger_maintenance":               true,
-		"get_maintenance_stats":             true,
-		"merge_observations":                true,
-		"get_observation":                   true,
-		"edit_observation":                  true,
-		"get_observation_quality":           true,
-		"suggest_consolidations":            true,
-		"tag_observation":                   true,
-		"get_observations_by_tag":           true,
-		"get_temporal_trends":               true,
-		"get_data_quality_report":           true,
-		"batch_tag_by_pattern":              true,
-		"explain_search_ranking":            true,
-		"export_observations":               true,
-		"check_system_health":               true,
-		"analyze_search_patterns":           true,
-		"get_observation_relationships":     true,
-		"get_observation_scoring_breakdown": true,
-		"analyze_observation_importance":    true,
+		"search":       true,
+		"timeline":     true,
+		"observation":  true,
+		"memory_admin": true,
 	}
 
 	foundTools := make(map[string]bool)
@@ -3219,7 +3181,7 @@ func TestRun_SemaphoreDoesNotBlockMainLoop(t *testing.T) {
 		_, _ = io.WriteString(w, `{}`)
 	}))
 	defer func() {
-		handlerCancel()          // unblock all handlers first
+		handlerCancel() // unblock all handlers first
 		ts.CloseClientConnections()
 		ts.Close()
 	}()
@@ -3417,4 +3379,57 @@ func TestHandleToolsCall_ErrorUsesIsError(t *testing.T) {
 	errText, ok := content[0]["text"].(string)
 	require.True(t, ok)
 	assert.Contains(t, errText, "unknown tool: nonexistent_tool")
+}
+
+// TestDispatchAction verifies the multiplexed tool action routing.
+// Only action-routing error cases are asserted: a nil HTTP client means valid
+// actions fail later at the HTTP layer, but unknown/invalid actions short-circuit
+// before any HTTP call.
+func TestDispatchAction(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(nil, "", "", "1.0.0")
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		tool    string
+		args    string
+		wantErr string
+	}{
+		{
+			name:    "observation unknown action",
+			tool:    "observation",
+			args:    `{"action":"bogus"}`,
+			wantErr: "unknown action",
+		},
+		{
+			name:    "memory_admin unknown action",
+			tool:    "memory_admin",
+			args:    `{"action":"bogus"}`,
+			wantErr: "unknown action",
+		},
+		{
+			name:    "observation no action field",
+			tool:    "observation",
+			args:    `{}`,
+			wantErr: "unknown action",
+		},
+		{
+			name:    "observation invalid action JSON",
+			tool:    "observation",
+			args:    `{"action": 123}`,
+			wantErr: "invalid arguments",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := server.callTool(ctx, tt.tool, json.RawMessage(tt.args))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }

@@ -172,13 +172,19 @@ Example: A bug fix in your auth module stays local. "Always validate JWT server-
 
 ## MCP Tools
 
-These search tools are available via MCP:
+Four tools are exposed via MCP:
 
-- `search` - semantic search across all memories
-- `timeline` - browse by time
-- `decisions` - find architecture decisions
-- `changes` - find code modifications
-- `how_it_works` - system understanding queries
+- `search` - semantic search across all memories. Accepts `obs_type` (e.g.
+  `decision`, `code_change`, `architecture`) plus filter params (`concepts`,
+  `files`, `type`) - these replace the old per-type shortcut tools.
+- `timeline` - browse observations around a point in time.
+- `observation` - manage individual observations. Set `action` to one of:
+  `get`, `edit`, `delete`, `supersede`, `boost`, `merge`, `related`, `similar`,
+  `quality`, `relationships`, `scoring`, `tag`, `by_tag`, `batch_tag`.
+- `memory_admin` - administration and analytics. Set `action` to one of:
+  `stats`, `health`, `maintenance_stats`, `run_maintenance`, `importance`,
+  `search_patterns`, `explain_ranking`, `temporal_trends`, `data_quality`,
+  `export`, `suggest_consolidations`, `patterns`.
 
 ## Slash Commands
 
