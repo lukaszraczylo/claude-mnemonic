@@ -7,7 +7,7 @@ replace github.com/sugarme/tokenizer => github.com/clems4ever/tokenizer v0.0.0-2
 require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/go-chi/chi/v5 v5.3.0
+	github.com/go-chi/chi/v5 v5.3.1
 	github.com/go-gormigrate/gormigrate/v2 v2.1.6
 	github.com/goccy/go-json v0.10.6
 	github.com/lukaszraczylo/oss-telemetry v0.2.3
@@ -35,6 +35,6 @@ require (
 	github.com/schollz/progressbar/v2 v2.15.0 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
