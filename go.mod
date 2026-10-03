@@ -10,7 +10,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-gormigrate/gormigrate/v2 v2.1.7
 	github.com/goccy/go-json v0.11.2
-	github.com/lukaszraczylo/oss-telemetry v0.2.3
+	github.com/lukaszraczylo/oss-telemetry v0.2.5
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.12.1
