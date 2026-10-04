@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/lukaszraczylo/claude-mnemonic/internal/db/gorm"
 	"github.com/lukaszraczylo/claude-mnemonic/internal/vector/sqlitevec"
 	"github.com/lukaszraczylo/claude-mnemonic/pkg/models"
 )
@@ -140,5 +141,37 @@ func TestCheckVectorDeduplication_EmptySearchText(t *testing.T) {
 	result := p.checkVectorDeduplication(context.Background(), obs, "test-project")
 	if result.Action != "insert" {
 		t.Errorf("expected Action='insert' for empty observation, got %q", result.Action)
+	}
+}
+
+func TestCanMergeInto(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := gorm.NewStore(gorm.Config{Path: dir + "/test.db", MaxConns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	obsStore := gorm.NewObservationStore(store, nil, nil, nil)
+	id, _, err := obsStore.StoreObservation(ctx, "s1", "proj", &models.ParsedObservation{Type: models.ObsTypeDiscovery, Title: "A note"}, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Processor{observationStore: obsStore}
+
+	if !p.canMergeInto(ctx, id) {
+		t.Error("a live observation is a merge target")
+	}
+	if p.canMergeInto(ctx, id+1000) {
+		t.Error("an observation that does not exist is not")
+	}
+	if err := store.DB.Exec(`UPDATE observations SET is_superseded = 1 WHERE id = ?`, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if p.canMergeInto(ctx, id) {
+		t.Error("a superseded observation is hidden from sessions, so nothing is merged into it")
+	}
+	if !(&Processor{}).canMergeInto(ctx, id) {
+		t.Error("without an observation store there is nothing to check against")
 	}
 }

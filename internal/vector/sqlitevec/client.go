@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -292,67 +293,13 @@ func (c *Client) Query(ctx context.Context, query string, limit int, where map[s
 	}
 	defer c.readMu.RUnlock()
 
-	// Build query with filters
-	// vec0 supports WHERE clauses on metadata columns
-	args := []any{queryBlob}
-
-	sqlQuery := `
-		SELECT
-			doc_id,
-			distance,
-			sqlite_id,
-			doc_type,
-			field_type,
-			project,
-			scope
-		FROM vectors
-		WHERE embedding MATCH ?
-	`
-
-	// Add filters - these work with vec0 metadata columns
-	if docType, ok := where["doc_type"].(string); ok && docType != "" {
-		sqlQuery += " AND doc_type = ?"
-		args = append(args, docType)
-	}
-	if project, ok := where["project"].(string); ok && project != "" {
-		// Include project-specific OR global scope
-		sqlQuery += " AND (project = ? OR scope = 'global')"
-		args = append(args, project)
-	}
-
-	sqlQuery += " ORDER BY distance LIMIT ?"
-	args = append(args, limit)
-
-	rows, err := c.db.QueryContext(ctx, sqlQuery, args...)
+	// vec0 answers equality filters on metadata columns, but not an OR between them, so a project filter
+	// (the project's own documents, plus global ones) is asked as two searches and merged.
+	docType, _ := where["doc_type"].(string)
+	project, _ := where["project"].(string)
+	results, err := c.nearest(ctx, queryBlob, docType, project, limit)
 	if err != nil {
-		return nil, fmt.Errorf("query vectors: %w", err)
-	}
-	defer rows.Close()
-
-	var results []QueryResult
-	for rows.Next() {
-		var r QueryResult
-		var sqliteID int64
-		var docType, fieldType, project, scope sql.NullString
-
-		if err := rows.Scan(&r.ID, &r.Distance, &sqliteID, &docType, &fieldType, &project, &scope); err != nil {
-			return nil, fmt.Errorf("scan row: %w", err)
-		}
-
-		r.Similarity = DistanceToSimilarity(r.Distance)
-		r.Metadata = map[string]any{
-			"sqlite_id":  float64(sqliteID), // Keep as float64 for compatibility
-			"doc_type":   docType.String,
-			"field_type": fieldType.String,
-			"project":    project.String,
-			"scope":      scope.String,
-		}
-
-		results = append(results, r)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate rows: %w", err)
+		return nil, err
 	}
 
 	// Cache the results
@@ -507,60 +454,108 @@ func (c *Client) QueryMultiField(ctx context.Context, query string, limit int, d
 	}
 	defer c.readMu.RUnlock()
 
-	// Query with field type aggregation - get best match per document
-	sqlQuery := `
-		WITH ranked_results AS (
-			SELECT
-				doc_id,
-				distance,
-				sqlite_id,
-				doc_type,
-				field_type,
-				project,
-				scope,
-				ROW_NUMBER() OVER (PARTITION BY sqlite_id ORDER BY distance ASC) as rn
-			FROM vectors
-			WHERE embedding MATCH ?
-				AND doc_type = ?
-				AND (project = ? OR scope = 'global')
-		)
-		SELECT doc_id, distance, sqlite_id, doc_type, field_type, project, scope
-		FROM ranked_results
-		WHERE rn = 1
-		ORDER BY distance
-		LIMIT ?
-	`
+	// Each observation has several vector documents (one per field). Ask for enough of them that `limit`
+	// distinct observations are likely to be among them, then keep the best match per observation.
+	found, err := c.nearest(ctx, queryBlob, docType, project, limit*multiFieldFetchFactor)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]QueryResult, 0, limit)
+	seen := make(map[float64]bool, limit)
+	for _, r := range found { // best first
+		id, _ := r.Metadata["sqlite_id"].(float64)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		results = append(results, r)
+		if len(results) == limit {
+			break
+		}
+	}
+	return results, nil
+}
 
-	rows, err := c.db.QueryContext(ctx, sqlQuery, queryBlob, docType, project, limit)
+// multiFieldFetchFactor is how many vector documents QueryMultiField asks for per wanted observation.
+const multiFieldFetchFactor = 6
+
+// nearest runs the nearest-neighbour search for a document type and, when project is not empty, for that
+// project's documents and the global ones. The caller holds the read lock. Results are best first, at most limit.
+func (c *Client) nearest(ctx context.Context, queryBlob []byte, docType, project string, limit int) ([]QueryResult, error) {
+	base := " WHERE embedding MATCH ?"
+	baseArgs := []any{queryBlob}
+	if docType != "" {
+		base += " AND doc_type = ?"
+		baseArgs = append(baseArgs, docType)
+	}
+	if project == "" {
+		return c.knn(ctx, base, baseArgs, limit)
+	}
+	own, err := c.knn(ctx, base+" AND project = ?", append(append([]any{}, baseArgs...), project), limit)
+	if err != nil {
+		return nil, err
+	}
+	global, err := c.knn(ctx, base+" AND scope = 'global'", baseArgs, limit)
+	if err != nil {
+		return nil, err
+	}
+	return mergeNearest(limit, own, global), nil
+}
+
+// knn runs one vec0 nearest-neighbour query. where holds the MATCH and filters vec0 can answer on their own.
+func (c *Client) knn(ctx context.Context, where string, args []any, limit int) ([]QueryResult, error) {
+	rows, err := c.db.QueryContext(ctx,
+		"SELECT doc_id, distance, sqlite_id, doc_type, field_type, project, scope FROM vectors"+where+" ORDER BY distance LIMIT ?",
+		append(append([]any{}, args...), limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("query vectors: %w", err)
 	}
 	defer rows.Close()
 
-	// Pre-allocate with limit to avoid repeated slice growth
-	results := make([]QueryResult, 0, limit)
+	var results []QueryResult
 	for rows.Next() {
 		var r QueryResult
 		var sqliteID int64
-		var docTypeVal, fieldType, projectVal, scope sql.NullString
+		var docType, fieldType, project, scope sql.NullString
 
-		if err := rows.Scan(&r.ID, &r.Distance, &sqliteID, &docTypeVal, &fieldType, &projectVal, &scope); err != nil {
+		if err := rows.Scan(&r.ID, &r.Distance, &sqliteID, &docType, &fieldType, &project, &scope); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 
 		r.Similarity = DistanceToSimilarity(r.Distance)
 		r.Metadata = map[string]any{
-			"sqlite_id":  float64(sqliteID),
-			"doc_type":   docTypeVal.String,
+			"sqlite_id":  float64(sqliteID), // Keep as float64 for compatibility
+			"doc_type":   docType.String,
 			"field_type": fieldType.String,
-			"project":    projectVal.String,
+			"project":    project.String,
 			"scope":      scope.String,
 		}
 
 		results = append(results, r)
 	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
+	return results, nil
+}
 
-	return results, rows.Err()
+// mergeNearest combines result lists into one, best first, without repeating a document, at most limit long.
+func mergeNearest(limit int, lists ...[]QueryResult) []QueryResult {
+	var all []QueryResult
+	seen := map[string]bool{}
+	for _, list := range lists {
+		for _, r := range list {
+			if !seen[r.ID] {
+				seen[r.ID] = true
+				all = append(all, r)
+			}
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Distance < all[j].Distance })
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	return all
 }
 
 // acquireRLockWithContext acquires a read lock on mu, respecting ctx cancellation.

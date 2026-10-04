@@ -405,6 +405,50 @@ func TestClient_Query_WithProjectFilter(t *testing.T) {
 	results, err := client.Query(context.Background(), "authentication security", 10, nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, results, "Should find some results")
+	assert.Len(t, results, 3)
+
+	ids := func(rs []QueryResult) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+
+	// With a project filter: the project's own documents and the global ones, not another project's.
+	results, err = client.Query(context.Background(), "authentication security", 10, BuildWhereFilter(DocTypeObservation, "project-a"))
+	require.NoError(t, err, "a project filter must be answerable (vec0 rejects an OR between metadata filters)")
+	assert.ElementsMatch(t, []string{"obs-1", "obs-3"}, ids(results), "project-a's note and the global one, not project-b's own")
+
+	results, err = client.Query(context.Background(), "authentication security", 10, BuildWhereFilter(DocTypeObservation, "project-b"))
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"obs-2", "obs-3"}, ids(results))
+
+	// Best first, and the limit applies to the merged list.
+	results, err = client.Query(context.Background(), "authentication security", 1, BuildWhereFilter(DocTypeObservation, "project-a"))
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	all, err := client.Query(context.Background(), "authentication security", 10, BuildWhereFilter(DocTypeObservation, "project-a"))
+	require.NoError(t, err)
+	assert.Equal(t, all[0].ID, results[0].ID, "the one result is the best of the merged list")
+	assert.LessOrEqual(t, all[0].Distance, all[1].Distance)
+
+	// A project nobody wrote to still sees the global documents.
+	results, err = client.Query(context.Background(), "authentication security", 10, BuildWhereFilter(DocTypeObservation, "project-z"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"obs-3"}, ids(results))
+}
+
+func TestMergeNearest(t *testing.T) {
+	r := func(id string, d float64) QueryResult { return QueryResult{ID: id, Distance: d} }
+	got := mergeNearest(3, []QueryResult{r("a", 0.5), r("b", 0.9)}, []QueryResult{r("b", 0.9), r("c", 0.1), r("d", 0.7)})
+	var ids []string
+	for _, x := range got {
+		ids = append(ids, x.ID)
+	}
+	assert.Equal(t, []string{"c", "a", "d"}, ids, "best first, a document found twice counts once, cut to the limit")
+	assert.Empty(t, mergeNearest(5))
+	assert.Len(t, mergeNearest(5, []QueryResult{r("a", 1)}, nil), 1)
 }
 
 func TestClient_IsConnected(t *testing.T) {
@@ -1105,8 +1149,6 @@ func TestClient_QueryBatch_WithContextCancellation(t *testing.T) {
 // =============================================================================
 
 func TestClient_QueryMultiField_Basic(t *testing.T) {
-	t.Skip("QueryMultiField SQL query needs 'k' parameter fix for sqlite-vec")
-
 	db, dbCleanup := testDB(t)
 	defer dbCleanup()
 
@@ -1173,8 +1215,6 @@ func TestClient_QueryMultiField_Basic(t *testing.T) {
 }
 
 func TestClient_QueryMultiField_WithGlobalScope(t *testing.T) {
-	t.Skip("QueryMultiField SQL query needs 'k' parameter fix for sqlite-vec")
-
 	db, dbCleanup := testDB(t)
 	defer dbCleanup()
 
@@ -1217,7 +1257,37 @@ func TestClient_QueryMultiField_WithGlobalScope(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should include both project-scoped (matching project) and global
-	assert.NotEmpty(t, results)
+	require.Len(t, results, 2)
+	assert.ElementsMatch(t, []float64{1, 2}, []float64{
+		results[0].Metadata["sqlite_id"].(float64), results[1].Metadata["sqlite_id"].(float64),
+	})
+}
+
+// The query the de-duplication of new observations makes: the same project, a few results, and a note that
+// says nearly the same thing must come back with a high similarity.
+func TestClient_Query_ProjectFilterFindsANearDuplicate(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	text := "The shipping rate cache lives for sixty minutes and is stored in Redis."
+	require.NoError(t, client.AddDocuments(context.Background(), []Document{
+		{ID: "obs-1", Content: text, Metadata: map[string]any{"sqlite_id": int64(1), "doc_type": "observation", "project": "shop", "scope": "project"}},
+		{ID: "obs-2", Content: text, Metadata: map[string]any{"sqlite_id": int64(2), "doc_type": "observation", "project": "elsewhere", "scope": "project"}},
+		{ID: "obs-3", Content: "Parcel labels are printed as PDF.", Metadata: map[string]any{"sqlite_id": int64(3), "doc_type": "observation", "project": "shop", "scope": "project"}},
+	}))
+
+	results, err := client.Query(context.Background(), text, 3, BuildWhereFilter(DocTypeObservation, "shop"))
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+	assert.Equal(t, "obs-1", results[0].ID, "the same text in the same project is the best match")
+	assert.GreaterOrEqual(t, results[0].Similarity, 0.99)
+	for _, r := range results {
+		assert.NotEqual(t, "obs-2", r.ID, "another project's note is not a duplicate")
+	}
 }
 
 // =============================================================================

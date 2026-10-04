@@ -51,7 +51,7 @@ func (p *Processor) checkVectorDeduplication(ctx context.Context, obs *models.Pa
 	for _, r := range results {
 		if r.Similarity >= cfg.DeduplicationThreshold {
 			obsID := extractObservationIDFromVectorDoc(r)
-			if obsID > 0 {
+			if obsID > 0 && p.canMergeInto(ctx, obsID) {
 				return &DeduplicationResult{
 					ExistingID: obsID,
 					Similarity: r.Similarity,
@@ -62,6 +62,20 @@ func (p *Processor) checkVectorDeduplication(ctx context.Context, obs *models.Pa
 	}
 
 	return &DeduplicationResult{Action: "insert"}
+}
+
+// canMergeInto says whether a new observation may be merged into the existing one. A note a person superseded
+// is hidden from sessions, so what was merged into it would be hidden as well: such a note is not a target,
+// and neither is one that is gone.
+func (p *Processor) canMergeInto(ctx context.Context, id int64) bool {
+	if p.observationStore == nil {
+		return true
+	}
+	existing, err := p.observationStore.GetObservationByID(ctx, id)
+	if err != nil {
+		return false
+	}
+	return existing != nil && !existing.IsSuperseded
 }
 
 // buildObservationSearchText creates searchable text from a parsed observation.
