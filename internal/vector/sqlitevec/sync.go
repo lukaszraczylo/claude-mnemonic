@@ -22,11 +22,8 @@ func NewSync(client *Client) *Sync {
 // SyncObservation syncs a single observation to the vector store.
 func (s *Sync) SyncObservation(ctx context.Context, obs *models.Observation) error {
 	docs := s.formatObservationDocs(obs)
-	if len(docs) == 0 {
-		return nil
-	}
-
-	if err := s.client.AddDocuments(ctx, docs); err != nil {
+	// Replace, not add: a note that is synced again (after an edit, a re-scope or a re-import) already has documents.
+	if err := s.client.ReplaceDocuments(ctx, "observation", obs.ID, docs); err != nil {
 		return fmt.Errorf("add observation docs: %w", err)
 	}
 
@@ -102,11 +99,7 @@ func (s *Sync) formatObservationDocs(obs *models.Observation) []Document {
 // SyncSummary syncs a single session summary to the vector store.
 func (s *Sync) SyncSummary(ctx context.Context, summary *models.SessionSummary) error {
 	docs := s.formatSummaryDocs(summary)
-	if len(docs) == 0 {
-		return nil
-	}
-
-	if err := s.client.AddDocuments(ctx, docs); err != nil {
+	if err := s.client.ReplaceDocuments(ctx, "session_summary", summary.ID, docs); err != nil {
 		return fmt.Errorf("add summary docs: %w", err)
 	}
 

@@ -2152,3 +2152,67 @@ func TestGetOrComputeEmbedding_ContextCancelDuringSingleflight(t *testing.T) {
 	// Wait for first call to finish
 	<-firstDone
 }
+
+func TestClient_AddDocuments_FailedBatchIsRolledBackAndDoesNotLockTheDatabase(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+
+	doc := func(id string, sqliteID int64) Document {
+		return Document{ID: id, Content: "text of " + id, Metadata: map[string]any{
+			"sqlite_id": sqliteID, "doc_type": "observation", "field_type": "narrative", "project": "alpha", "scope": "project",
+		}}
+	}
+	require.NoError(t, client.AddDocuments(context.Background(), []Document{doc("obs_1_narrative", 1)}))
+
+	// The second document of the batch exists already, so the batch fails after the first was inserted.
+	err = client.AddDocuments(context.Background(), []Document{doc("obs_2_narrative", 2), doc("obs_1_narrative", 1)})
+	require.Error(t, err)
+
+	var n int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM vectors WHERE doc_id = 'obs_2_narrative'").Scan(&n))
+	assert.Zero(t, n, "nothing of the failed batch is kept")
+
+	// With the transaction left open, this would wait for the lock until the context ends.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, client.AddDocuments(ctx, []Document{doc("obs_3_narrative", 3)}), "a write after a failed one goes through")
+}
+
+func TestClient_ReplaceDocuments_ReplacesOnlyTheDocumentsOfThatNote(t *testing.T) {
+	db, dbCleanup := testDB(t)
+	defer dbCleanup()
+	embedSvc, embedCleanup := testEmbeddingService(t)
+	defer embedCleanup()
+	client, err := NewClient(Config{DB: db}, embedSvc)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	doc := func(id string, sqliteID int64, docType, scope string) Document {
+		return Document{ID: id, Content: "text of " + id, Metadata: map[string]any{
+			"sqlite_id": sqliteID, "doc_type": docType, "field_type": "narrative", "project": "alpha", "scope": scope,
+		}}
+	}
+	require.NoError(t, client.AddDocuments(ctx, []Document{
+		doc("obs_1_narrative", 1, "observation", "global"), doc("obs_1_fact_0", 1, "observation", "global"),
+		doc("obs_2_narrative", 2, "observation", "global"),
+		doc("summary_1_request", 1, "session_summary", ""), // the same sqlite id, another kind of document
+	}))
+
+	require.NoError(t, client.ReplaceDocuments(ctx, "observation", 1, []Document{doc("obs_1_narrative", 1, "observation", "project")}))
+
+	count := func(where string, args ...any) (n int) {
+		require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM vectors WHERE "+where, args...).Scan(&n))
+		return n
+	}
+	assert.Equal(t, 1, count("doc_type = 'observation' AND sqlite_id = 1"), "the fact document is gone")
+	assert.Equal(t, 1, count("doc_id = 'obs_1_narrative' AND scope = 'project'"), "and the narrative carries the new scope")
+	assert.Equal(t, 1, count("doc_id = 'obs_2_narrative' AND scope = 'global'"), "another note is untouched")
+	assert.Equal(t, 1, count("doc_id = 'summary_1_request'"), "so is a summary with the same id")
+
+	require.NoError(t, client.ReplaceDocuments(ctx, "observation", 1, nil), "no documents left: only the old ones are deleted")
+	assert.Zero(t, count("doc_type = 'observation' AND sqlite_id = 1"))
+}

@@ -346,3 +346,57 @@ func TestSync_FormatObservationDocs_EmptyScope(t *testing.T) {
 	assert.Len(t, docs, 1)
 	assert.Equal(t, "project", docs[0].Metadata["scope"])
 }
+
+func vectorCount(t *testing.T, c *Client, where string, args ...any) int {
+	t.Helper()
+	var n int
+	require.NoError(t, c.db.QueryRow("SELECT COUNT(*) FROM vectors WHERE "+where, args...).Scan(&n))
+	return n
+}
+
+func TestSync_SyncObservation_AgainReplacesTheDocumentsOfTheNote(t *testing.T) {
+	client, cleanup := testClient(t)
+	defer cleanup()
+	sync := NewSync(client)
+	ctx := context.Background()
+
+	obs := &models.Observation{
+		ID: 7, SDKSessionID: "s", Project: "alpha", Type: models.ObsTypeDiscovery, Scope: models.ScopeGlobal,
+		Narrative: sql.NullString{String: "The queue keeps one consumer per tenant.", Valid: true},
+		Facts:     []string{"one consumer per tenant", "retries are capped", "dead letters go to a second queue"},
+	}
+	other := &models.Observation{
+		ID: 8, SDKSessionID: "s", Project: "alpha", Type: models.ObsTypeDiscovery, Scope: models.ScopeProject,
+		Narrative: sql.NullString{String: "Releases are cut on Thursdays.", Valid: true},
+	}
+	require.NoError(t, sync.SyncObservation(ctx, obs))
+	require.NoError(t, sync.SyncObservation(ctx, other))
+	require.Equal(t, 4, vectorCount(t, client, "doc_type = 'observation' AND sqlite_id = ?", 7))
+
+	// The note was edited: one fact fewer, and it is a project note now.
+	obs.Facts = obs.Facts[:2]
+	obs.Scope = models.ScopeProject
+	require.NoError(t, sync.SyncObservation(ctx, obs), "syncing a note that already has documents is not an error")
+
+	assert.Equal(t, 3, vectorCount(t, client, "doc_type = 'observation' AND sqlite_id = ?", 7), "narrative and two facts; the dropped fact's document is gone")
+	assert.Equal(t, 0, vectorCount(t, client, "doc_id = ?", "obs_7_fact_2"))
+	assert.Equal(t, 3, vectorCount(t, client, "sqlite_id = ? AND scope = 'project'", 7), "the new scope is what the vectors carry")
+	assert.Equal(t, 1, vectorCount(t, client, "sqlite_id = ?", 8), "other notes are not touched")
+}
+
+func TestSync_SyncSummary_AgainReplacesTheDocumentsOfTheSummary(t *testing.T) {
+	client, cleanup := testClient(t)
+	defer cleanup()
+	sync := NewSync(client)
+	ctx := context.Background()
+
+	summary := &models.SessionSummary{
+		ID: 3, SDKSessionID: "s", Project: "alpha",
+		Request: sql.NullString{String: "Add the queue", Valid: true}, Learned: sql.NullString{String: "One consumer per tenant", Valid: true},
+	}
+	require.NoError(t, sync.SyncSummary(ctx, summary))
+	summary.Learned = sql.NullString{}
+	require.NoError(t, sync.SyncSummary(ctx, summary))
+
+	assert.Equal(t, 1, vectorCount(t, client, "doc_type = 'session_summary' AND sqlite_id = ?", 3), "the field that was emptied has no document any more")
+}

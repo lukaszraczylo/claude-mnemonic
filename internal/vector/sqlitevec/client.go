@@ -139,9 +139,22 @@ func NewClient(cfg Config, embedSvc *embedding.Service) (*Client, error) {
 	return c, nil
 }
 
-// AddDocuments adds documents with their embeddings to the vector store.
+// AddDocuments embeds the documents and inserts them. A document whose ID already exists is an error (the vec0
+// table does not replace on insert); use ReplaceDocuments to write the documents of a note that may have some.
 func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
-	if len(docs) == 0 {
+	return c.writeDocuments(ctx, docs, "", 0)
+}
+
+// ReplaceDocuments writes the documents of one note (observation, summary, ...) in place of the ones it had: the old
+// documents are deleted and the new ones inserted in one transaction, so an edit that removes a fact leaves no stale
+// document behind and a failure leaves the old ones untouched. docs may be empty, which only deletes.
+func (c *Client) ReplaceDocuments(ctx context.Context, docType string, sqliteID int64, docs []Document) error {
+	return c.writeDocuments(ctx, docs, docType, sqliteID)
+}
+
+// writeDocuments inserts docs; when docType is not empty it first deletes every document of that note.
+func (c *Client) writeDocuments(ctx context.Context, docs []Document, docType string, sqliteID int64) (err error) {
+	if len(docs) == 0 && docType == "" {
 		return nil
 	}
 
@@ -154,9 +167,11 @@ func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
 	// Compute embeddings OUTSIDE the write lock for better concurrency.
 	// Embedding is ONNX inference (slow, mutex-protected internally) — holding
 	// writeMu during inference blocks all concurrent writes and reads.
-	embeddings, err := c.embedSvc.EmbedBatchWithContext(ctx, texts)
-	if err != nil {
-		return fmt.Errorf("generate embeddings: %w", err)
+	var embeddings [][]float32
+	if len(texts) > 0 {
+		if embeddings, err = c.embedSvc.EmbedBatchWithContext(ctx, texts); err != nil {
+			return fmt.Errorf("generate embeddings: %w", err)
+		}
 	}
 
 	// Acquire write lock for DB operations only
@@ -165,7 +180,7 @@ func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
 
 	// Insert into vectors table with model version tracking
 	const insertQuery = `
-		INSERT OR REPLACE INTO vectors (doc_id, embedding, sqlite_id, doc_type, field_type, project, scope, model_version)
+		INSERT INTO vectors (doc_id, embedding, sqlite_id, doc_type, field_type, project, scope, model_version)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
@@ -176,6 +191,8 @@ func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
+	// err is the named result, so every failed return below reaches this and the write lock is released. (A shadowed
+	// err in the loop once left the transaction open, and the database locked, after a failed insert.)
 	defer func() {
 		if err != nil {
 			if rbErr := tx.Rollback(); rbErr != nil {
@@ -185,6 +202,12 @@ func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
 		}
 	}()
 
+	if docType != "" {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM vectors WHERE doc_type = ? AND sqlite_id = ?`, docType, sqliteID); err != nil {
+			return fmt.Errorf("delete old documents: %w", err)
+		}
+	}
+
 	stmt, err := tx.PrepareContext(ctx, insertQuery)
 	if err != nil {
 		return fmt.Errorf("prepare statement: %w", err)
@@ -193,29 +216,28 @@ func (c *Client) AddDocuments(ctx context.Context, docs []Document) error {
 
 	for i, doc := range docs {
 		// Serialize embedding to blob format
-		embBlob, err := sqlite_vec.SerializeFloat32(embeddings[i])
-		if err != nil {
+		var embBlob []byte
+		if embBlob, err = sqlite_vec.SerializeFloat32(embeddings[i]); err != nil {
 			return fmt.Errorf("serialize embedding for %s: %w", doc.ID, err)
 		}
 
 		// Extract metadata
-		sqliteID, _ := doc.Metadata["sqlite_id"].(int64)
-		docType, _ := doc.Metadata["doc_type"].(string)
+		docSQLiteID, _ := doc.Metadata["sqlite_id"].(int64)
+		docDocType, _ := doc.Metadata["doc_type"].(string)
 		fieldType, _ := doc.Metadata["field_type"].(string)
 		project, _ := doc.Metadata["project"].(string)
 		scope, _ := doc.Metadata["scope"].(string)
 
-		_, err = stmt.ExecContext(ctx,
+		if _, err = stmt.ExecContext(ctx,
 			doc.ID,
 			embBlob,
-			sqliteID,
-			docType,
+			docSQLiteID,
+			docDocType,
 			fieldType,
 			project,
 			scope,
 			modelVersion,
-		)
-		if err != nil {
+		); err != nil {
 			return fmt.Errorf("insert document %s: %w", doc.ID, err)
 		}
 	}
