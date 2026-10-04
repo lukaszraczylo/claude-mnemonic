@@ -252,9 +252,6 @@ func (s *ObservationStore) UpdateObservation(ctx context.Context, id int64, upda
 		updates["scope"] = sql.NullString{String: *update.Scope, Valid: true}
 	}
 
-	// Add updated_at timestamp
-	updates["updated_at_epoch"] = sql.NullInt64{Int64: time.Now().Unix(), Valid: true}
-
 	if len(updates) == 0 {
 		// Nothing to update, just return existing observation
 		return toModelObservation(&dbObs), nil
