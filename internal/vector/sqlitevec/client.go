@@ -526,6 +526,7 @@ func (c *Client) nearest(ctx context.Context, queryBlob []byte, docType, project
 
 // knn runs one vec0 nearest-neighbour query. where holds the MATCH and filters vec0 can answer on their own.
 func (c *Client) knn(ctx context.Context, where string, args []any, limit int) ([]QueryResult, error) {
+	// #nosec G202 -- where is built from constant clauses with "?" placeholders only (see nearest); every value goes via args
 	rows, err := c.db.QueryContext(ctx,
 		"SELECT doc_id, distance, sqlite_id, doc_type, field_type, project, scope FROM vectors"+where+" ORDER BY distance LIMIT ?",
 		append(append([]any{}, args...), limit)...)
