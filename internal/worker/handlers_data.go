@@ -28,6 +28,8 @@ func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) 
 	pagination := gorm.ParsePaginationParams(r, DefaultObservationsLimit)
 	project := r.URL.Query().Get("project")
 	query := r.URL.Query().Get("query")
+	// Archived notes are not listed unless asked for.
+	includeArchived := r.URL.Query().Get("include_archived") == "true"
 
 	// Validate project name to prevent path traversal
 	if err := ValidateProjectName(project); err != nil {
@@ -60,10 +62,10 @@ func (s *Service) handleGetObservations(w http.ResponseWriter, r *http.Request) 
 	if !usedVector {
 		if project != "" {
 			// Strict project filtering for dashboard - only observations from this project
-			observations, total, err = s.observationStore.GetObservationsByProjectStrictPaginated(ctx, project, pagination.Limit, pagination.Offset)
+			observations, total, err = s.observationStore.GetObservationsByProjectStrictPaginated(ctx, project, pagination.Limit, pagination.Offset, includeArchived)
 		} else {
 			// All projects
-			observations, total, err = s.observationStore.GetAllRecentObservationsPaginated(ctx, pagination.Limit, pagination.Offset)
+			observations, total, err = s.observationStore.GetAllRecentObservationsPaginated(ctx, pagination.Limit, pagination.Offset, includeArchived)
 		}
 	}
 

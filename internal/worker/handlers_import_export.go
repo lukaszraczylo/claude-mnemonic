@@ -300,6 +300,8 @@ func (s *Service) handleArchiveObservations(w http.ResponseWriter, r *http.Reque
 		Int("failed", len(failedIDs)).
 		Msg("Observations archived")
 
+	s.dropArchivedFromVectors(archivedIDs)
+
 	// Invalidate cache if any observations were archived
 	if len(archivedIDs) > 0 {
 		if req.Project != "" {
@@ -322,6 +324,22 @@ func (s *Service) handleArchiveObservations(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, response)
 }
 
+// dropArchivedFromVectors takes archived notes out of the vector index, so search cannot return them (unarchiving puts
+// them back). Every path that archives notes calls it.
+func (s *Service) dropArchivedFromVectors(ids []int64) {
+	if len(ids) == 0 || s.vectorSync == nil {
+		return
+	}
+	ids = append([]int64(nil), ids...)
+	s.asyncVectorSync(func() {
+		ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
+		defer cancel()
+		if err := s.vectorSync.DeleteObservations(ctx, ids); err != nil && s.ctx.Err() == nil {
+			log.Warn().Err(err).Int("count", len(ids)).Msg("Failed to drop archived observations from sqlite-vec")
+		}
+	})
+}
+
 // handleUnarchiveObservation restores an archived observation.
 func (s *Service) handleUnarchiveObservation(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
@@ -334,6 +352,21 @@ func (s *Service) handleUnarchiveObservation(w http.ResponseWriter, r *http.Requ
 	if err := s.observationStore.UnarchiveObservation(r.Context(), id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Archiving dropped the note's vectors; put them back so search finds it again.
+	if s.vectorSync != nil {
+		s.asyncVectorSync(func() {
+			ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
+			defer cancel()
+			obs, err := s.observationStore.GetObservationByID(ctx, id)
+			if err != nil || obs == nil {
+				return
+			}
+			if err := s.vectorSync.SyncObservation(ctx, obs); err != nil && s.ctx.Err() == nil {
+				log.Warn().Err(err).Int64("id", id).Msg("Failed to restore an unarchived observation to sqlite-vec")
+			}
+		})
 	}
 
 	// Invalidate all caches since we don't know the project
@@ -400,9 +433,9 @@ func (s *Service) handleExportObservations(w http.ResponseWriter, r *http.Reques
 	var err error
 
 	if project != "" {
-		observations, _, err = s.observationStore.GetObservationsByProjectStrictPaginated(ctx, project, limit, 0)
+		observations, _, err = s.observationStore.GetObservationsByProjectStrictPaginated(ctx, project, limit, 0, true)
 	} else {
-		observations, _, err = s.observationStore.GetAllRecentObservationsPaginated(ctx, limit, 0)
+		observations, _, err = s.observationStore.GetAllRecentObservationsPaginated(ctx, limit, 0, true)
 	}
 
 	if err != nil {
@@ -531,14 +564,17 @@ func (s *Service) handleBulkStatusUpdate(w http.ResponseWriter, r *http.Request)
 		}
 
 	case "archive":
+		var archivedIDs []int64
 		for _, id := range req.IDs {
 			if err := s.observationStore.ArchiveObservation(ctx, id, req.Reason); err != nil {
 				failed++
 				errors = append(errors, fmt.Sprintf("id %d: %v", id, err))
 			} else {
 				updated++
+				archivedIDs = append(archivedIDs, id)
 			}
 		}
+		s.dropArchivedFromVectors(archivedIDs)
 
 	case "set_feedback":
 		if req.Feedback < -1 || req.Feedback > 1 {
@@ -598,9 +634,9 @@ func (s *Service) handleFindDuplicates(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if project != "" {
-		observations, _, err = s.observationStore.GetObservationsByProjectStrictPaginated(ctx, project, limit, 0)
+		observations, _, err = s.observationStore.GetObservationsByProjectStrictPaginated(ctx, project, limit, 0, true)
 	} else {
-		observations, _, err = s.observationStore.GetAllRecentObservationsPaginated(ctx, limit, 0)
+		observations, _, err = s.observationStore.GetAllRecentObservationsPaginated(ctx, limit, 0, true)
 	}
 
 	if err != nil {
