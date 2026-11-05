@@ -9,13 +9,13 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-gormigrate/gormigrate/v2 v2.1.7
-	github.com/goccy/go-json v0.11.2
+	github.com/goccy/go-json v0.12.0
 	github.com/lukaszraczylo/oss-telemetry v0.2.5
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.12.1
 	github.com/sugarme/tokenizer v0.3.0
-	github.com/yalue/onnxruntime_go v1.36.0
+	github.com/yalue/onnxruntime_go v1.38.0
 	golang.org/x/sync v0.24.0
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.2
@@ -32,7 +32,7 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/schollz/progressbar/v2 v2.15.0 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
